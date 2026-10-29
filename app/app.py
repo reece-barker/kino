@@ -119,6 +119,10 @@ CREATE TABLE IF NOT EXISTS intros (title_id TEXT, season INTEGER, start REAL, en
 CREATE TABLE IF NOT EXISTS addons (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE NOT NULL, manifest TEXT NOT NULL,
     enabled INTEGER DEFAULT 1, hidden TEXT DEFAULT '[]', added REAL, updated REAL);
 CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, kind TEXT, first REAL);
+CREATE TABLE IF NOT EXISTS mylist (profile_id INTEGER, key TEXT, kind TEXT, title_id TEXT, name TEXT, poster TEXT,
+    added REAL, checked REAL, PRIMARY KEY (profile_id, key));
+CREATE TABLE IF NOT EXISTS kids_rules (key TEXT PRIMARY KEY, allow INTEGER);
+CREATE TABLE IF NOT EXISTS auto_intros (file_id TEXT PRIMARY KEY, start REAL, end REAL, tried REAL);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
 """
@@ -158,8 +162,10 @@ def db():
 
 
 def migrate():
-    # First run with profiles: makes one profile per old login and moves there watch progress over
     d = _db
+    if "kids" not in [r["name"] for r in d.q("PRAGMA table_info(profiles)")]:
+        d.q("ALTER TABLE profiles ADD COLUMN kids INTEGER DEFAULT 0")
+    # First run with profiles: makes one profile per old login and moves there watch progress over
     if d.q("SELECT COUNT(*) AS n FROM profiles")[0]["n"]:
         return
     users = d.q("SELECT username FROM users ORDER BY created")
@@ -281,12 +287,12 @@ def require_admin(request: Request):
 
 
 def profile_row(pid):
-    rows = db().q("SELECT id, name, icon, prefs FROM profiles WHERE id = ?", (pid,))
+    rows = db().q("SELECT id, name, icon, prefs, kids FROM profiles WHERE id = ?", (pid,))
     if not rows:
         return None
     r = rows[0]
     prefs = {**DEFAULT_PREFS, **(json.loads(r["prefs"] or "{}"))}
-    return {"id": r["id"], "name": r["name"], "icon": r["icon"], "prefs": prefs}
+    return {"id": r["id"], "name": r["name"], "icon": r["icon"], "prefs": prefs, "kids": bool(r["kids"])}
 
 
 def current_profile(request: Request):
@@ -612,6 +618,45 @@ async def probe_worker():
         await asyncio.sleep(60)
 
 
+# ---------------------------------------------------------------- automatic intro detection
+
+def intro_jobs():
+    """Seasons with at least two episodes where some episode hasnt been looked at yet"""
+    done = {r["file_id"] for r in db().q("SELECT file_id FROM auto_intros")}
+    jobs = []
+    for t in LIB["titles"].values():
+        if t["kind"] != "series":
+            continue
+        seasons = {}
+        for fid in t["files"]:
+            f = LIB["files"][fid]
+            if f["season"] is not None and f["episode"] is not None:
+                seasons.setdefault(f["season"], []).append(f)
+        for season, eps in seasons.items():
+            if len(eps) >= 2 and any(f["id"] not in done for f in eps):
+                if db().q("SELECT 1 FROM intros WHERE title_id = ? AND season = ?", (t["id"], season)):
+                    continue  # the admin already marked this season, no need
+                jobs.append(sorted(eps, key=lambda f: f["episode"]))
+    return jobs
+
+
+async def intro_worker():
+    import introdetect
+    await asyncio.sleep(float(env("INTRO_START_DELAY", "120")))  # Lets the first scan and probes go first
+    while True:
+        try:
+            for eps in intro_jobs()[:5]:
+                found = await asyncio.to_thread(introdetect.find_intros, [f["path"] for f in eps])
+                now = time.time()
+                for f in eps:
+                    se = found.get(f["path"])
+                    db().q("INSERT OR REPLACE INTO auto_intros VALUES (?,?,?,?)", (f["id"], se[0] if se else None, se[1] if se else None, now))
+                log.info("intro detection: found %d of %d in %s", len(found), len(eps), Path(eps[0]["path"]).parent.name)
+        except Exception as e:
+            log.warning("intro detection failed: %s", e)
+        await asyncio.sleep(600)
+
+
 # ---------------------------------------------------------------- vps stats
 
 STATS = {"hist": deque(maxlen=120), "procs": [], "last_net": None}
@@ -800,7 +845,7 @@ async def lifespan(app):
             await rescan()
             await asyncio.sleep(RESCAN_MINUTES * 60)
 
-    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker)]
+    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker)]
     yield
     for t in tasks:
         t.cancel()
@@ -854,8 +899,8 @@ async def me(request: Request):
 
 @app.get("/api/profiles")
 async def profiles(request: Request):
-    rows = db().q("SELECT id, name, icon FROM profiles ORDER BY id")
-    return {"profiles": [dict(r) for r in rows], "admin": admin_user(request)}
+    rows = db().q("SELECT id, name, icon, kids FROM profiles ORDER BY id")
+    return {"profiles": [{**dict(r), "kids": bool(r["kids"])} for r in rows], "admin": admin_user(request)}
 
 
 @app.post("/api/profiles/{pid}/select")
@@ -907,8 +952,8 @@ async def profile_add(request: Request, admin=Depends(require_admin)):
     b = await request.json()
     if db().q("SELECT COUNT(*) AS n FROM profiles")[0]["n"] >= 12:
         raise HTTPException(400, "That's the maximum of 12 profiles")
-    db().q("INSERT INTO profiles (name, icon, prefs, created) VALUES (?,?,?,?)",
-           (clean_name(b.get("name")), clean_icon(b.get("icon", 0)), json.dumps(DEFAULT_PREFS), time.time()))
+    db().q("INSERT INTO profiles (name, icon, prefs, created, kids) VALUES (?,?,?,?,?)",
+           (clean_name(b.get("name")), clean_icon(b.get("icon", 0)), json.dumps(DEFAULT_PREFS), time.time(), 1 if b.get("kids") else 0))
     log.info("kino profile added by %s", admin)
     return {"ok": True}
 
@@ -919,6 +964,8 @@ async def profile_admin_edit(pid: int, request: Request, admin=Depends(require_a
     if not profile_row(pid):
         raise HTTPException(404, "That profile doesn't exist")
     db().q("UPDATE profiles SET name = ?, icon = ? WHERE id = ?", (clean_name(b.get("name")), clean_icon(b.get("icon")), pid))
+    if "kids" in b:
+        db().q("UPDATE profiles SET kids = ? WHERE id = ?", (1 if b["kids"] else 0, pid))
     return {"ok": True}
 
 
@@ -926,7 +973,7 @@ async def profile_admin_edit(pid: int, request: Request, admin=Depends(require_a
 async def profile_delete(pid: int, admin=Depends(require_admin)):
     if db().q("SELECT COUNT(*) AS n FROM profiles")[0]["n"] <= 1:
         raise HTTPException(400, "Keep at least one profile")
-    for t in ("watch", "ratings"):
+    for t in ("watch", "ratings", "mylist"):
         db().q(f"DELETE FROM {t} WHERE profile_id = ?", (pid,))
     db().q("DELETE FROM profiles WHERE id = ?", (pid,))
     log.info("kino profile %s deleted by %s", pid, admin)
@@ -1001,9 +1048,40 @@ def title_summary(t, meta, wm=None, rm=None):
     }
 
 
+# ---- kids profiles
+# A title is fine for kids when its genres say family or animation and nothing scary, the admin can override any title
+KID_GENRES = {"animation", "family", "kids", "children"}
+KID_BLOCK = {"horror", "thriller", "crime", "war", "mystery", "adult", "erotic", "ecchi", "hentai", "psychological", "gore"}
+
+
+def kid_key(meta_id, tid=None):
+    return meta_id or f"lib:{tid}"
+
+
+def kids_ok(genres, key):
+    rule = db().q("SELECT allow FROM kids_rules WHERE key = ?", (key,)) if key else []
+    if rule:
+        return bool(rule[0]["allow"])
+    g = {str(x).lower() for x in genres or []}
+    return bool(g & KID_GENRES) and not (g & KID_BLOCK)
+
+
+def title_allowed(p, t, meta):
+    if p.get("kids") and not kids_ok((meta or {}).get("genres"), kid_key((meta or {}).get("id"), t["id"])):
+        raise HTTPException(404, "That title isn't available on this profile")
+
+
+def kids_profile(pid):
+    r = db().q("SELECT kids FROM profiles WHERE id = ?", (pid,))
+    return bool(r and r[0]["kids"])
+
+
 def all_summaries(pid):
     wm, rm = watch_map(pid), rating_map(pid)
-    return [title_summary(t, meta_for(t), wm, rm) for t in LIB["titles"].values()], wm, rm
+    out = [title_summary(t, meta_for(t), wm, rm) for t in LIB["titles"].values()]
+    if kids_profile(pid):
+        out = [s for s in out if kids_ok(s["genres"], kid_key(s.get("imdb"), s["id"]))]
+    return out, wm, rm
 
 
 def imdb_score(s):
@@ -1094,7 +1172,7 @@ async def library(p=Depends(current_profile)):
 
 
 @app.get("/api/home")
-async def home(p=Depends(current_profile)):
+async def home(request: Request, p=Depends(current_profile)):
     summ, wm, rm = all_summaries(p["id"])
     now = time.time()
     weights = genre_weights(summ)
@@ -1110,12 +1188,17 @@ async def home(p=Depends(current_profile)):
 
     # Titles from addons that can actually play something get mixed into the main shelves with the library
     pool = addon_pool(p["id"], lib_by_meta_id(summ))
+    if p.get("kids"):
+        pool = [s for s in pool if kids_ok(s["genres"], s["imdb"])]
     for s in pool:
         s["score"] = rec_score(s, weights, now)
     by_score = sorted(visible + pool, key=lambda s: s["score"], reverse=True)
     recent = sorted(summ + pool, key=lambda s: s["added"], reverse=True)
 
     shelves = []
+    mine, fresh = mylist_items(p, summ, wm)
+    if fresh:
+        shelves.append({"id": "fresh", "title": "New Episodes in My List", "style": "fresh", "items": fresh[:6]})
     cont = continue_list(summ, wm)
     if cont:
         shelves.append({"id": "continue", "title": f"Continue Watching for {p['name']}", "style": "continue", "items": cont})
@@ -1123,6 +1206,8 @@ async def home(p=Depends(current_profile)):
         picks = [s for s in by_score if not s["watched"]][:16]
         if picks:
             shelves.append({"id": "picks", "title": f"Top Picks for {p['name']}", "style": "poster", "items": picks})
+    if mine:
+        shelves.append({"id": "mylist", "title": "My List", "style": "poster", "items": mine[:24]})
     shelves.append({"id": "recent", "title": "Recently Added", "style": "wide", "items": recent[:16]})
 
     # Because you watched, based on the last thing they finished or loved
@@ -1146,7 +1231,7 @@ async def home(p=Depends(current_profile)):
     if len(rated) >= 3:
         shelves.append({"id": "acclaimed", "title": "Critically Acclaimed", "style": "poster", "items": rated[:16]})
 
-    shelves += addon_shelves(summ)
+    shelves += addon_shelves(summ, kids=p.get("kids"))
 
     counts = {}
     for s in visible:
@@ -1161,7 +1246,7 @@ async def home(p=Depends(current_profile)):
     if summ and len(unwatched) >= 3 and len(unwatched) < len(summ):
         shelves.append({"id": "new-to-you", "title": "Not Watched Yet", "style": "poster", "items": unwatched[:16]})
 
-    return {"hero": hero, "shelves": shelves, "empty": not summ, "scanning": LIB["scanning"], "error": LIB["error"],
+    return {"hero": hero, "shelves": shelves, "empty": not summ, "storage": storage_state() if admin_user(request) else None, "scanning": LIB["scanning"], "error": LIB["error"],
             "mounted": box_mounted()}
 
 
@@ -1217,7 +1302,7 @@ def shelf_title(c, a, several):
     return f"{n} {word}".strip()
 
 
-def addon_shelves(summ):
+def addon_shelves(summ, kids=False):
     have = lib_by_meta_id(summ)
     per_addon = {}
     cats = home_catalogs()
@@ -1229,6 +1314,8 @@ def addon_shelves(summ):
         if not metas:
             continue
         items = [have.get(m.get("id")) or ext_preview(m, c["type"]) for m in metas[:24] if isinstance(m, dict) and m.get("id")]
+        if kids:
+            items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
         if len(items) >= 3:
             per_addon.setdefault(a["id"], []).append({"id": f"addon-{a['id']}-{c['type']}-{c['id']}", "title": (title := shelf_title(c, a, count[a["id"]] > 1)),
                                                        "style": "poster", "items": items,
@@ -1273,9 +1360,10 @@ async def search(q: str, p=Depends(current_profile)):
     scored.sort(key=lambda x: x[0], reverse=True)
 
     eps = []
+    ok_ids = {s["id"] for s in summ}
     for t in LIB["titles"].values():
         m = meta_for(t)
-        if not m or t["kind"] != "series":
+        if not m or t["kind"] != "series" or t["id"] not in ok_ids:
             continue
         vids = {(v["season"], v["episode"]): v for v in m.get("videos", [])}
         for fid in t["files"]:
@@ -1305,7 +1393,10 @@ async def search_addons(q: str, p=Depends(current_profile)):
             if not mid or mid in seen or mid in have:
                 continue
             seen.add(mid)
-            external.append({**ext_preview(m, c["type"]), "source": a["m"].get("name")})
+            item = {**ext_preview(m, c["type"]), "source": a["m"].get("name")}
+            if p.get("kids") and not kids_ok(item["genres"], mid):
+                continue
+            external.append(item)
     return {"external": external[:30]}
 
 
@@ -1315,6 +1406,7 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
     if not t:
         raise HTTPException(404, "That title isn't in the library anymore")
     meta = meta_for(t)
+    title_allowed(p, t, meta)
     wm, rm = watch_map(p["id"]), rating_map(p["id"])
     eps = {(v["season"], v["episode"]): v for v in (meta or {}).get("videos", [])}
     files = []
@@ -1329,7 +1421,10 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
                       "progress": {"pos": w["pos"], "dur": w["dur"], "updated": w["updated"]} if w and not w["watched"] else None,
                       "watched": bool(w and w["watched"])})
     out = title_summary(t, meta, wm, rm)
-    out.update(files=files, cast=(meta or {}).get("cast", []), director=(meta or {}).get("director"),
+    lk = list_key_for(t, meta)
+    mylist_checked(p["id"], lk)
+    out.update(in_list=in_list(p["id"], lk), list_key=lk, kids_key=kid_key((meta or {}).get("id"), t["id"]),
+               kids_allowed=kids_ok((meta or {}).get("genres"), kid_key((meta or {}).get("id"), t["id"])), files=files, cast=(meta or {}).get("cast", []), director=(meta or {}).get("director"),
                guess_name=t["guess_name"], is_admin=bool(admin_user(request)),
                pd_streams=bool(meta and t["kind"] == "series" and any(supports(a["m"], "stream", "series", meta["id"] + ":1:1") for a in addon_rows())))
     return out
@@ -1404,6 +1499,9 @@ async def file_info(fid: str, request: Request, p=Depends(current_profile)):
     if fid.startswith("s"):
         return await stream_file_info(fid, p, request)
     f = file_or_404(fid)
+    t = LIB["titles"].get(f["title_id"])
+    if t:
+        title_allowed(p, t, meta_for(t))
     try:
         pr = await get_probe(f)
     except Exception as e:
@@ -1437,6 +1535,11 @@ async def file_info(fid: str, request: Request, p=Depends(current_profile)):
         row = db().q("SELECT start, end FROM intros WHERE title_id = ? AND season = ?", (f["title_id"], f["season"]))
         if row:
             intro = {"start": row[0]["start"], "end": row[0]["end"], "source": "marked"}
+        else:
+            # Found automatically by comparing the audio with other episodes of the season
+            row = db().q("SELECT start, end FROM auto_intros WHERE file_id = ? AND start IS NOT NULL", (fid,))
+            if row:
+                intro = {"start": row[0]["start"], "end": row[0]["end"], "source": "auto"}
     cc = chapter_like(chapters, r"\b(credits|ending|outro|ed)\b")
     credits = cc["start"] if cc and cc["start"] > pr["duration"] * 0.6 else None
 
@@ -2141,6 +2244,8 @@ async def external_title(kind: str, mid: str, stay: int = 0, p=Depends(current_p
     m = await meta_lookup(kind, mid)
     if not m:
         raise HTTPException(404, "Couldn't find details for that title")
+    if p.get("kids") and not kids_ok(m.get("genres"), mid):
+        raise HTTPException(404, "That title isn't available on this profile")
     seasons = sorted({v["season"] for v in m.get("videos") or [] if v.get("season")})
     videos = []
     if kind == "series":
@@ -2154,7 +2259,7 @@ async def external_title(kind: str, mid: str, stay: int = 0, p=Depends(current_p
             vid = ep_video_id(mid, v)
             videos.append({**v, "id": vid, "progress": prog.get(vid)})
         videos.sort(key=lambda v: (v["season"], v["episode"] or 0))
-    return {"videos": videos, "season_list": seasons,**ext_preview({**m, "id": mid, "imdbRating": m.get("rating")}, kind), "poster": m.get("poster") or ext_poster({"id": mid}),
+    return {"in_list": in_list(p["id"], mid), "list_key": mid, "videos": videos, "season_list": seasons,**ext_preview({**m, "id": mid, "imdbRating": m.get("rating")}, kind), "poster": m.get("poster") or ext_poster({"id": mid}),
             "background": m.get("background"), "logo": m.get("logo"), "runtime": m.get("runtime"), "cast": m.get("cast") or [],
             "director": m.get("director"), "seasons": len(seasons), "episodes": len(m.get("videos") or [])}
 
@@ -2233,15 +2338,15 @@ async def player_event(request: Request, p=Depends(current_profile)):
 # ---------------------------------------------------------------- public domain streams
 # Streams from addons only ever play when the video itself is on one of these hosts, everything else gets dropped.
 # This is on purpose a fixed list in the code and not a setting, Kino isnt a player for any stream an addon hands out
-PD_HOSTS = ("archive.org", "torrentio.strem.fun")
+PD_HOSTS = ("archive.org",)
 SAVES = {}  # stream id -> download progress for save to library
 
 
 def pd_url_ok(url):
     u = urlparse(str(url or ""))
     host = (u.hostname or "").lower()
-    #return u.scheme == "https" and any(host == h or host.endswith("." + h) for h in PD_HOSTS)
-    return True
+    return u.scheme == "https" and any(host == h or host.endswith("." + h) for h in PD_HOSTS)
+
 
 def stream_row(sid):
     rows = db().q("SELECT * FROM streams WHERE id = ?", (sid,))
@@ -2256,6 +2361,8 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
         raise HTTPException(404, "Unknown type")
     rows = [a for a in addon_rows() if supports(a["m"], "stream", kind, vid)]
     meta = await meta_lookup(kind, show_of(vid)) or {}
+    if p.get("kids") and not kids_ok(meta.get("genres"), show_of(vid)):
+        raise HTTPException(404, "That title isn't available on this profile")
 
     async def one(a):
         try:
@@ -2286,6 +2393,8 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
                 if what not in rep_["other"]:
                     rep_["other"].append(what)
                 continue
+            if any(x.get("_url") == url for x in out):
+                continue  # Same file listed twice, like an http and https link to it
             rep_["kept"] += 1
             sid = "s" + short_id(f"{kind}:{vid}:{url}")[:15]
             label = " ".join(str(x).strip() for x in (st.get("name"), st.get("title") or st.get("description")) if x)
@@ -2293,13 +2402,46 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
                    (sid, url, kind, vid, meta.get("name") or vid, label[:200], a["m"].get("name"), meta.get("poster"),
                     str(meta.get("releaseInfo") or "")[:4], time.time()))
             w = db().q("SELECT pos, dur, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
-            out.append({"id": sid, "label": label or "archive.org", "addon": a["m"].get("name"),
-                        "host": urlparse(url).hostname, "progress": dict(w[0]) if w else None})
+            out.append({"id": sid, **stream_facts(st, url, label), "addon": a["m"].get("name"),
+                        "progress": dict(w[0]) if w else None, "_url": url})
+    # Ones that play in a browser first, then the best quality
+    out.sort(key=lambda x: (not x["plays"], -x["height"], -(x["bytes"] or 0)))
+    for x in out:
+        x.pop("_url", None)
     res = {"streams": out, "dropped": dropped, "checked": len(rows)}
     if admin_user(request):
         res["report"] = report
         res["stream_addons"] = [a["m"].get("name") for a in addon_rows() if supports(a["m"], "stream")]
     return res
+
+
+FORMATS = {".mp4": ("MP4", True), ".m4v": ("MP4", True), ".webm": ("WebM", True), ".mkv": ("MKV", False),
+           ".ogv": ("Ogg", False), ".ogg": ("Ogg", False), ".mpeg": ("MPEG", False), ".mpg": ("MPEG", False),
+           ".avi": ("AVI", False), ".mov": ("MOV", True), ".wmv": ("WMV", False)}
+
+
+def stream_facts(st, url, label):
+    """Pulls quality, format and size out of what the addon sends so the sources list can show them neatly"""
+    text = f"{label} {Path(urlparse(url).path).name}"
+    height = 0
+    m = re.search(r"\b(2160|1440|1080|720|576|480|360|240)p\b", text, re.I)
+    if m:
+        height = int(m.group(1))
+    elif re.search(r"\b4k\b", text, re.I):
+        height = 2160
+    elif re.search(r"512kb", text, re.I):
+        height = 360  # archive.orgs small derivative copies
+    fmt, plays = FORMATS.get(Path(urlparse(url).path).suffix.lower(), ("Video", True))
+    size = (st.get("behaviorHints") or {}).get("videoSize")
+    if not size:
+        sm = re.search(r"(\d+(?:[.,]\d+)?)\s*(GB|MB)", label, re.I)
+        if sm:
+            size = float(sm.group(1).replace(",", ".")) * (1024**3 if sm.group(2).upper() == "GB" else 1024**2)
+    lines = [x.strip() for x in re.split(r"[\n|]", str(st.get("title") or st.get("description") or "")) if x.strip()]
+    name = lines[0] if lines else (str(st.get("name") or "").strip() or Path(urlparse(url).path).stem)
+    q = "4K" if height >= 2160 else f"{height}p" if height else "SD"
+    return {"label": name[:120], "quality": q, "height": height, "format": fmt, "plays": plays,
+            "bytes": int(size) if isinstance(size, (int, float)) else None, "file": Path(urlparse(url).path).name[:120]}
 
 
 def show_of(vid):
@@ -2332,6 +2474,10 @@ async def ep_context(kind, vid):
 async def stream_file_info(sid, p, request):
     r = stream_row(sid)
     show, cur, nxt = await ep_context(r["kind"], r["video_id"])
+    if p.get("kids"):
+        m = show if cur else await meta_lookup(r["kind"], show_of(r["video_id"]))
+        if not kids_ok((m or {}).get("genres"), show_of(r["video_id"])):
+            raise HTTPException(404, "That title isn't available on this profile")
     w = db().q("SELECT pos, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
     ext = Path(urlparse(r["url"]).path).suffix.lower()
     return {"id": sid, "stream": True, "name": r["name"], "src": f"/api/rstream/{sid}", "direct": True,
@@ -2456,6 +2602,125 @@ async def stream_save(sid: str, admin=Depends(require_admin)):
 @app.get("/api/admin/streams/{sid}/save")
 async def stream_save_status(sid: str, admin=Depends(require_admin)):
     return SAVES.get(sid) or {"state": "none"}
+
+
+
+# ---------------------------------------------------------------- my list
+def list_key_for(t, meta):
+    return (meta or {}).get("id") or f"lib:{t['id']}"
+
+
+def in_list(pid, key):
+    return bool(db().q("SELECT 1 FROM mylist WHERE profile_id = ? AND key = ?", (pid, key)))
+
+
+@app.post("/api/mylist")
+async def mylist_add(request: Request, p=Depends(current_profile)):
+    b = await request.json()
+    if b.get("title_id"):
+        t = LIB["titles"].get(b["title_id"])
+        if not t:
+            raise HTTPException(404, "Unknown title")
+        m = meta_for(t) or {}
+        key, kind, tid, name, poster = list_key_for(t, m), t["kind"], t["id"], m.get("name") or t["guess_name"], m.get("poster")
+    else:
+        kind, mid = b.get("kind"), str(b.get("id") or "")[:80]
+        if kind not in ("movie", "series") or not mid:
+            raise HTTPException(400, "Unknown title")
+        m = await meta_lookup(kind, mid) or {}
+        key, tid, name, poster = mid, None, m.get("name") or mid, m.get("poster")
+    now = time.time()
+    db().q("INSERT OR IGNORE INTO mylist VALUES (?,?,?,?,?,?,?,?)", (p["id"], key, kind, tid, name, poster, now, now))
+    return {"ok": True, "key": key}
+
+
+@app.delete("/api/mylist")
+async def mylist_remove(key: str, p=Depends(current_profile)):
+    db().q("DELETE FROM mylist WHERE profile_id = ? AND key = ?", (p["id"], key))
+    return {"ok": True}
+
+
+def mylist_items(p, summ, wm):
+    """My List resolved against the library, plus shows in the list that got new episodes since they were last looked at"""
+    by_meta, by_id = lib_by_meta_id(summ), {s["id"]: s for s in summ}
+    items, fresh = [], []
+    for r in db().q("SELECT * FROM mylist WHERE profile_id = ? ORDER BY added DESC", (p["id"],)):
+        s = by_meta.get(r["key"]) or by_id.get(r["title_id"] or (r["key"][4:] if r["key"].startswith("lib:") else ""))
+        if s:
+            items.append(s)
+            t = LIB["titles"].get(s["id"])
+            if t and t["kind"] == "series":
+                since = max(r["added"], r["checked"] or 0)
+                new = [LIB["files"][f] for f in t["files"] if LIB["files"][f]["mtime"] > since and not (wm.get(f) or {}).get("watched")]
+                if new:
+                    first = min(new, key=lambda f: (f["season"] or 0, f["episode"] or 0))
+                    m = meta_for(t) or {}
+                    ep = next((v for v in m.get("videos", []) if v["season"] == first["season"] and v["episode"] == first["episode"]), {})
+                    fresh.append({**s, "new_count": len(new), "file_id": first["id"], "season": first["season"],
+                                  "episode": first["episode"], "ep_name": ep.get("name"), "thumbnail": ep.get("thumbnail"),
+                                  "newest": max(f["mtime"] for f in new)})
+        elif not r["key"].startswith("lib:") and not r["title_id"]:
+            item = ext_preview({"id": r["key"], "name": r["name"], "poster": r["poster"]}, r["kind"])
+            if not p.get("kids") or kids_ok(item["genres"], r["key"]):
+                items.append(item)
+    fresh.sort(key=lambda x: x["newest"], reverse=True)
+    return items, fresh
+
+
+def mylist_checked(pid, key):
+    db().q("UPDATE mylist SET checked = ? WHERE profile_id = ? AND key = ?", (time.time(), pid, key))
+
+
+# ---------------------------------------------------------------- admin: kids rules and storage review
+@app.post("/api/admin/kids")
+async def kids_rule(request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    key = str(b.get("key") or "")[:100]
+    if not key:
+        raise HTTPException(400, "Unknown title")
+    if b.get("allow") is None:
+        db().q("DELETE FROM kids_rules WHERE key = ?", (key,))
+    else:
+        db().q("INSERT OR REPLACE INTO kids_rules VALUES (?,?)", (key, 1 if b["allow"] else 0))
+    return {"ok": True}
+
+
+STORAGE_WARN_PCT = float(env("STORAGE_WARN_PCT", "90"))
+
+
+def storage_state():
+    d = disk(MEDIA_DIR) if box_mounted() else None
+    if not d or not d["total"]:
+        return None
+    pct = d["used"] / d["total"] * 100
+    return {**d, "pct": round(pct, 1), "warn": pct >= STORAGE_WARN_PCT}
+
+
+@app.get("/api/admin/storage")
+async def storage_review(admin=Depends(require_admin)):
+    st = storage_state()
+    profiles = [r["id"] for r in db().q("SELECT id FROM profiles")]
+    watched = {}
+    for r in db().q("SELECT profile_id, file_id, updated FROM watch WHERE watched = 1"):
+        watched.setdefault(r["file_id"], {})[r["profile_id"]] = r["updated"]
+    activity = {}
+    for r in db().q("SELECT file_id, MAX(updated) AS u FROM watch GROUP BY file_id"):
+        activity[r["file_id"]] = r["u"]
+    everyone, idle = [], []
+    now = time.time()
+    for t in LIB["titles"].values():
+        m = meta_for(t) or {}
+        row = {"id": t["id"], "name": m.get("name") or t["guess_name"], "poster": m.get("poster"), "kind": t["kind"],
+               "size": t["size"], "count": len(t["files"])}
+        done = all(len(watched.get(f, {})) >= len(profiles) for f in t["files"])
+        last = max([activity.get(f) or 0 for f in t["files"]] or [0])
+        if done and t["files"]:
+            everyone.append({**row, "last": last})
+        elif not last and now - t["added"] > 90 * 86400:
+            idle.append({**row, "added": t["added"]})
+    everyone.sort(key=lambda x: x["size"], reverse=True)
+    idle.sort(key=lambda x: x["size"], reverse=True)
+    return {"storage": st, "watched_by_everyone": everyone[:30], "never_watched": idle[:30]}
 
 
 # ---- admin: library tools

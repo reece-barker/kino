@@ -38,6 +38,8 @@
     flag: "M5 3h2v18H5zm3 1h10l-2 4 2 4H8z",
     mic: "M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z",
     globe: "M12 2a10 10 0 100 20 10 10 0 000-20zm6.9 6h-3a15.7 15.7 0 00-1.4-3.6A8 8 0 0118.9 8zM12 4a14 14 0 011.9 4h-3.8A14 14 0 0112 4zM4.3 14a8.2 8.2 0 010-4h3.4a16.5 16.5 0 000 4zm.8 2h3a15.7 15.7 0 001.4 3.6A8 8 0 015.1 16zm3-8h-3a8 8 0 014.3-3.6A15.7 15.7 0 008.1 8zM12 20a14 14 0 01-1.9-4h3.8A14 14 0 0112 20zm2.3-6H9.7a14.7 14.7 0 010-4h4.6a14.7 14.7 0 010 4zm.3 5.6a15.7 15.7 0 001.4-3.6h3a8 8 0 01-4.4 3.6zm1.7-5.6a16.5 16.5 0 000-4h3.4a8.2 8.2 0 010 4z",
+    eye: "M12 5C6.5 5 2.7 8.6 1 12c1.7 3.4 5.5 7 11 7s9.3-3.6 11-7c-1.7-3.4-5.5-7-11-7zm0 11.5a4.5 4.5 0 110-9 4.5 4.5 0 010 9zm0-7a2.5 2.5 0 100 5 2.5 2.5 0 000-5z",
+    kids: "M12 2a3 3 0 110 6 3 3 0 010-6zm-5 7h10l-1.5 6H14v7h-4v-7H8.5z",
     info: "M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-6h2zm0-8h-2V7h2z",
     puzzle: "M20.5 11H19V7a2 2 0 00-2-2h-4V3.5a2.5 2.5 0 00-5 0V5H4a2 2 0 00-2 2v3.8h1.5a2.7 2.7 0 010 5.4H2V20a2 2 0 002 2h3.8v-1.5a2.7 2.7 0 015.4 0V22H17a2 2 0 002-2v-4h1.5a2.5 2.5 0 000-5z",
   };
@@ -202,7 +204,9 @@
   // ---------------------------------------------------------- state
   const ME = { profile: null, admin: null, ip: null };
   let POLL = null, SYNC = null, HERO_T = null;
-  const isAdmin = () => !!ME.admin;
+  // Kids profiles never see admin tools, even on a device where the admin is signed in
+  const kidsMode = () => !!(ME.profile && ME.profile.kids);
+  const isAdmin = () => !!ME.admin && !kidsMode();
 
   // ---------------------------------------------------------- shell
   function topbar(active) {
@@ -220,7 +224,7 @@
             <div class="menu-head">${avatar(p.icon, "xs")}<span>${esc(p.name)}</span></div>
             <a href="#/profiles" class="mi">Switch Profile</a>
             <a href="#/settings" class="mi">Settings</a>
-            ${isAdmin() ? `<button class="mi" id="adminOut">Sign Out of Admin</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin Sign In</button>`}
+            ${kidsMode() ? "" : isAdmin() ? `<button class="mi" id="adminOut">Sign Out of Admin</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin Sign In</button>`}
           </div>
         </div>
       </div>
@@ -297,15 +301,15 @@
     const r = await api("/api/profiles");
     ME.admin = r.admin;
     app.innerHTML = `<main class="who">
-      <div class="who-corner">${isAdmin()
+      <div class="who-corner">${!!ME.admin
         ? `<span class="secondary">Signed in as ${esc(ME.admin)}</span><button class="btn secondary small" id="adminOut2">Sign Out</button>`
         : `<button class="btn secondary small" id="adminIn2">${ic("lock")} Admin</button>`}</div>
       <h1 class="who-title">${manage ? "Manage Profiles" : "Who's Watching?"}</h1>
       <div class="who-grid ${manage ? "managing" : ""}">
         ${r.profiles.map((p) => `<button class="who-tile" data-pid="${p.id}" aria-label="${manage ? "Edit" : "Watch as"} ${esc(p.name)}">
-          <span class="who-av">${avatar(p.icon, "lg")}${manage ? `<span class="who-edit">${ic("pencil")}</span>` : ""}</span>
+          <span class="who-av">${avatar(p.icon, "lg")}${manage ? `<span class="who-edit">${ic("pencil")}</span>` : ""}${p.kids ? `<span class="who-kids">Kids</span>` : ""}</span>
           <span class="who-name">${esc(p.name)}</span></button>`).join("")}
-        ${isAdmin() ? `<button class="who-tile add" id="addProfile" aria-label="Add a profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Add Profile</span></button>` : ""}
+        ${!!ME.admin ? `<button class="who-tile add" id="addProfile" aria-label="Add a profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Add Profile</span></button>` : ""}
       </div>
       <div class="who-actions">${manage ? `<button class="btn primary" id="doneManage">Done</button>` : `<button class="btn outline" id="manageBtn">Manage Profiles</button>`}</div>
     </main>`;
@@ -332,6 +336,7 @@
     const s = sheet(`<h2>${isNew ? "Add Profile" : "Edit Profile"}</h2>
       <div class="edit-top"><span id="epPreview">${avatar(icon, "lg")}</span>
         <label class="field grow"><span class="sr">Name</span><input id="epName" maxlength="24" placeholder="Name" value="${esc(p ? p.name : "")}"></label></div>
+      ${ME.admin ? `<label class="set-row kids-row"><span><b>Kids Profile</b><span class="secondary">Only shows family and animated titles, and hides admin tools</span></span><input type="checkbox" class="switch" id="epKids" ${p && p.kids ? "checked" : ""}></label>` : ""}
       <h3 class="sheet-sub">Choose an Icon</h3>
       <div class="icon-grid" role="radiogroup" aria-label="Profile icon">${AV.map((a, i) => `<button class="icon-pick" role="radio" aria-checked="${i === icon}" data-i="${i}" aria-label="${a[0]}">${avatar(i, "md")}</button>`).join("")}</div>
       <div class="form-err" id="epErr" role="alert"></div>
@@ -346,8 +351,13 @@
     }));
     $("#epSave", s.el).onclick = async () => {
       const name = $("#epName", s.el).value;
+      const kb = $("#epKids", s.el), kids = kb ? kb.checked : undefined;
       try {
-        if (isNew) await api("/api/admin/profiles", { name, icon });
+        if (isNew) await api("/api/admin/profiles", { name, icon, kids: !!kids });
+        else if (ME.admin && kb) {
+          await api(`/api/admin/profiles/${p.id}`, { name, icon, kids }, "PUT");
+          if (ME.profile && ME.profile.id === p.id) ME.profile = (await api("/api/me")).profile;
+        }
         else if (ME.profile && ME.profile.id === p.id) { const r = await api("/api/profile", { name, icon }, "PUT"); ME.profile = r.profile; }
         else if (isAdmin()) await api(`/api/admin/profiles/${p.id}`, { name, icon }, "PUT");
         else {
@@ -365,6 +375,23 @@
       if (!(await confirmSheet(`Delete ${p.name}?`, "Their watch history, ratings and settings are deleted too. This can't be undone.", "Delete Profile"))) return editProfile(p, done);
       try { await api(`/api/admin/profiles/${p.id}`, undefined, "DELETE"); if (ME.profile && ME.profile.id === p.id) ME.profile = null; toast("Profile deleted"); done && done(); }
       catch (e) { toast(e.message, 5000); }
+    };
+  }
+
+  // My List button, the same on library and addon title pages
+  const listBtn = (on) => `<button class="round-btn ${on ? "on" : ""}" id="listBtn" aria-pressed="${!!on}" aria-label="${on ? "Remove from My List" : "Add to My List"}" title="${on ? "In My List" : "Add to My List"}">${ic(on ? "check" : "plus")}</button>`;
+  function wireListBtn(body, key) {
+    const b = $("#listBtn");
+    if (!b) return;
+    b.onclick = async () => {
+      const on = b.getAttribute("aria-pressed") === "true";
+      try {
+        if (on) await api("/api/mylist?key=" + encodeURIComponent(key), undefined, "DELETE");
+        else await api("/api/mylist", body);
+      } catch (e) { toast(e.message, 5000); return; }
+      b.outerHTML = listBtn(!on);
+      wireListBtn(body, key);
+      toast(on ? "Removed from My List" : "Added to My List");
     };
   }
 
@@ -413,6 +440,7 @@
     const heroes = h.hero;
     app.innerHTML = topbar("home") + `
       ${!h.mounted ? `<div class="banner" role="status">The Storage Box isn't connected right now, it's being reconnected automatically.</div>` : ""}
+      ${h.storage && h.storage.warn && isAdmin() ? `<a class="banner warn" href="#/server" role="status">${ic("info")} The Storage Box is ${Math.round(h.storage.pct)}% full, ${bytes(h.storage.free)} left. <b>Review what to clear</b></a>` : ""}
       <section class="hero" id="hero" aria-roledescription="carousel" aria-label="Featured">
         ${heroes.map((t, i) => `<div class="hero-slide ${i === 0 ? "on" : ""}" data-i="${i}" ${i ? 'aria-hidden="true"' : ""}>
           <div class="hero-bg">${t.background ? `<img ${i ? "loading=\"lazy\"" : ""} src="${img(t.background.replace("/medium/", "/large/"))}" data-alt="${esc(t.background)}" alt="" data-fallback="hide">` : ""}</div>
@@ -429,7 +457,7 @@
         ${isAdmin() ? `<a class="hero-live glass" id="heroLive" href="#/sync" hidden></a>` : ""}
       </section>
       <main class="page under-hero" style="padding-top:8px">
-        ${h.shelves.map((s) => `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
+        ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
           <div class="row ${s.style === "poster" ? "posters" : "wide"}">${s.items.map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, play: t.file_id, href: t.stream ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
@@ -451,6 +479,19 @@
       if (f) playFile(f.id, { title: t, from: f.progress ? f.progress.pos : 0 });
     }));
     if (isAdmin()) startPoll(pollHomeSync, 5000);
+  }
+
+  // New episodes for shows in My List, shown big at the top of Home so they're hard to miss
+  function freshShelf(s) {
+    return `<section class="shelf fresh" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}</h2>
+      <div class="row fresh-row">${s.items.map((t) => `<a class="fresh-card" href="#/title/${t.id}" data-play="${t.file_id}" data-tid="${t.id}">
+        <div class="fresh-bg">${t.thumbnail || t.background ? `<img loading="lazy" src="${img(t.thumbnail || t.background)}" alt="" data-fallback="hide">` : ""}</div>
+        <div class="fresh-body">
+          <span class="fresh-pill">${t.new_count} New Episode${t.new_count === 1 ? "" : "s"}</span>
+          ${t.logo ? `<img class="fresh-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text" data-cls="fresh-name">` : `<div class="fresh-name">${esc(t.name)}</div>`}
+          <div class="fresh-ep">${esc(epLabel(t.season, t.episode))}${t.ep_name ? ` · ${esc(nice(t.ep_name))}` : ""}</div>
+          <span class="btn primary small fresh-play">${ic("play")} Play</span>
+        </div></a>`).join("")}</div></section>`;
   }
 
   // Rotating hero, slow crossfade every 9 seconds, stops when you hover or focus it
@@ -628,13 +669,15 @@
           <div class="actions">
             ${up ? `<button class="btn primary" id="playMain">${ic("play")} ${esc(playLabel)}</button>` : ""}
             ${resume ? `<button class="btn secondary" id="playStart">Start Over</button>` : ""}
-            <button class="round-btn ${t.watched ? "on" : ""}" id="watchedBtn" aria-pressed="${t.watched}" aria-label="${t.watched ? "Mark as unwatched" : "Mark as watched"}" title="${t.watched ? "Watched" : "Mark as watched"}">${ic(t.watched ? "check" : "plus")}</button>
+            ${listBtn(t.in_list)}
+            <button class="round-btn ${t.watched ? "on" : ""}" id="watchedBtn" aria-pressed="${t.watched}" aria-label="${t.watched ? "Mark as unwatched" : "Mark as watched"}" title="${t.watched ? "Watched" : "Mark as Watched"}">${ic(t.watched ? "check" : "eye")}</button>
             <span class="rate-group" role="group" aria-label="Rate this">${rateBtn(-1, "down", "Not for me")}${rateBtn(1, "up", "I like this")}${rateBtn(2, "love", "Love this")}</span>
             ${t.kind === "movie" && up ? `<button class="round-btn" id="dlMain" aria-label="Download" title="Download">${ic("download")}</button>` : ""}
             ${t.is_admin ? `<div class="menu-wrap"><button class="round-btn" id="adminMore" aria-haspopup="true" aria-label="Admin options" title="Admin options">${ic("more")}</button>
               <div class="menu drop up-left" id="adminMenu" hidden>
                 <button class="mi" id="fixMatch">${ic("wand")} Fix Match</button>
                 <button class="mi" id="rescanT">${ic("refresh")} Rescan Library</button>
+                <button class="mi" id="kidsT">${ic("kids")} ${t.kids_allowed ? "Hide from Kids" : "Allow for Kids"}</button>
                 <button class="mi danger" id="delTitle">${ic("trash")} Delete from Library</button>
               </div></div>` : ""}
           </div>
@@ -700,6 +743,12 @@
     if (pm) pm.onclick = () => playFile(up.id, { title: t, from: resume ? up.progress.pos : 0 });
     const ps = $("#playStart");
     if (ps) ps.onclick = () => playFile(up.id, { title: t, from: 0 });
+    wireListBtn({ title_id: t.id }, t.list_key);
+    const kt = $("#kidsT");
+    if (kt) kt.onclick = async () => {
+      await api("/api/admin/kids", { key: t.kids_key, allow: !t.kids_allowed });
+      toast(t.kids_allowed ? "Hidden from kids profiles" : "Allowed on kids profiles"); route();
+    };
     $("#watchedBtn").onclick = async () => { await api("/api/watched", { title_id: t.id, watched: !t.watched }); toast(t.watched ? "Marked as unwatched" : "Marked as watched"); route(); };
     $$("[data-rate]").forEach((b) => (b.onclick = async () => {
       const v = Number(b.dataset.rate);
@@ -804,10 +853,11 @@
   // Public domain copies from addons, the server only hands back ones that are actually on archive.org
   async function drawStreams(kind, id, t, ep) {
     const box = $("#pdBox");
-    const none = `<div class="not-lib glass">${ic("info")}<span>Not in Your Library</span></div>`;
+    const none = `<div class="not-lib glass" style="margin-top:14px">${ic("info")}<span>Not in Your Library</span></div>`;
     let r;
     try { r = await api(`/api/streams/${kind}/${encodeURIComponent(id)}`); } catch (_) { r = { streams: [] }; }
     if (!$("#pdBox")) return;
+    const lb = listBtn(t.in_list);
     if (!r.streams.length) {
       // Admins get told why nothing can play, so a missing addon or a slow archive.org is easy to spot
       let why = "";
@@ -816,7 +866,8 @@
         else why = r.report.map((x) => x.error ? `${x.addon} ${x.error}.` : !x.found ? `${x.addon} found nothing for this title.`
           : `${x.addon} found ${x.found}, but none could be used${x.other.length ? ` (${x.other.join(", ")})` : ""}.`).join(" ");
       }
-      box.innerHTML = none + (why ? `<div class="note pd-note">${ic("info")} ${esc(why)}</div>` : "");
+      box.innerHTML = `<div class="actions">${lb}</div>` + none + (why ? `<div class="note pd-note">${ic("info")} ${esc(why)}</div>` : "");
+      wireListBtn({ kind, id: t.list_key }, t.list_key);
       return;
     }
     const first = r.streams[0];
@@ -824,16 +875,29 @@
     box.innerHTML = `<div class="actions">
         <button class="btn primary" id="pdPlay">${ic("play")} ${res ? "Resume" : "Play"}${ep ? " " + esc(epLabel(ep.season, ep.episode)) : ""}</button>
         ${r.streams.length > 1 ? `<button class="btn secondary" id="pdMore">${r.streams.length} Sources</button>` : ""}
+        ${lb}
         ${isAdmin() ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
       </div>
       ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
     const play = (s) => playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
     $("#pdPlay").onclick = () => play(first);
+    wireListBtn({ kind, id: t.list_key }, t.list_key);
     const more = $("#pdMore");
     if (more) more.onclick = () => {
-      const sh = sheet(`<h2>Sources</h2>
-        <div class="fm-results">${r.streams.map((s, i) => `<button class="fm-item" data-src="${i}"><span class="grow"><b>${esc(nice(s.label))}</b><span class="secondary">${esc(s.addon)} · ${esc(s.host)}</span></span>${ic("play")}</button>`).join("")}</div>
-        <div class="actions end"><button class="btn secondary small" data-close>Close</button></div>`, { wide: true });
+      const sh = sheet(`<div class="src-head"><div><h2>Sources</h2><p class="secondary">${esc(t.name)}${ep ? ` · ${esc(epLabel(ep.season, ep.episode))}` : ""}</p></div>
+          <button class="round-btn sm" data-close aria-label="Close">${ic("close")}</button></div>
+        <div class="src-list">${r.streams.map((s, i) => {
+          const p = s.progress && !s.progress.watched && s.progress.dur ? s.progress.pos / s.progress.dur : 0;
+          const meta = [s.format, s.bytes ? bytes(s.bytes) : "", s.addon].filter(Boolean);
+          return `<button class="src ${i === 0 ? "best" : ""}" data-src="${i}">
+            <span class="src-q ${s.height >= 720 ? "hd" : ""}">${esc(s.quality)}</span>
+            <span class="src-body"><b>${esc(nice(s.label))}</b>
+              <span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>
+              ${!s.plays ? `<span class="src-warn">${ic("info")} Might not play in this browser, saving it to the Library always works</span>` : ""}
+              ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
+            ${i === 0 ? `<span class="src-tag">Best</span>` : ""}
+            <span class="src-play">${ic("play")}</span></button>`;
+        }).join("")}</div>`, { wide: true });
       $$("[data-src]", sh.el).forEach((b) => (b.onclick = () => { sh.close(); play(r.streams[Number(b.dataset.src)]); }));
     };
     const save = $("#pdSave");
@@ -1151,9 +1215,36 @@
   }
 
   async function pageServer() {
-    app.innerHTML = topbar("server") + `<main class="page"><h1 class="large-title">Server</h1><div id="srvBody"><div class="card skel" style="height:220px"></div></div></main>`;
+    app.innerHTML = topbar("server") + `<main class="page"><h1 class="large-title">Server</h1><div id="srvBody"><div class="card skel" style="height:220px"></div></div>
+      <div id="storageReview"></div></main>`;
     wireTopbar();
     startPoll(drawServer, 3000);
+    drawStorageReview();
+  }
+
+  // What could be cleared off the Storage Box, things everyone has watched and things nobody started in months
+  async function drawStorageReview() {
+    const r = await api("/api/admin/storage").catch(() => null);
+    const box = $("#storageReview");
+    if (!r || !box) return;
+    const row = (t, sub) => `<div class="sr-row"><span class="fm-post">${t.poster ? `<img src="${img(t.poster)}" alt="" data-fallback="hide">` : ""}</span>
+      <span class="grow"><b>${esc(t.name)}</b><span class="secondary">${esc(sub)}</span></span><span class="secondary sr-size">${bytes(t.size)}</span>
+      <button class="round-btn sm" data-clear="${t.id}" data-name="${esc(t.name)}" data-size="${t.size}" aria-label="Delete ${esc(t.name)}" title="Delete from Library">${ic("trash")}</button></div>`;
+    const sum = (l) => l.reduce((a, t) => a + t.size, 0);
+    const st = r.storage;
+    box.innerHTML = `<section class="card storage-review">
+      <div class="sr-head"><div><h2 class="set-title">Free Up Space</h2>
+        <p class="secondary set-hint">${st ? `The Storage Box is ${Math.round(st.pct)}% full with ${bytes(st.free)} left.${st.warn ? " It's getting full, these are the easiest things to clear." : ""}` : "The Storage Box isn't connected right now."}</p></div></div>
+      <h3 class="sr-sub">Watched by Everyone <span class="secondary">${r.watched_by_everyone.length ? bytes(sum(r.watched_by_everyone)) : ""}</span></h3>
+      ${r.watched_by_everyone.length ? r.watched_by_everyone.map((t) => row(t, `${t.kind === "series" ? `${t.count} episodes` : "Movie"} · last watched ${ago(t.last)}`)).join("") : `<p class="secondary sr-empty">Nothing yet, every profile has to have finished it.</p>`}
+      <h3 class="sr-sub">Not Started in 3 Months <span class="secondary">${r.never_watched.length ? bytes(sum(r.never_watched)) : ""}</span></h3>
+      ${r.never_watched.length ? r.never_watched.map((t) => row(t, `${t.kind === "series" ? `${t.count} episodes` : "Movie"} · added ${ago(t.added)}`)).join("") : `<p class="secondary sr-empty">Nothing, everything older has been watched by someone.</p>`}
+    </section>`;
+    $$("[data-clear]", box).forEach((b) => (b.onclick = async () => {
+      if (!(await confirmSheet(`Delete ${b.dataset.name}?`, `${bytes(Number(b.dataset.size))} is removed from the Storage Box for everyone. The sync won't download it again.`, "Delete"))) return;
+      try { const x = await api(`/api/admin/title/${b.dataset.clear}`, undefined, "DELETE"); toast(`Deleted, ${bytes(x.freed)} freed`); drawStorageReview(); }
+      catch (e) { toast(e.message, 5000); }
+    }));
   }
 
   async function drawServer() {
@@ -1264,7 +1355,7 @@
       pl.v.addEventListener("error", async () => {
         if (pl.info !== info) return;
         // Asks the server what went wrong, so a blocked redirect says where it was going instead of a vague message
-        let why = "archive.org may be slow or the format isn't supported by this browser. Try another source.";
+        let why = "The source may be slow, or this browser can't play its format. Try another source or save it to the Library.";
         try { const r = await fetch(info.src, { headers: { Range: "bytes=0-0" }, credentials: "same-origin" }); if (!r.ok) { const j = await r.json().catch(() => null); if (j && j.detail) why = j.detail; } } catch (_) {}
         showMsg("This copy won't play here", why, `<a class="btn secondary small" href="${esc(info.download)}">${ic("download")} Download instead</a>`);
       }, { once: true });

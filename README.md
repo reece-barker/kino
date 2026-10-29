@@ -18,6 +18,13 @@ Netflix style family library for the storage box, with the torbox sync, server s
 - The sync skips nfo files, samples and extras, skips anything you already have in 1080p or better, and only downloads the best copy when TorBox has several.
 - `kino-watchdog` checks the storage box mount every minute and reconnects it if it drops or freezes.
 
+## My List, kids and intros
+
+- **My List:** every profile can add films and shows (from the library or from addons) with the + button. When a show in someone's list gets new episodes on the Storage Box, a big "New Episodes in My List" card shows up at the top of their Home until they open the show.
+- **Kids profiles:** turn on Kids Profile when editing a profile (admin only). Kids only see titles whose genres are family or animation and nothing scary (horror, thriller, crime, war and so on), and the admin tools are hidden. Admins can override any title with Allow for Kids or Hide from Kids in the title's admin menu.
+- **Intros are found automatically:** Kino compares the audio at the start of episodes in the same season and finds the bit they share, so Skip Intro works without marking anything. It runs in the background and needs at least two episodes of a season. Chapters in the file and intros the admin marked still win.
+- **Storage:** when the Storage Box is over 90% full (`STORAGE_WARN_PCT` in kino.env), admins get a warning on Home. Server > Free Up Space lists what everyone has watched and what nobody started in 3 months, biggest first, with delete buttons.
+
 ## Stremio addons
 
 Kino speaks the Stremio addon protocol, so any addon link that works in Stremio can be pasted in under Settings > Addons (admin only). The link ends with `/manifest.json`, `stremio://` links work too.

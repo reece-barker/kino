@@ -51,6 +51,9 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cj http://127.0.0.1:8282/api/admin/addons)" = 401
           curl -fs -b /tmp/cj "http://127.0.0.1:8282/api/search/addons?q=test" | grep -q '"external"'
           curl -fs -b /tmp/cj "http://127.0.0.1:8282/api/streams/movie/tt0013442" | grep -q '"streams":\[\]'
+          # My List add and remove
+          curl -fs -b /tmp/cj -H "$H" -H 'Content-Type: application/json' -X POST http://127.0.0.1:8282/api/mylist -d '{"kind":"movie","id":"tt0013442"}' | grep -q '"ok":true'
+          curl -fs -b /tmp/cj -H "$H" -X DELETE "http://127.0.0.1:8282/api/mylist?key=tt0013442" | grep -q '"ok":true'
           # A request from an address thats not on the allow list gets blocked
           test "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Real-IP: 203.0.113.9' -b /tmp/cj http://127.0.0.1:8282/api/home)" = 403
 

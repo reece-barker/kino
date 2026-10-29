@@ -24,6 +24,9 @@ import os
 import re
 import secrets
 import shutil
+import socket
+import struct
+import gzip
 import sqlite3
 import subprocess
 import sys
@@ -32,7 +35,7 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import httpx
 import psutil
@@ -59,6 +62,7 @@ COOKIE_SECURE = env("COOKIE_SECURE", "1") == "1"
 CINEMETA = env("CINEMETA_URL", "https://v3-cinemeta.strem.io")
 OFFLINE_META = env("OFFLINE_META", "0") == "1"  # Only for testing without internet
 ALLOW_ALL = env("ALLOW_ALL", "0") == "1"  # Only for testing, skips the ip check in the app
+ADDON_ALLOW_PRIVATE = env("ADDON_ALLOW_PRIVATE", "0") == "1"  # Only for testing addons running on this machine
 MAX_FFMPEG = int(env("MAX_FFMPEG", "3"))
 RESCAN_MINUTES = int(env("RESCAN_MINUTES", "10"))
 STATIC = Path(__file__).parent / "static"
@@ -72,7 +76,7 @@ IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.spa
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
 AVATAR_COUNT = 18  # Has to match the AVATARS list in app.js
-DEFAULT_PREFS = {"audio_lang": "", "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False}
+DEFAULT_PREFS = {"audio_lang": "", "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("kino")
@@ -85,7 +89,12 @@ LANGS = {"en": "English", "eng": "English", "de": "German", "ger": "German", "de
          "sv": "Swedish", "swe": "Swedish", "da": "Danish", "dan": "Danish", "no": "Norwegian", "nor": "Norwegian",
          "fi": "Finnish", "fin": "Finnish", "tr": "Turkish", "tur": "Turkish", "ar": "Arabic", "ara": "Arabic", "cs": "Czech",
          "cze": "Czech", "hu": "Hungarian", "hun": "Hungarian", "el": "Greek", "gre": "Greek", "he": "Hebrew", "heb": "Hebrew",
-         "hi": "Hindi", "hin": "Hindi", "uk": "Ukrainian", "ukr": "Ukrainian", "ro": "Romanian", "rum": "Romanian", "ron": "Romanian"}
+         "hi": "Hindi", "hin": "Hindi", "uk": "Ukrainian", "ukr": "Ukrainian", "ro": "Romanian", "rum": "Romanian", "ron": "Romanian",
+         "pob": "Portuguese (Brazil)", "pt-br": "Portuguese (Brazil)", "hr": "Croatian", "hrv": "Croatian", "scc": "Serbian",
+         "srp": "Serbian", "sr": "Serbian", "bg": "Bulgarian", "bul": "Bulgarian", "vi": "Vietnamese", "vie": "Vietnamese",
+         "id": "Indonesian", "ind": "Indonesian", "th": "Thai", "tha": "Thai", "ms": "Malay", "may": "Malay", "sk": "Slovak",
+         "slo": "Slovak", "sl": "Slovenian", "slv": "Slovenian", "fa": "Persian", "per": "Persian", "et": "Estonian",
+         "est": "Estonian", "lv": "Latvian", "lav": "Latvian", "lt": "Lithuanian", "lit": "Lithuanian"}
 
 
 def lang_name(code):
@@ -107,6 +116,8 @@ CREATE TABLE IF NOT EXISTS watch (profile_id INTEGER, file_id TEXT, pos REAL, du
 CREATE TABLE IF NOT EXISTS ratings (profile_id INTEGER, title_id TEXT, value INTEGER, updated REAL, PRIMARY KEY (profile_id, title_id));
 CREATE TABLE IF NOT EXISTS overrides (key TEXT PRIMARY KEY, kind TEXT, imdb_id TEXT, set_at REAL);
 CREATE TABLE IF NOT EXISTS intros (title_id TEXT, season INTEGER, start REAL, end REAL, PRIMARY KEY (title_id, season));
+CREATE TABLE IF NOT EXISTS addons (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE NOT NULL, manifest TEXT NOT NULL,
+    enabled INTEGER DEFAULT 1, hidden TEXT DEFAULT '[]', added REAL, updated REAL);
 """
 
 
@@ -472,10 +483,17 @@ async def ensure_meta(keys, force=False):
                 continue
             ov = override_for(key)
             try:
-                if ov:
+                if ov and str(ov["imdb_id"]).startswith("tt"):
                     m = await cinemeta_meta(client, ov["kind"], ov["imdb_id"])
+                elif ov:
+                    m = await addon_meta(ov["kind"], ov["imdb_id"])
                 else:
                     m = await cinemeta_lookup(client, kind, name, year)
+                    if not m:
+                        # Cinemeta only knows imdb titles, so anime and the like get a go through the installed addons
+                        hits = [x for x in await addon_search(kind, name, limit_per=3) if x[2].get("id")]
+                        if hits:
+                            m = await addon_meta(kind, hits[0][2]["id"]) or slim_meta(hits[0][2], kind)
             except Exception as e:
                 log.warning("cinemeta lookup failed for %s: %s", name, e)
                 continue
@@ -754,7 +772,7 @@ async def lifespan(app):
             await rescan()
             await asyncio.sleep(RESCAN_MINUTES * 60)
 
-    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker)]
+    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker)]
     yield
     for t in tasks:
         t.cancel()
@@ -850,7 +868,7 @@ async def profile_update(request: Request, p=Depends(current_profile)):
             prefs[k] = str(v or "")[:30]
         elif k == "sub_size" and v in ("s", "m", "l"):
             prefs[k] = v
-        elif k in ("autoplay", "skip_intro"):
+        elif k in ("autoplay", "skip_intro", "share_events"):
             prefs[k] = bool(v)
     db().q("UPDATE profiles SET name = ?, icon = ?, prefs = ? WHERE id = ?", (name, icon, json.dumps(prefs), p["id"]))
     return {"ok": True, "profile": profile_row(p["id"])}
@@ -1081,6 +1099,8 @@ async def home(p=Depends(current_profile)):
     if len(rated) >= 3:
         shelves.append({"id": "acclaimed", "title": "Critically Acclaimed", "style": "poster", "items": rated[:16]})
 
+    shelves += addon_shelves(summ)
+
     counts = {}
     for s in visible:
         for g in s["genres"]:
@@ -1096,6 +1116,43 @@ async def home(p=Depends(current_profile)):
 
     return {"hero": hero, "shelves": shelves, "empty": not summ, "scanning": LIB["scanning"], "error": LIB["error"],
             "mounted": box_mounted()}
+
+
+def lib_by_meta_id(summ):
+    out = {}
+    for s in summ:
+        if s.get("imdb"):
+            out[s["imdb"]] = s
+    return out
+
+
+def shelf_title(c):
+    n = str(c.get("name") or c.get("id") or "").strip()
+    if re.search(r"movie|film|show|series|tv|anime", n, re.I):
+        return n
+    word = {"movie": "Movies", "series": "Shows", "anime": "Anime", "tv": "Channels"}.get(c.get("type"), "")
+    return f"{n} {word}".strip()
+
+
+def addon_shelves(summ):
+    have = lib_by_meta_id(summ)
+    per_addon = {}
+    for a, c in home_catalogs():
+        metas = cached_catalog(a, c)
+        if not metas:
+            continue
+        items = [have.get(m.get("id")) or ext_preview(m, c["type"]) for m in metas[:24] if isinstance(m, dict) and m.get("id")]
+        if len(items) >= 3:
+            per_addon.setdefault(a["id"], []).append({"id": f"addon-{a['id']}-{c['type']}-{c['id']}", "title": shelf_title(c),
+                                                       "style": "poster", "items": items, "source": a["m"].get("name")})
+    # Takes turns between addons so one with loads of catalogs doesnt push the others off home
+    out, lists = [], list(per_addon.values())
+    while lists and len(out) < 8:
+        for l in lists:
+            if l and len(out) < 8:
+                out.append(l.pop(0))
+        lists = [l for l in lists if l]
+    return out
 
 
 @app.get("/api/search")
@@ -1140,6 +1197,28 @@ async def search(q: str, p=Depends(current_profile)):
                 eps.append({"title_id": t["id"], "file_id": fid, "show": m.get("name"), "name": v["name"],
                             "season": f["season"], "episode": f["episode"], "thumbnail": v.get("thumbnail")})
     return {"titles": [s for _, s in scored[:40]], "episodes": eps[:20]}
+
+
+@app.get("/api/search/addons")
+async def search_addons(q: str, p=Depends(current_profile)):
+    # Kept separate from the library search so the library results show straight away and addons fill in after
+    q = q.strip()[:60]
+    external = []
+    if q and addon_rows():
+        summ, _, _ = all_summaries(p["id"])
+        have = lib_by_meta_id(summ)
+        try:
+            hits = await asyncio.wait_for(addon_search(None, q), timeout=9)
+        except asyncio.TimeoutError:
+            hits = []
+        seen = set()
+        for a, c, m in hits:
+            mid = m.get("id")
+            if not mid or mid in seen or mid in have:
+                continue
+            seen.add(mid)
+            external.append({**ext_preview(m, c["type"]), "source": a["m"].get("name")})
+    return {"external": external[:30]}
 
 
 @app.get("/api/title/{tid}")
@@ -1191,7 +1270,19 @@ async def watched(request: Request, p=Depends(current_profile)):
         if not fids:
             raise HTTPException(404, "Unknown file")
     set_watched(p["id"], fids, bool(b.get("watched")))
+    if p["prefs"].get("share_events"):
+        fire(library_events(fids, bool(b.get("watched"))))
     return {"ok": True}
+
+
+async def library_events(fids, watched):
+    for fid in fids[:60]:
+        f = LIB["files"].get(fid)
+        if not f:
+            continue
+        kind, vid = await video_id_for(f)
+        if kind:
+            await send_event("library", kind, vid.split(":")[0], {"action": "watched" if watched else "unwatched", "videoId": vid})
 
 
 @app.post("/api/rate")
@@ -1478,6 +1569,26 @@ async def subtitles(fid: str, sub_id: str, p=Depends(current_profile)):
         if (fid, idx) not in SUB_JOBS and len(SUB_JOBS) < 2:
             SUB_JOBS[(fid, idx)] = asyncio.create_task(extract_sub(fid, f["path"], idx))
         return JSONResponse({"status": "preparing"}, status_code=202)
+    if sub_id.startswith("a"):
+        target = SUBS_DIR / f"{fid}_{re.sub(r'[^a-z0-9]', '', sub_id)}.vtt"
+        if target.exists():
+            return Response(target.read_text(errors="ignore"), media_type="text/vtt")
+        url = SUB_LINKS.get((fid, sub_id))
+        if not url:
+            raise HTTPException(404, "That subtitle has expired, reopen the subtitles menu")
+        raw, _ = await safe_fetch(url, max_bytes=8 * 1024**2, timeout=20, allow_http=True)
+        txt = decode_sub(raw).replace("\r\n", "\n")
+        head = txt.lstrip()[:200]
+        if head.startswith("WEBVTT"):
+            vtt = txt
+        elif "[Script Info]" in head or head.startswith("[V4"):
+            vtt = await ass_to_vtt(txt)
+        else:
+            vtt = srt_to_vtt(txt)
+        if "-->" not in vtt:
+            raise HTTPException(502, "That subtitle file couldn't be read")
+        target.write_text(vtt)
+        return Response(vtt, media_type="text/vtt")
     raise HTTPException(404, "Subtitle not found")
 
 
@@ -1515,7 +1626,7 @@ def trim_png(data):
 @app.get("/api/img")
 async def img(u: str, trim: int = 0):
     host = urlparse(u).hostname or ""
-    if urlparse(u).scheme != "https" or host not in IMG_HOSTS:
+    if urlparse(u).scheme != "https" or not host:
         raise HTTPException(400, "Image host not allowed")
     cache = DATA_DIR / "img" / (hashlib.sha1(u.encode()).hexdigest() + ("-t" if trim else ""))
     if cache.exists():
@@ -1526,23 +1637,479 @@ async def img(u: str, trim: int = 0):
                             headers={"Cache-Control": "private, max-age=604800"})
     if OFFLINE_META:
         raise HTTPException(404, "No image")
+    status, body, ctype = 200, b"", ""
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=20, headers={"User-Agent": "kino-dashboard"}) as c:
-            r = await c.get(u)
+        if host in IMG_HOSTS:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=20, headers={"User-Agent": "kino-dashboard"}) as c:
+                r = await c.get(u)
+            status, body, ctype = r.status_code, r.content, r.headers.get("content-type", "")
+        else:
+            # Posters from addons can live anywhere, so these go through the same checks as addon requests
+            body, ctype = await safe_fetch(u, max_bytes=10 * 1024**2, timeout=20)
+    except HTTPException as e:
+        if e.status_code == 400:
+            raise
+        status = 502
     except Exception:
         raise HTTPException(502, "Image host didn't answer")
-    ctype = r.headers.get("content-type", "")
-    if r.status_code != 200 or not ctype.startswith("image/") or len(r.content) > 10 * 1024**2:
+    if status != 200 or not ctype.startswith("image/") or len(body) > 10 * 1024**2:
         cache.write_bytes(b"")
         Path(str(cache) + ".json").write_text(json.dumps({"missing": True}))
         raise HTTPException(404, "No image")
-    data = r.content
+    data = body
     if trim:
         data, t2 = await asyncio.to_thread(trim_png, data)
         ctype = t2 or ctype
     cache.write_bytes(data)
     Path(str(cache) + ".json").write_text(json.dumps({"type": ctype}))
     return Response(data, media_type=ctype, headers={"Cache-Control": "private, max-age=604800"})
+
+
+
+# ---------------------------------------------------------------- stremio addons
+# Kino talks the stremio addon protocol (github.com/Stremio/stremio-addon-sdk/blob/master/docs/protocol.md)
+# and uses addons for catalogs, metadata, subtitles and watch activity events. Stream resources are never used
+
+ADDON_CACHE = {}  # url -> (time, data)
+SUB_LINKS = {}    # (file id, sub id) -> subtitle url from an addon
+OSHASH = {}       # file id -> opensubtitles hash
+CAT_STATE = {"refreshing": False}
+
+
+def ip_is_public(ip):
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if getattr(a, "ipv4_mapped", None):
+        a = a.ipv4_mapped
+    return a.is_global and not a.is_multicast
+
+
+async def check_host(host):
+    # Addons are outside servers, so Kino never lets one point it at the vps itself or the local network
+    if ADDON_ALLOW_PRIVATE:
+        return
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+    except socket.gaierror:
+        raise HTTPException(502, f"Couldn't find {host}")
+    if not infos or not all(ip_is_public(i[4][0]) for i in infos):
+        raise HTTPException(400, "That address points to a private network, which isn't allowed")
+
+
+async def safe_fetch(url, max_bytes=5 * 1024**2, timeout=12, allow_http=False):
+    for _ in range(4):
+        u = urlparse(url)
+        if u.scheme != "https" and not (u.scheme == "http" and (allow_http or ADDON_ALLOW_PRIVATE)):
+            raise HTTPException(400, "Only https addresses are supported")
+        if not u.hostname:
+            raise HTTPException(400, "That isn't a valid address")
+        await check_host(u.hostname)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False,
+                                     headers={"User-Agent": "Kino (Stremio addon client)"}) as c:
+            async with c.stream("GET", url) as r:
+                if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                    url = urljoin(url, r.headers["location"])  # Each redirect gets the same private network check
+                    continue
+                if r.status_code != 200:
+                    raise HTTPException(502, f"The addon answered with an error ({r.status_code})")
+                buf = bytearray()
+                async for chunk in r.aiter_bytes():
+                    buf += chunk
+                    if len(buf) > max_bytes:
+                        raise HTTPException(502, "The addon sent back too much data")
+                return bytes(buf), r.headers.get("content-type", "")
+    raise HTTPException(502, "Too many redirects")
+
+
+async def fetch_json(url, ttl=3600, timeout=12):
+    hit = ADDON_CACHE.get(url)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    data, _ = await safe_fetch(url, timeout=timeout)
+    try:
+        j = json.loads(data)
+    except ValueError:
+        raise HTTPException(502, "The addon didn't send valid JSON")
+    if len(ADDON_CACHE) > 2000:
+        ADDON_CACHE.clear()
+    ADDON_CACHE[url] = (time.time(), j)
+    return j
+
+
+def addon_base(url):
+    url = str(url or "").strip()
+    if url.startswith("stremio://"):
+        url = "https://" + url[len("stremio://"):]
+    if not url.endswith("/manifest.json"):
+        raise HTTPException(400, "Paste the full addon link, it ends with /manifest.json")
+    return url, url[: -len("/manifest.json")]
+
+
+def addon_rows(enabled_only=True):
+    rows = db().q("SELECT id, url, manifest, enabled, hidden FROM addons " + ("WHERE enabled = 1 " if enabled_only else "") + "ORDER BY id")
+    out = []
+    for r in rows:
+        try:
+            m = json.loads(r["manifest"])
+        except ValueError:
+            continue
+        out.append({"id": r["id"], "url": r["url"], "base": r["url"][: -len("/manifest.json")], "m": m,
+                    "enabled": bool(r["enabled"]), "hidden": json.loads(r["hidden"] or "[]")})
+    return out
+
+
+def supports(m, resource, type_=None, id_=None):
+    """Same rules as stremio: a resource can narrow the addons types and id prefixes"""
+    for r in m.get("resources") or []:
+        if isinstance(r, str):
+            name, types, prefixes = r, m.get("types") or [], m.get("idPrefixes")
+        elif isinstance(r, dict):
+            name = r.get("name")
+            types = r.get("types") or m.get("types") or []
+            prefixes = r.get("idPrefixes", m.get("idPrefixes"))
+        else:
+            continue
+        if name != resource:
+            continue
+        if type_ and types and type_ not in types:
+            continue
+        if id_ and prefixes and not any(str(id_).startswith(px) for px in prefixes):
+            continue
+        return True
+    return False
+
+
+def resource_path(resource, type_, id_, extra=None):
+    path = f"/{resource}/{quote(type_, safe='')}/{quote(str(id_), safe=':')}"
+    if extra:
+        path += "/" + urlencode({k: v for k, v in extra.items() if v not in (None, "")}, quote_via=quote)
+    return path + ".json"
+
+
+async def addon_call(a, resource, type_, id_, extra=None, ttl=3600, timeout=12):
+    return await fetch_json(a["base"] + resource_path(resource, type_, id_, extra), ttl=ttl, timeout=timeout)
+
+
+def manifest_summary(a):
+    m = a["m"]
+    res = set()
+    for r in m.get("resources") or []:
+        res.add(r if isinstance(r, str) else (r or {}).get("name"))
+    cats = []
+    for c in m.get("catalogs") or []:
+        needs = list(c.get("extraRequired") or []) + [e.get("name") for e in c.get("extra") or [] if e.get("isRequired")]
+        cats.append({"key": f"{c.get('type')}/{c.get('id')}", "name": c.get("name") or c.get("id"), "type": c.get("type"),
+                     "search": any(e.get("name") == "search" for e in c.get("extra") or []) or "search" in (c.get("extraSupported") or []),
+                     "home": not needs, "shown": f"{c.get('type')}/{c.get('id')}" not in a["hidden"]})
+    return {"id": a["id"], "url": a["url"], "enabled": a["enabled"], "name": m.get("name") or m.get("id"),
+            "version": m.get("version"), "description": m.get("description"), "logo": https_url(m.get("logo")),
+            "uses": {"catalogs": bool(cats), "meta": "meta" in res, "subtitles": "subtitles" in res,
+                     "events": bool(res & {"player", "library"}), "streams": "stream" in res},
+            "configurable": bool((m.get("behaviorHints") or {}).get("configurable")),
+            "config_required": bool((m.get("behaviorHints") or {}).get("configurationRequired")), "catalogs": cats}
+
+
+def ext_poster(m):
+    i = str(m.get("id", ""))
+    if m.get("poster"):
+        return https_url(m["poster"])
+    return f"https://images.metahub.space/poster/medium/{i}/img" if i.startswith("tt") else None
+
+
+def https_url(u):
+    # Lots of addons still list their images as http, the same image is nearly always there on https
+    u = str(u or "")
+    return "https://" + u[7:] if u.startswith("http://") else u or None
+
+
+def ext_preview(m, kind):
+    """A catalog item from an addon, shaped like a library tile but marked as not in the library"""
+    i = str(m.get("id", ""))
+    # Catalogs can have their own types like anime, the items inside still say if theyre a movie or a show
+    kind = m.get("type") if m.get("type") in ("movie", "series") else kind if kind in ("movie", "series") else "series"
+    return {"id": None, "ext": f"{kind}/{i}", "external": True, "kind": "series" if kind == "series" else "movie",
+            "name": unesc(m.get("name") or ""), "poster": ext_poster(m), "background": https_url(m.get("background")),
+            "logo": https_url(m.get("logo")), "releaseInfo": m.get("releaseInfo") or m.get("year"), "genres": unesc(m.get("genres") or m.get("genre") or []),
+            "rating": m.get("imdbRating"), "description": unesc(m.get("description")), "imdb": i, "count": 0, "added": 0,
+            "watched": False, "watched_count": 0, "my_rating": 0, "last_activity": 0, "matched": True}
+
+
+def catalog_url(a, c, extra=None):
+    return a["base"] + resource_path("catalog", c["type"], c["id"], extra)
+
+
+def home_catalogs():
+    out = []
+    for a in addon_rows():
+        for c in a["m"].get("catalogs") or []:
+            needs = list(c.get("extraRequired") or []) + [e.get("name") for e in c.get("extra") or [] if e.get("isRequired")]
+            if needs or f"{c.get('type')}/{c.get('id')}" in a["hidden"] or not c.get("type"):
+                continue
+            out.append((a, c))
+    return out
+
+
+async def refresh_catalogs():
+    if CAT_STATE["refreshing"]:
+        return
+    CAT_STATE["refreshing"] = True
+    try:
+        for a, c in home_catalogs():
+            try:
+                await fetch_json(catalog_url(a, c), ttl=3600)
+            except Exception as e:
+                log.info("catalog %s/%s failed: %s", a["m"].get("name"), c.get("id"), e)
+    finally:
+        CAT_STATE["refreshing"] = False
+
+
+async def catalog_worker():
+    while True:
+        await refresh_catalogs()
+        await asyncio.sleep(1800)
+
+
+def cached_catalog(a, c):
+    hit = ADDON_CACHE.get(catalog_url(a, c))
+    return hit[1].get("metas") or [] if hit and isinstance(hit[1], dict) else None
+
+
+async def meta_lookup(kind, mid):
+    """Full details for any id, cinemeta for imdb ids and the installed meta addons for the rest"""
+    key = f"ext:{kind}:{mid}"
+    m, fetched = cached_meta(key)
+    if m is not None and time.time() - fetched < 3 * 86400:
+        return m if m.get("id") else None
+    got = None
+    if str(mid).startswith("tt") and not OFFLINE_META:
+        async with httpx.AsyncClient(headers={"User-Agent": "kino-dashboard"}) as client:
+            try:
+                got = await cinemeta_meta(client, kind, mid)
+            except Exception:
+                got = None
+    if not got:
+        got = await addon_meta(kind, mid)
+    db().q("INSERT OR REPLACE INTO meta VALUES (?,?,?)", (key, json.dumps(got or {"none": True}), time.time()))
+    return got
+
+
+async def addon_meta(kind, mid):
+    for a in addon_rows():
+        if supports(a["m"], "meta", kind, mid):
+            try:
+                j = await addon_call(a, "meta", kind, mid, ttl=86400)
+                if isinstance(j, dict) and j.get("meta"):
+                    got = slim_meta(j["meta"], kind)
+                    got["id"] = got.get("id") or mid
+                    if not got.get("poster"):
+                        got["poster"] = j["meta"].get("poster")
+                    return got
+            except Exception as e:
+                log.info("meta from %s failed: %s", a["m"].get("name"), e)
+    return None
+
+
+async def addon_search(kind, q, limit_per=12):
+    """Searches every installed catalog that supports search, used by search and fix match"""
+    tasks = []
+    for a in addon_rows():
+        for c in a["m"].get("catalogs") or []:
+            has_search = any(e.get("name") == "search" for e in c.get("extra") or []) or "search" in (c.get("extraSupported") or [])
+            if has_search and (not kind or c.get("type") == kind or c.get("type") not in ("movie", "series")):
+                tasks.append((a, c))
+    async def one(a, c):
+        try:
+            j = await fetch_json(catalog_url(a, c, {"search": q}), ttl=600, timeout=8)
+            return [(a, c, m) for m in (j.get("metas") or [])[:limit_per]]
+        except Exception:
+            return []
+    res = await asyncio.gather(*(one(a, c) for a, c in tasks[:6]))
+    return [x for r in res for x in r]
+
+
+def oshash_file(path, size):
+    # OpenSubtitles hash: file size plus the first and last 64 KB added up as 64 bit numbers, cheap even over sshfs
+    if size < 131072:
+        return None
+    h = size
+    with open(path, "rb") as fh:
+        for off in (0, size - 65536):
+            fh.seek(off)
+            for (x,) in struct.iter_unpack("<Q", fh.read(65536)):
+                h = (h + x) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+async def video_id_for(f):
+    t = LIB["titles"].get(f["title_id"])
+    m = meta_for(t) if t else None
+    if not m or not m.get("id"):
+        return None, None
+    kind = m.get("kind") or t["kind"]
+    if kind == "series":
+        if f["season"] is None or f["episode"] is None:
+            return None, None
+        return kind, f"{m['id']}:{f['season']}:{f['episode']}"
+    return kind, m["id"]
+
+
+def decode_sub(raw):
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            txt = raw.decode(enc)
+            if enc != "utf-8-sig" or "�" not in txt:
+                return txt
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", errors="ignore")
+
+
+async def ass_to_vtt(text):
+    proc = await asyncio.create_subprocess_exec("ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "ass", "-i", "pipe:0",
+                                                "-f", "webvtt", "pipe:1", stdin=asyncio.subprocess.PIPE,
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    out, _ = await asyncio.wait_for(proc.communicate(text.encode("utf-8")), timeout=30)
+    return out.decode("utf-8", errors="ignore")
+
+
+def fire(coro):
+    # Watch activity goes out in the background, a slow addon never holds up the player
+    async def run():
+        try:
+            await coro
+        except Exception as e:
+            log.info("addon event failed: %s", e)
+    asyncio.create_task(run())
+
+
+async def send_event(resource, kind, vid, extra):
+    for a in addon_rows():
+        if supports(a["m"], resource, kind, vid):
+            await safe_fetch(a["base"] + resource_path(resource, kind, vid, extra), max_bytes=256 * 1024, timeout=8)
+
+
+@app.get("/api/admin/addons")
+async def addons_list(admin=Depends(require_admin)):
+    return {"addons": [manifest_summary(a) for a in addon_rows(enabled_only=False)]}
+
+
+@app.post("/api/admin/addons")
+async def addons_add(request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    url, base = addon_base(b.get("url"))
+    j = await fetch_json(url, ttl=0)
+    if not isinstance(j, dict) or not j.get("id") or not isinstance(j.get("resources"), list):
+        raise HTTPException(400, "That link didn't return a Stremio addon manifest")
+    if db().q("SELECT 1 FROM addons WHERE url = ?", (url,)):
+        raise HTTPException(400, "That addon is already installed")
+    db().q("INSERT INTO addons (url, manifest, enabled, hidden, added, updated) VALUES (?,?,?,?,?,?)",
+           (url, json.dumps(j), 1, "[]", time.time(), time.time()))
+    log.info("kino addon installed %s by %s", j.get("id"), admin)
+    asyncio.create_task(refresh_catalogs())
+    return {"ok": True, "name": j.get("name")}
+
+
+@app.put("/api/admin/addons/{aid}")
+async def addons_edit(aid: int, request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    row = db().q("SELECT url, hidden FROM addons WHERE id = ?", (aid,))
+    if not row:
+        raise HTTPException(404, "That addon isn't installed")
+    if "enabled" in b:
+        db().q("UPDATE addons SET enabled = ? WHERE id = ?", (1 if b["enabled"] else 0, aid))
+    if "hidden" in b and isinstance(b["hidden"], list):
+        db().q("UPDATE addons SET hidden = ? WHERE id = ?", (json.dumps([str(x)[:120] for x in b["hidden"]][:100]), aid))
+    if b.get("refresh"):
+        j = await fetch_json(row[0]["url"], ttl=0)
+        db().q("UPDATE addons SET manifest = ?, updated = ? WHERE id = ?", (json.dumps(j), time.time(), aid))
+    asyncio.create_task(refresh_catalogs())
+    return {"ok": True}
+
+
+@app.delete("/api/admin/addons/{aid}")
+async def addons_remove(aid: int, admin=Depends(require_admin)):
+    db().q("DELETE FROM addons WHERE id = ?", (aid,))
+    return {"ok": True}
+
+
+@app.get("/api/external/{kind}/{mid:path}")
+async def external_title(kind: str, mid: str, p=Depends(current_profile)):
+    if kind not in ("movie", "series"):
+        raise HTTPException(404, "Unknown type")
+    for t in LIB["titles"].values():
+        m = meta_for(t)
+        if m and m.get("id") == mid:
+            return {"library_id": t["id"]}
+    m = await meta_lookup(kind, mid)
+    if not m:
+        raise HTTPException(404, "Couldn't find details for that title")
+    seasons = sorted({v["season"] for v in m.get("videos") or [] if v.get("season")})
+    return {**ext_preview({**m, "id": mid, "imdbRating": m.get("rating")}, kind), "poster": m.get("poster") or ext_poster({"id": mid}),
+            "background": m.get("background"), "logo": m.get("logo"), "runtime": m.get("runtime"), "cast": m.get("cast") or [],
+            "director": m.get("director"), "seasons": len(seasons), "episodes": len(m.get("videos") or [])}
+
+
+@app.get("/api/addon-subs/{fid}")
+async def addon_subs(fid: str, p=Depends(current_profile)):
+    f = file_or_404(fid)
+    kind, vid = await video_id_for(f)
+    rows = [a for a in addon_rows() if kind and supports(a["m"], "subtitles", kind, vid)]
+    if not rows:
+        return {"subs": []}
+    if fid not in OSHASH:
+        try:
+            OSHASH[fid] = await asyncio.to_thread(oshash_file, f["path"], f["size"])
+        except OSError:
+            OSHASH[fid] = None
+    extra = {"videoHash": OSHASH[fid], "videoSize": f["size"], "filename": f["name"]}
+
+    async def one(a):
+        try:
+            j = await addon_call(a, "subtitles", kind, vid, extra, ttl=6 * 3600, timeout=10)
+            return a, j.get("subtitles") or []
+        except Exception as e:
+            log.info("subtitles from %s failed: %s", a["m"].get("name"), e)
+            return a, []
+
+    out = []
+    if len(SUB_LINKS) > 5000:
+        SUB_LINKS.clear()
+    for a, subs in await asyncio.gather(*(one(a) for a in rows)):
+        name = a["m"].get("name") or "Addon"
+        counts = {}
+        for s in subs[:60]:
+            if not isinstance(s, dict) or not s.get("url"):
+                continue
+            ln = lang_name(s.get("lang"))
+            counts[ln] = counts.get(ln, 0) + 1
+            if counts[ln] > 3:
+                continue  # A few per language is plenty, otherwise the menu goes on forever
+            sid = "a" + short_id(f"{a['id']}:{s.get('id')}:{s['url']}")[:12]
+            SUB_LINKS[(fid, sid)] = s["url"]
+            label = s.get("label") or (ln if counts[ln] == 1 else f"{ln} {counts[ln]}")
+            out.append({"id": sid, "label": label, "lang": ln, "kind": "addon", "source": name, "ready": True})
+    out.sort(key=lambda x: x["lang"])
+    return {"subs": out}
+
+
+@app.post("/api/event")
+async def player_event(request: Request, p=Depends(current_profile)):
+    if not p["prefs"].get("share_events"):
+        return {"ok": True, "sent": False}
+    b = await request.json()
+    f = LIB["files"].get(str(b.get("file_id", "")))
+    action = b.get("action")
+    if not f or action not in ("start", "pause", "stop"):
+        raise HTTPException(400, "Unknown file or action")
+    kind, vid = await video_id_for(f)
+    if kind:
+        fire(send_event("player", kind, vid, {"action": action, "currentTime": int(float(b.get("pos") or 0) * 1000),
+                                               "duration": int(float(b.get("dur") or 0) * 1000)}))
+    return {"ok": True, "sent": bool(kind)}
 
 
 # ---- admin: library tools
@@ -1553,13 +2120,22 @@ async def match_search(q: str, kind: str = "movie", admin=Depends(require_admin)
         raise HTTPException(400, "Kind has to be movie or series")
     if OFFLINE_META:
         return {"results": []}
+    metas = []
     async with httpx.AsyncClient(headers={"User-Agent": "kino-dashboard"}) as c:
         try:
             metas = await cinemeta_search(c, kind, q[:80])
         except Exception:
-            raise HTTPException(502, "Cinemeta didn't answer, try again")
-    return {"results": [{"id": m.get("id"), "name": unesc(m.get("name")), "releaseInfo": m.get("releaseInfo"),
-                         "poster": poster_for(m), "kind": kind} for m in metas[:12] if str(m.get("id", "")).startswith("tt")]}
+            if not addon_rows():
+                raise HTTPException(502, "Cinemeta didn't answer, try again")
+    out = [{"id": m.get("id"), "name": unesc(m.get("name")), "releaseInfo": m.get("releaseInfo"),
+            "poster": poster_for(m), "kind": kind, "source": "Cinemeta"} for m in metas[:12] if str(m.get("id", "")).startswith("tt")]
+    seen = {r["id"] for r in out}
+    for a, cat, m in await addon_search(kind, q[:80], limit_per=8):
+        if m.get("id") and m["id"] not in seen:
+            seen.add(m["id"])
+            out.append({"id": m["id"], "name": unesc(m.get("name")), "releaseInfo": m.get("releaseInfo"),
+                        "poster": ext_poster(m), "kind": kind, "source": a["m"].get("name")})
+    return {"results": out[:30]}
 
 
 @app.post("/api/admin/match")
@@ -1567,7 +2143,7 @@ async def match_set(request: Request, admin=Depends(require_admin)):
     b = await request.json()
     t = LIB["titles"].get(b.get("title_id"))
     kind, imdb = b.get("kind"), str(b.get("imdb_id") or "")
-    if not t or kind not in ("movie", "series") or not re.fullmatch(r"tt\d{5,10}", imdb):
+    if not t or kind not in ("movie", "series") or not re.fullmatch(r"[A-Za-z0-9:_.-]{2,80}", imdb):
         raise HTTPException(400, "Pick a title from the search results")
     db().q("INSERT OR REPLACE INTO overrides VALUES (?,?,?,?)", (t["key"], kind, imdb, time.time()))
     await ensure_meta([(t["key"], t["kind"], t["guess_name"], t["year"])], force=True)

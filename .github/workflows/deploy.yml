@@ -47,6 +47,9 @@ jobs:
           # Picking a profile works and then the home page loads
           curl -fs -c /tmp/cj -H "$H" -X POST http://127.0.0.1:8282/api/profiles/1/select > /dev/null
           curl -fs -b /tmp/cj http://127.0.0.1:8282/api/home | grep -q '"shelves"'
+          # Addons are admin only, and the addon search answers even with none installed
+          test "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cj http://127.0.0.1:8282/api/admin/addons)" = 401
+          curl -fs -b /tmp/cj "http://127.0.0.1:8282/api/search/addons?q=test" | grep -q '"external"'
           # A request from an address thats not on the allow list gets blocked
           test "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Real-IP: 203.0.113.9' -b /tmp/cj http://127.0.0.1:8282/api/home)" = 403
 

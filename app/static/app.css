@@ -593,3 +593,30 @@ input[type="search"]::-webkit-search-cancel-button, input[type="search"]::-webki
 
 /* Under a hero the page only needs to be as tall as its content, the full screen min height left a big empty gap */
 .page.under-hero { min-height: 0; padding-bottom: 72px; }
+
+/* ---- v4 stremio addons */
+.section-title .from { font-size: 13px; font-weight: 500; color: var(--label-3); margin-left: 6px; letter-spacing: 0; }
+.tile.ext .art { opacity: 0.92; }
+.not-lib { display: inline-flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 12px; font-size: 14px; color: var(--label-2); margin-top: 6px; max-width: 520px; }
+.not-lib svg { flex: none; width: 18px; height: 18px; }
+.addon { padding: 14px 0; border-top: 0.5px solid var(--sep); display: grid; gap: 10px; }
+.addon:first-child { border-top: 0; }
+.addon.off .addon-top, .addon.off .addon-tags { opacity: 0.5; }
+.addon-top { display: flex; gap: 14px; align-items: center; }
+.addon-top b { font-size: 15px; }
+.addon-top .secondary { font-size: 13px; }
+.addon-desc { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; }
+.addon-logo { width: 44px; height: 44px; border-radius: 10px; background: var(--fill); display: grid; place-items: center; overflow: hidden; flex: none; font-size: 22px; color: var(--label-2); }
+.addon-logo img { width: 100%; height: 100%; object-fit: contain; }
+.addon-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.badge.dim { color: var(--label-3); box-shadow: inset 0 0 0 1px var(--sep); }
+.badge.warn { color: #ffd60a; box-shadow: inset 0 0 0 1px rgba(255, 214, 10, 0.5); }
+.addon-cats summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--label-2); padding: 4px 0; }
+.addon-cats .set-row:first-of-type { border-top: 0.5px solid var(--sep); }
+.addon .actions { margin: 0; }
+.addon-foot { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.addon-foot .addon-cats { flex: 1 1 260px; }
+.addon-foot .addon-cats[open] { flex-basis: 100%; }
+.player .menu button { white-space: nowrap; }
+.player .menu .src { font-size: 12px; margin-left: auto; padding-left: 14px; }
+.addon-foot .actions { margin-left: auto; }

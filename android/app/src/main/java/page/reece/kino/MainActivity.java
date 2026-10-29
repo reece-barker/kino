@@ -1,0 +1,388 @@
+package page.reece.kino;
+
+import android.app.Activity;
+import android.app.DownloadManager;
+import android.app.PictureInPictureParams;
+import android.app.UiModeManager;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Environment;
+import android.speech.RecognizerIntent;
+import android.util.Rational;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
+import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
+import android.webkit.URLUtil;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+import android.widget.Toast;
+
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+
+/**
+ * Kino for android. Its the kino website in a full screen webview with the bits a browser cant do:
+ * proper full screen video, picture in picture, the back button, tv remotes, voice search and downloads.
+ * Everything else (profiles, the player, sign in, allowed devices) is the same web app as in the browser.
+ */
+public class MainActivity extends Activity {
+
+    private static final int VOICE_REQUEST = 7;
+    private static final String HOME = BuildConfig.KINO_URL;
+
+    private FrameLayout root;
+    private WebView web;
+    private View fullView;
+    private WebChromeClient.CustomViewCallback fullCallback;
+    private boolean isTv;
+    private volatile boolean playing;
+    private boolean loadFailed;
+
+    @Override
+    protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        isTv = detectTv();
+
+        Window w = getWindow();
+        w.setStatusBarColor(Color.BLACK);
+        w.setNavigationBarColor(Color.BLACK);
+
+        root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+        web = new WebView(this);
+        web.setBackgroundColor(Color.BLACK);
+        root.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(root);
+
+        // Keeps the page out from under the status and navigation bars, newer android draws edge to edge by default
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            if (fullView == null && !isTv) {
+                int top, bottom, left, right;
+                if (Build.VERSION.SDK_INT >= 30) {
+                    android.graphics.Insets i = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                    top = i.top; bottom = i.bottom; left = i.left; right = i.right;
+                } else {
+                    top = insets.getSystemWindowInsetTop(); bottom = insets.getSystemWindowInsetBottom();
+                    left = insets.getSystemWindowInsetLeft(); right = insets.getSystemWindowInsetRight();
+                }
+                web.setPadding(0, 0, 0, 0);
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) web.getLayoutParams();
+                lp.setMargins(left, top, right, bottom);
+                web.setLayoutParams(lp);
+            }
+            return insets;
+        });
+
+        setupWebView();
+        if (isTv) hideSystemBars();
+
+        String start = HOME;
+        Uri data = getIntent() != null ? getIntent().getData() : null;
+        if (data != null && isKino(data)) start = data.toString();
+        if (state != null) web.restoreState(state);
+        else web.loadUrl(start);
+    }
+
+    private boolean detectTv() {
+        UiModeManager ui = (UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
+        PackageManager pm = getPackageManager();
+        return (ui != null && ui.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION)
+                || pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+                || pm.hasSystemFeature("amazon.hardware.fire_tv");
+    }
+
+    private boolean isKino(Uri u) {
+        Uri home = Uri.parse(HOME);
+        return u != null && "https".equals(u.getScheme()) && home.getHost() != null && home.getHost().equalsIgnoreCase(u.getHost());
+    }
+
+    private void setupWebView() {
+        WebSettings s = web.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setDatabaseEnabled(true);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        s.setSupportZoom(false);
+        s.setBuiltInZoomControls(false);
+        s.setAllowFileAccess(false);
+        s.setAllowContentAccess(false);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        // The web app looks for these to switch on tv navigation and the native extras
+        s.setUserAgentString(s.getUserAgentString() + " KinoAndroid/" + BuildConfig.VERSION_NAME + (isTv ? " KinoTV" : ""));
+
+        CookieManager cookies = CookieManager.getInstance();
+        cookies.setAcceptCookie(true);
+        cookies.setAcceptThirdPartyCookies(web, false);
+
+        web.addJavascriptInterface(new Bridge(), "KinoAndroid");
+        web.setFocusable(true);
+        web.setFocusableInTouchMode(true);
+
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+                Uri u = req.getUrl();
+                if (isKino(u)) return false;
+                // Anything that isnt kino (like the imdb or addon links) opens in the normal browser
+                try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (ActivityNotFoundException ignored) { }
+                return true;
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                CookieManager.getInstance().flush();
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError err) {
+                if (req.isForMainFrame()) {
+                    loadFailed = true;
+                    showOffline();
+                }
+            }
+        });
+
+        web.setWebChromeClient(new WebChromeClient() {
+            // The player asks for full screen, the webview hands over a view to show on top of everything
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (fullView != null) { callback.onCustomViewHidden(); return; }
+                fullView = view;
+                fullCallback = callback;
+                root.addView(view, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                hideSystemBars();
+            }
+
+            @Override
+            public void onHideCustomView() {
+                if (fullView == null) return;
+                root.removeView(fullView);
+                fullView = null;
+                if (fullCallback != null) fullCallback.onCustomViewHidden();
+                fullCallback = null;
+                if (!isTv) showSystemBars();
+            }
+        });
+
+        web.setDownloadListener((url, userAgent, disposition, mime, length) -> download(url, userAgent, disposition, mime));
+    }
+
+    private void showOffline() {
+        String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'><style>"
+                + "body{margin:0;height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:sans-serif;text-align:center}"
+                + "h1{font-size:22px;margin:0 0 8px}p{color:#999;margin:0 0 24px;padding:0 24px}"
+                + "button{font-size:17px;font-weight:600;padding:12px 28px;border-radius:12px;border:0;background:#fff;color:#000}"
+                + "button:focus{outline:3px solid #0a84ff;outline-offset:3px}</style></head><body><div>"
+                + "<h1>Kino can't be reached</h1><p>Check your internet connection, then try again.</p>"
+                + "<button autofocus onclick='KinoAndroid.retry()'>Try Again</button></div></body></html>";
+        web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+    }
+
+    // Downloads go through androids download manager with the kino cookies so they work for allowed devices
+    private void download(String url, String ua, String disposition, String mime) {
+        try {
+            DownloadManager.Request r = new DownloadManager.Request(Uri.parse(url));
+            String name = URLUtil.guessFileName(url, disposition, mime);
+            r.addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url));
+            r.addRequestHeader("User-Agent", ua);
+            r.setTitle(name);
+            r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            r.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            dm.enqueue(r);
+            Toast.makeText(this, "Downloading " + name, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "Couldn't start the download", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void hideSystemBars() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.hide(WindowInsets.Type.systemBars());
+                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
+    }
+
+    private void showSystemBars() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) c.show(WindowInsets.Type.systemBars());
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
+    }
+
+    private void js(String code) {
+        runOnUiThread(() -> web.evaluateJavascript(code, null));
+    }
+
+    // Back first asks the page (closes a popup, the player or the profile menu), then goes back a page, then leaves
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        if (fullView != null) {
+            web.evaluateJavascript("document.fullscreenElement && document.exitFullscreen()", null);
+            return;
+        }
+        if (loadFailed) { super.onBackPressed(); return; }
+        web.evaluateJavascript("window.kinoBack ? window.kinoBack() : false", result -> {
+            if ("true".equals(result)) return;
+            if (web.canGoBack()) web.goBack();
+            else if (isTv) finish();
+            else moveTaskToBack(true);
+        });
+    }
+
+    // Play, pause and skip buttons on tv remotes and headphones
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        if (e.getAction() == KeyEvent.ACTION_DOWN) {
+            String cmd = null;
+            switch (e.getKeyCode()) {
+                case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                case KeyEvent.KEYCODE_HEADSETHOOK: cmd = "playpause"; break;
+                case KeyEvent.KEYCODE_MEDIA_PLAY: cmd = "play"; break;
+                case KeyEvent.KEYCODE_MEDIA_PAUSE: cmd = "pause"; break;
+                case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+                case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
+                case KeyEvent.KEYCODE_MEDIA_NEXT: cmd = "forward"; break;
+                case KeyEvent.KEYCODE_MEDIA_REWIND:
+                case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
+                case KeyEvent.KEYCODE_MEDIA_PREVIOUS: cmd = "back"; break;
+                case KeyEvent.KEYCODE_MEDIA_STOP: cmd = "stop"; break;
+                case KeyEvent.KEYCODE_SEARCH: js("location.hash = '#/search'"); return true;
+            }
+            if (cmd != null) { js("window.kinoMedia && window.kinoMedia('" + cmd + "')"); return true; }
+        }
+        return super.dispatchKeyEvent(e);
+    }
+
+    // Leaving the app while something plays shrinks it to picture in picture on phones and tablets
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (playing && !isTv && Build.VERSION.SDK_INT >= 26 && getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+            try {
+                enterPictureInPictureMode(new PictureInPictureParams.Builder().setAspectRatio(new Rational(16, 9)).build());
+            } catch (IllegalStateException ignored) { }
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean inPip, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(inPip, newConfig);
+        js("window.kinoPip && window.kinoPip(" + inPip + ")");
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != VOICE_REQUEST) return;
+        String text = "";
+        if (result == RESULT_OK && data != null) {
+            ArrayList<String> got = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            if (got != null && !got.isEmpty()) text = got.get(0);
+        }
+        js("window.kinoVoice && window.kinoVoice(" + JSONObject.quote(text) + ")");
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        Uri data = intent.getData();
+        if (data != null && isKino(data)) web.loadUrl(data.toString());
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        web.saveState(out);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        CookieManager.getInstance().flush();
+        if (!isInPip()) web.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        web.onResume();
+        if (isTv) hideSystemBars();
+    }
+
+    @Override
+    protected void onDestroy() {
+        root.removeAllViews();
+        web.destroy();
+        super.onDestroy();
+    }
+
+    private boolean isInPip() {
+        return Build.VERSION.SDK_INT >= 24 && isInPictureInPictureMode();
+    }
+
+    /** What the web page can call as window.KinoAndroid */
+    class Bridge {
+        @JavascriptInterface public boolean isTv() { return isTv; }
+        @JavascriptInterface public String version() { return BuildConfig.VERSION_NAME; }
+
+        @JavascriptInterface
+        public boolean hasVoice() {
+            return new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).resolveActivity(getPackageManager()) != null;
+        }
+
+        @JavascriptInterface
+        public void startVoice() {
+            runOnUiThread(() -> {
+                Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                i.putExtra(RecognizerIntent.EXTRA_PROMPT, "Search Kino");
+                try { startActivityForResult(i, VOICE_REQUEST); }
+                catch (ActivityNotFoundException e) { Toast.makeText(MainActivity.this, "Voice search isn't available on this device", Toast.LENGTH_SHORT).show(); }
+            });
+        }
+
+        // The player says when something is playing so the screen stays on and picture in picture knows when to kick in
+        @JavascriptInterface
+        public void setPlaying(boolean on) {
+            playing = on;
+            runOnUiThread(() -> {
+                if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            });
+        }
+
+        @JavascriptInterface
+        public void retry() {
+            runOnUiThread(() -> { loadFailed = false; web.loadUrl(HOME); });
+        }
+    }
+}

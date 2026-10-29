@@ -3381,6 +3381,16 @@ async def index():
     return Response(page, media_type="text/html", headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/app")
+async def android_app():
+    # The android app (phones, tablets, android tv and fire tv). Short address so its easy to type into Downloader on a fire tv
+    apk = STATIC / "kino.apk"
+    if not apk.exists():
+        raise HTTPException(404, "The Android app isn't on this server yet")
+    return FileResponse(apk, media_type="application/vnd.android.package-archive", filename="Kino.apk",
+                        headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/sw.js")
 async def service_worker():
     js = (STATIC / "sw.js").read_text().replace("__V__", STATIC_VERSION["v"])

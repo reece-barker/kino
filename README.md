@@ -18,6 +18,21 @@ Netflix style family library for the storage box, with the torbox sync, server s
 - The sync skips nfo files, samples and extras, skips anything you already have in 1080p or better, and only downloads the best copy when TorBox has several.
 - `kino-watchdog` checks the storage box mount every minute and reconnects it if it drops or freezes.
 
+## Android app
+
+`android/` is a small native app (about 60 KB) for phones, tablets, Android TV and Fire TV. It's the same Kino in a full screen webview, plus the things a browser can't do:
+
+- Full screen video, picture in picture when you leave the app mid film (phones and tablets), and the screen stays on while playing
+- The back button closes the player or a popup first, then goes back a page
+- TV remotes: the arrows move around the page like Apple TV (the sidebar is its own column, Back jumps to it), play/pause and skip buttons work, and the search button opens Search
+- Voice search with the phone's or TV's own voice typing
+- Downloads go to the Downloads folder
+- It shows up on the Android TV home screen with its own banner
+
+Download it from Settings > Android App, or `https://kino.reece.page/app` (on a Fire TV type that into the Downloader app). The app counts as its own device for Allowed Devices.
+
+Build it with `cd android && ./gradlew assembleRelease` (needs the Android SDK). To sign with the Kino key set `KINO_KEYSTORE` and `KINO_KEYSTORE_PASSWORD`. Keep that key safe, Android only installs updates signed with the same key. Copy the result to `app/static/kino.apk` so `/app` serves it. The `Android app` workflow builds it on every change to `android/`.
+
 ## TorBox first
 
 When a film or episode isn't on the Storage Box yet but it's already finished in your TorBox account, Kino plays it from TorBox before trying any public domain copy. It matches by title and year (or show, season and episode), goes through the same player as the library (so mkv, other audio tracks and addon subtitles all work), and saves progress like everything else. The TorBox key is read from the sync's `/root/torbox-sync/.env`, so nothing new needs setting up. Only files from your own account are used, through the TorBox api.

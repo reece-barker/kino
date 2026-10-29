@@ -1049,3 +1049,20 @@ body.with-side .hero-dots { left: auto; }
 @media (min-width: 1800px) { html { zoom: 1.2; } }
 @media (min-width: 2400px) { html { zoom: 1.5; } }
 @media (min-width: 3400px) { html { zoom: 2; } }
+
+/* ---- tv remotes: the focused thing grows and gets a white ring, like apple tv */
+body.tv { cursor: none; }
+body.tv :focus-visible { outline: none; }
+body.tv .btn:focus-visible, body.tv .round-btn:focus-visible, body.tv .seg:focus-visible, body.tv select:focus-visible,
+body.tv .icon-btn:focus-visible, body.tv .theme-pick button:focus-visible, body.tv .src:focus-visible, body.tv .fm-item:focus-visible,
+body.tv .more-row:focus-visible, body.tv .mi:focus-visible, body.tv .side-me:focus-visible, body.tv .switch:focus-visible, body.tv .fresh-card:focus-visible {
+  transform: scale(1.07); box-shadow: 0 0 0 3px #fff, 0 14px 34px rgba(0, 0, 0, 0.5); position: relative; z-index: 2;
+}
+body.tv .side-item:focus-visible:not([aria-current]) { background: var(--hover); box-shadow: inset 0 0 0 2px var(--label-3); }
+body.tv .side-item[aria-current]:focus-visible { transform: scale(1.04); }
+body.tv .tile:focus-visible .art { transform: scale(1.08) translateY(-3px); box-shadow: 0 0 0 3px #fff, 0 24px 44px rgba(0, 0, 0, 0.6); outline: none; }
+body.tv .search.big:focus-within { box-shadow: 0 0 0 3px #fff; }
+body.tv .player .icon-btn:focus-visible { background: rgba(255, 255, 255, 0.92); color: #000; }
+body.tv .scrub:focus-visible .scrub-track { height: 8px; }
+/* picture in picture on android: just the video */
+body.pip .player-ui, body.pip .skip-intro, body.pip .up-next, body.pip .subs-layer { display: none !important; }

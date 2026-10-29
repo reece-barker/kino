@@ -1256,7 +1256,13 @@
       pl.v.src = info.src;
       const from = opts.from != null ? opts.from : info.resume || 0;
       pl.v.addEventListener("loadedmetadata", () => { if (from && from < pl.v.duration - 10) pl.v.currentTime = from; }, { once: true });
-      pl.v.addEventListener("error", () => { if (pl.info === info) showMsg("This copy won't play here", "archive.org may be slow or the format isn't supported by this browser. Try another source.", `<a class="btn secondary small" href="${esc(info.download)}">${ic("download")} Download instead</a>`); }, { once: true });
+      pl.v.addEventListener("error", async () => {
+        if (pl.info !== info) return;
+        // Asks the server what went wrong, so a blocked redirect says where it was going instead of a vague message
+        let why = "archive.org may be slow or the format isn't supported by this browser. Try another source.";
+        try { const r = await fetch(info.src, { headers: { Range: "bytes=0-0" }, credentials: "same-origin" }); if (!r.ok) { const j = await r.json().catch(() => null); if (j && j.detail) why = j.detail; } } catch (_) {}
+        showMsg("This copy won't play here", why, `<a class="btn secondary small" href="${esc(info.download)}">${ic("download")} Download instead</a>`);
+      }, { once: true });
       pl.v.play().catch(() => {});
       pl.v.playbackRate = pl.rate;
       api(`/api/addon-subs/${fid}`).then((r) => {

@@ -2287,8 +2287,13 @@ async def pd_open(url, headers):
                                headers={"User-Agent": "Kino (Stremio addon client)"})
     try:
         for _ in range(5):
+            # Some hosts redirect to plain http, if the https version is on the list that gets used instead
+            if url.startswith("http://") and pd_url_ok("https://" + url[7:]):
+                url = "https://" + url[7:]
             if not pd_url_ok(url):
-                raise HTTPException(400, "That stream isn't on a public domain host")
+                host = urlparse(url).hostname or "an unknown address"
+                log.info("stream blocked, it went to %s which isn't in PD_HOSTS", url)
+                raise HTTPException(400, f"That stream sent Kino on to {host}, which isn't on the public domain list (PD_HOSTS)")
             await check_host(urlparse(url).hostname)
             r = await client.send(client.build_request("GET", url, headers=headers), stream=True)
             if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):

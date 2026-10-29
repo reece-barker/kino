@@ -511,3 +511,82 @@ select.plain { background: var(--fill); border: 0; border-radius: 10px; height: 
   .hero-dots { bottom: 14px; left: 50%; transform: translateX(-50%); }
   .banner { top: 68px; }
 }
+
+/* ======================================================= v3: polish */
+
+/* dropdowns with a proper chevron, sat where apple puts it */
+select.plain {
+  -webkit-appearance: none; appearance: none; cursor: pointer;
+  padding: 0 34px 0 14px; color: var(--label);
+  background-color: var(--fill);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23ebebf599' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 13px center; background-size: 11px 7px;
+}
+select.plain:hover { background-color: var(--fill-2); }
+select.plain:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+select.plain option { background: var(--bg-2); color: var(--label); }
+
+/* the title page menu was being cut off by the hero, now only the picture is clipped */
+.detail-hero { overflow: visible; }
+.detail-hero .hero-bg { overflow: hidden; }
+.detail-hero::after { pointer-events: none; }
+
+/* search field with the mic */
+.search.big { position: relative; }
+.mic-btn { width: 36px; height: 36px; margin-right: -6px; border-radius: 50%; display: grid; place-items: center; font-size: 20px; color: var(--label-2); flex: none; }
+.mic-btn:hover { color: var(--label); background: rgba(255, 255, 255, 0.08); }
+.mic-btn.listening { color: #fff; background: var(--red); animation: micPulse 1.4s ease-in-out infinite; }
+@keyframes micPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 69, 58, 0.5); } 50% { box-shadow: 0 0 0 8px rgba(255, 69, 58, 0); } }
+
+/* player controls, slimmer and closer to how apples own player looks */
+.player-bottom { margin: 0; border-radius: 0; padding: 64px var(--gutter) 18px; background: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.35) 60%, rgba(0, 0, 0, 0)); box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.tl-row { display: flex; align-items: center; gap: 14px; }
+.time { font-size: 12px; font-weight: 500; color: rgba(255, 255, 255, 0.72); width: auto; min-width: 46px; letter-spacing: 0.01em; }
+.time.right { text-align: right; }
+.scrub { flex: 1; height: 18px; }
+.scrub-track { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.22); }
+.scrub:hover .scrub-track, .scrub.drag .scrub-track { height: 6px; }
+.scrub-buf { background: rgba(255, 255, 255, 0.3); }
+.scrub-fill { background: rgba(255, 255, 255, 0.95); }
+.scrub-knob { width: 12px; height: 12px; margin: -6px 0 0 -6px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }
+.scrub-tip { bottom: 22px; font-size: 12px; padding: 3px 7px; }
+.player-row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin-top: 8px; }
+.ctl { display: flex; align-items: center; gap: 2px; }
+.ctl-l { justify-self: start; }
+.ctl-c { justify-self: center; gap: 18px; }
+.ctl-r { justify-self: end; }
+.player .icon-btn { width: 36px; height: 36px; font-size: 19px; color: rgba(255, 255, 255, 0.88); position: relative; }
+.player .icon-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
+.player .icon-btn.big { width: 44px; height: 44px; font-size: 28px; color: #fff; }
+.player .icon-btn[aria-expanded="true"] { background: rgba(255, 255, 255, 0.16); }
+.rate-badge { position: absolute; right: -2px; bottom: 2px; font-size: 9px; font-weight: 700; background: #fff; color: #000; border-radius: 4px; padding: 0 3px; line-height: 13px; }
+#pVol { -webkit-appearance: none; appearance: none; width: 84px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.3); margin-left: 4px; cursor: pointer; }
+#pVol::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 0; }
+#pVol::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 0; }
+.ctl-r .menu { left: auto; right: 0; bottom: 44px; }
+.player-top { padding: 18px var(--gutter); }
+.player-title div:first-child { font-size: 17px; }
+.player-title .secondary { font-size: 13px; }
+.glass-btn.round { width: 38px; height: 38px; font-size: 16px; }
+.player:not(.idle) .subs-layer { bottom: 130px; }
+.skip-intro { bottom: 120px; height: 40px; padding: 0 18px; font-size: 15px; border-radius: 10px; }
+.player.idle .skip-intro { bottom: 40px; }
+
+/* up next hugs its content now instead of a fixed width */
+.up-next { bottom: 120px; width: auto; max-width: min(480px, calc(100vw - 32px)); padding: 12px 18px 12px 12px; gap: 14px; }
+.player.idle .up-next { bottom: 40px; }
+.un-body { flex: 0 1 auto; }
+.un-body .nm { max-width: 280px; }
+
+@media (max-width: 760px) {
+  .player-bottom { padding: 48px 14px 12px; }
+  .ctl-l #pVol { display: none; }
+  .ctl-c { gap: 8px; }
+  .player .icon-btn { width: 34px; height: 34px; font-size: 18px; }
+  .player .icon-btn.big { width: 40px; height: 40px; font-size: 26px; }
+  .time { min-width: 38px; font-size: 11px; }
+  .up-next, .skip-intro { bottom: 110px; }
+  .un-body .nm { max-width: none; }
+}
+/* Chromes own clear button looked out of place, the field clears fine with the keyboard */
+input[type="search"]::-webkit-search-cancel-button, input[type="search"]::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }

@@ -783,7 +783,7 @@ async def guard(request: Request, call_next):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["X-Frame-Options"] = "DENY"
-    resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    resp.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"  # Mic is only for voice search
     if path.startswith("/api/") and "cache-control" not in resp.headers:
         resp.headers["Cache-Control"] = "no-store"
     return resp

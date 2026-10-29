@@ -18,6 +18,10 @@ Netflix style family library for the storage box, with the torbox sync, server s
 - The sync skips nfo files, samples and extras, skips anything you already have in 1080p or better, and only downloads the best copy when TorBox has several.
 - `kino-watchdog` checks the storage box mount every minute and reconnects it if it drops or freezes.
 
+## TorBox first
+
+When a film or episode isn't on the Storage Box yet but it's already finished in your TorBox account, Kino plays it from TorBox before trying any public domain copy. It matches by title and year (or show, season and episode), goes through the same player as the library (so mkv, other audio tracks and addon subtitles all work), and saves progress like everything else. The TorBox key is read from the sync's `/root/torbox-sync/.env`, so nothing new needs setting up. Only files from your own account are used, through the TorBox api.
+
 ## Allowed devices
 
 Next to the ip list there's **Settings > Allowed Devices**. An approved device can open Kino from any network (mobile data, holidays, a friend's wifi). nginx lets a request in when its ip is on the list *or* the app says the device is approved (`satisfy any` with an `auth_request` to `/api/gate`). Everything else is sent to `/gate`, which shows the device's code and an Ask for Access button. Approve it in Settings, or type the code there.

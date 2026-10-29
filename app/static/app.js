@@ -1580,7 +1580,7 @@
     if (prefs.audio_lang) { const a = info.audio.find((x) => x.lang === prefs.audio_lang); if (a) pl.audio = a.n; }
     const t = opts.title;
     $("#pTitle").textContent = t ? t.name : info.name;
-    if (info.stream) {
+    if (info.stream && info.src) {
       $("#pSub").textContent = [info.season != null ? epLabel(info.season, info.episode) : "", nice(info.ep_name || "")].filter(Boolean).join("  ");
       buildMenus();
       setupDeviceButtons();
@@ -1610,10 +1610,11 @@
       return;
     }
     const f = t && t.files.find((x) => x.id === fid);
-    $("#pSub").textContent = t && t.kind === "series" && f ? `${epLabel(f.season, f.episode)}${f.ep_name ? "  " + nice(f.ep_name) : ""}` : (info.badges || []).join("  ");
+    $("#pSub").textContent = info.stream ? [info.season != null ? epLabel(info.season, info.episode) : "", nice(info.ep_name || ""), ...(info.badges || [])].filter(Boolean).join("  ")
+      : t && t.kind === "series" && f ? `${epLabel(f.season, f.episode)}${f.ep_name ? "  " + nice(f.ep_name) : ""}` : (info.badges || []).join("  ");
     buildMenus();
     setupDeviceButtons();
-    const start = opts.from != null ? opts.from : 0;
+    const start = opts.from != null ? opts.from : (info.stream && info.resume) || 0;
     const vcodec = info.video && info.video.codec;
     const dlBtn = `<a class="btn secondary small" href="${esc(info.download)}&save=1">${ic("download")} Download</a>
       <button class="btn secondary small" id="copyLink">${ic("link")} Copy link for VLC</button>`;

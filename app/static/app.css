@@ -1032,3 +1032,7 @@ body.with-side .hero-dots { left: auto; }
   .hero-dots button i { animation: none !important; width: 100%; }
 }
 .side:not(:hover):not(:focus-within):not(.pinned) .side-head .side-lbl { display: none; }
+/* only the home hero has shelves sliding up over it, title pages keep there content below the artwork */
+.page.under-hero { margin-top: 0; }
+.hero ~ .page.under-hero { margin-top: clamp(-150px, -15vh, -110px); }
+@media (max-width: 760px) { .hero ~ .page.under-hero { margin-top: -96px; } }

@@ -2179,9 +2179,8 @@ SAVES = {}  # stream id -> download progress for save to library
 def pd_url_ok(url):
     u = urlparse(str(url or ""))
     host = (u.hostname or "").lower()
-    # return u.scheme == "https" and any(host == h or host.endswith("." + h) for h in PD_HOSTS)
-    return true
-
+    #return u.scheme == "https" and any(host == h or host.endswith("." + h) for h in PD_HOSTS)
+    return True
 
 def stream_row(sid):
     rows = db().q("SELECT * FROM streams WHERE id = ?", (sid,))

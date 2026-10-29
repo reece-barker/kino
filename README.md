@@ -18,6 +18,22 @@ Netflix style family library for the storage box, with the torbox sync, server s
 - The sync skips nfo files, samples and extras, skips anything you already have in 1080p or better, and only downloads the best copy when TorBox has several.
 - `kino-watchdog` checks the storage box mount every minute and reconnects it if it drops or freezes.
 
+## Stremio addons
+
+Kino speaks the Stremio addon protocol, so any addon link that works in Stremio can be pasted in under Settings > Addons (admin only). The link ends with `/manifest.json`, `stremio://` links work too.
+
+What Kino uses from an addon:
+
+- **Catalogs** show up as shelves on Home (taking turns between addons, max 8) and in Search under "From Addons". Each shelf can be hidden. Titles that arent in the library open a details page that says so, anything that is in the library links to the normal page.
+- **Metadata** is used for titles Cinemeta doesnt know (anime from Kitsu for example), for those detail pages and in Fix Match.
+- **Subtitles** get added to the subtitle menu in the player, the profiles subtitle language is picked automatically. Kino sends the OpenSubtitles hash of the file so the timing usually matches.
+- **Watch activity** (player and library events, used by tracking addons like Trakt) is only sent for profiles that turn on "Share Watch Activity with Addons" in their settings.
+- **Streams are never used.** Addons that have them still install but Kino ignores that part, it only plays whats in the library.
+
+Good ones to start with: `https://v3-cinemeta.strem.io/manifest.json`, `https://opensubtitles-v3.strem.io/manifest.json` and `https://anime-kitsu.strem.fun/manifest.json`.
+
+Addons are outside servers so Kino only talks to them over https and refuses any link that points at a private or local address (so an addon cant be used to poke at the vps itself). Answers are size limited and cached.
+
 ## Setup
 
 1. Cloudflare DNS: add an A record, name `kino`, value `169.58.99.51`, proxy status **DNS only** (grey cloud).
@@ -79,8 +95,9 @@ If you can still get in from somewhere on the list, change it under Settings > A
 - Every change request needs a custom header so other sites cant trigger actions
 - Strict content security policy, no outside scripts at all (hls.js is bundled)
 - Download links for vlc are signed and run out after 6 hours
+- Addon links have to be https and can't point at private or local addresses, every redirect gets checked again
 - The dashboard runs as its own `kino` user and polkit only lets it start or stop `torbox-sync.service`, nothing else
 
 ## Credits
 
-hls.js (Apache 2.0) is bundled in `app/static/hls.min.js`. Metadata and artwork come from Cinemeta and Metahub.
+hls.js (Apache 2.0) is bundled in `app/static/hls.min.js`. Metadata and artwork come from Cinemeta and Metahub, plus whatever addons you install.

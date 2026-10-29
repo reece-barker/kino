@@ -37,6 +37,8 @@
     more: "M6 10.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3z",
     flag: "M5 3h2v18H5zm3 1h10l-2 4 2 4H8z",
     mic: "M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z",
+    info: "M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-6h2zm0-8h-2V7h2z",
+    puzzle: "M20.5 11H19V7a2 2 0 00-2-2h-4V3.5a2.5 2.5 0 00-5 0V5H4a2 2 0 00-2 2v3.8h1.5a2.7 2.7 0 010 5.4H2V20a2 2 0 002 2h3.8v-1.5a2.7 2.7 0 015.4 0V22H17a2 2 0 002-2v-4h1.5a2.5 2.5 0 000-5z",
   };
   const ic = (n) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${P[n]}"/></svg>`;
 
@@ -369,9 +371,11 @@
     const art = t.poster
       ? `<img loading="lazy" src="${img(t.poster)}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
-    const sub = t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
+    const sub = t.external ? t.releaseInfo || (t.kind === "series" ? "TV Show" : "Movie")
+      : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
     const mark = t.watched ? `<span class="tile-check" title="Watched">${ic("check")}</span>` : "";
-    return `<a class="tile poster" href="#/title/${t.id}"><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
+    const href = t.external ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : `#/title/${t.id}`;
+    return `<a class="tile poster ${t.external ? "ext" : ""}" href="${href}"><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
   }
   function wideTile(t, opts = {}) {
     const bg = t.background
@@ -416,7 +420,7 @@
         ${isAdmin() ? `<a class="hero-live glass" id="heroLive" href="#/sync" hidden></a>` : ""}
       </section>
       <main class="page under-hero" style="padding-top:8px">
-        ${h.shelves.map((s) => `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
+        ${h.shelves.map((s) => `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
           <div class="row ${s.style === "poster" ? "posters" : "wide"}">${s.items.map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, play: t.file_id,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
@@ -542,7 +546,14 @@
         + (r.episodes.length ? `<h2 class="section-title" style="margin-top:36px">Episodes</h2><div class="grid wide-grid">${r.episodes.map((e) => `
           <a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail)}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
           <div class="cap">${esc(nice(e.name))}</div><div class="sub">${esc(e.show)} · ${esc(epLabel(e.season, e.episode))}</div></a>`).join("")}</div>` : "")
-        || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor or genre.</p></div>`;
+        || `<div class="empty" id="sEmpty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor or genre.</p></div>`;
+      box.insertAdjacentHTML("beforeend", `<div id="sExt"></div>`);
+      api("/api/search/addons?q=" + encodeURIComponent(q)).then((x) => {
+        if (my !== seq || !$("#sExt") || !x.external.length) return;
+        const e = $("#sEmpty"); if (e) e.remove();
+        $("#sExt").innerHTML = `<h2 class="section-title" style="margin-top:36px">From Addons <span class="from">Not in your library</span></h2>
+          <div class="grid">${x.external.map(posterTile).join("")}</div>`;
+      }).catch(() => {});
       $$("[data-play]", box).forEach((a) => a.addEventListener("click", async (ev) => {
         ev.preventDefault();
         const tt = await api(`/api/title/${a.dataset.tid}`);
@@ -712,9 +723,35 @@
     }
   }
 
+  // A title from an addon catalog, Kino can show what it is but only plays whats in the library
+  async function pageDiscover(kind, id) {
+    const t = await api(`/api/external/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`);
+    if (t.library_id) { location.replace(`#/title/${t.library_id}`); return; }
+    const facts = metaLine({ ...t, kind });
+    app.innerHTML = topbar(kind === "series" ? "shows" : "movies") + `
+      <section class="detail-hero">
+        <div class="hero-bg">${t.background ? `<img src="${img(t.background.replace("/medium/", "/large/"))}" data-alt="${esc(t.background)}" alt="" data-fallback="hide" style="width:100%;height:100%;object-fit:cover;object-position:center 20%">` : ""}</div>
+        <div class="hero-content" style="z-index:2">
+          ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
+          <div class="hero-meta">${facts.map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
+          ${t.description ? `<p class="hero-desc" style="-webkit-line-clamp:4">${esc(t.description)}</p>` : ""}
+          <div class="not-lib glass">${ic("info")}<span>Not in Your Library. Kino only plays what's been downloaded to the Storage Box.</span></div>
+        </div>
+      </section>
+      <main class="page under-hero" style="padding-top:12px">
+        ${t.cast?.length ? `<section class="section" style="margin-top:0"><h2 class="section-title">Cast</h2><div class="cast">${t.cast.map((c) => `<a href="#/search?q=${encodeURIComponent(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
+        <section class="section"><div class="facts">
+          ${t.director ? `<div><h4>Director</h4><p>${esc([].concat(t.director).join(", "))}</p></div>` : ""}
+          ${t.genres?.length ? `<div><h4>Genres</h4><p>${esc(t.genres.join(", "))}</p></div>` : ""}
+          ${kind === "series" && t.seasons ? `<div><h4>Seasons</h4><p>${t.seasons} season${t.seasons === 1 ? "" : "s"}, ${t.episodes} episodes</p></div>` : ""}
+        </div></section>
+      </main>`;
+    wireTopbar();
+  }
+
   // Fix match: search cinemeta and pick the right title, it sticks even after rescans
   function fixMatch(t) {
-    const s = sheet(`<h2>Fix Match</h2><p class="secondary">The file is named <b>${esc(t.guess_name)}</b>. Search for the right film or show.</p>
+    const s = sheet(`<h2>Fix Match</h2><p class="secondary">The file is named <b>${esc(t.guess_name)}</b>. Search for the right film or show. Installed addons with search are included too.</p>
       <div class="toolbar" style="margin:14px 0">
         <label class="search grow">${ic("search")}<input id="fmq" value="${esc(t.guess_name)}" placeholder="Title"></label>
         <select class="plain" id="fmk"><option value="movie" ${t.kind === "movie" ? "selected" : ""}>Movie</option><option value="series" ${t.kind === "series" ? "selected" : ""}>TV Show</option></select>
@@ -729,7 +766,7 @@
         const r = await api(`/api/admin/match/search?kind=${$("#fmk", s.el).value}&q=${encodeURIComponent($("#fmq", s.el).value)}`);
         box.innerHTML = r.results.length ? r.results.map((m) => `<button class="fm-item" data-id="${m.id}" data-kind="${m.kind}">
           <span class="fm-post">${m.poster ? `<img src="${img(m.poster)}" alt="" data-fallback="hide">` : ""}</span>
-          <span class="grow"><b>${esc(m.name)}</b><span class="secondary">${esc(m.releaseInfo || "")}</span></span>${m.id === t.imdb ? `<span class="badge">Current</span>` : ""}</button>`).join("")
+          <span class="grow"><b>${esc(m.name)}</b><span class="secondary">${esc([m.releaseInfo, m.source].filter(Boolean).join(" · "))}</span></span>${m.id === t.imdb ? `<span class="badge">Current</span>` : ""}</button>`).join("")
           : `<div class="secondary">No results, try a different spelling or switch Movie and TV Show.</div>`;
         $$(".fm-item", box).forEach((b) => (b.onclick = async () => {
           b.disabled = true;
@@ -767,21 +804,22 @@
         <div class="set-row"><span><b>Subtitle Size</b></span>${sel("pSubS", [["s", "Small"], ["m", "Medium"], ["l", "Large"]], pr.sub_size)}</div>
         ${toggle("pAuto", pr.autoplay, "Autoplay Next Episode", "Starts the next episode after a short countdown")}
         ${toggle("pSkip", pr.skip_intro, "Skip Intros Automatically", "Only works where Kino knows the intro")}
+        ${toggle("pShare", pr.share_events, "Share Watch Activity with Addons", "Lets tracking addons like Trakt see what this profile watches")}
         <div class="actions end"><span class="secondary" id="prefSaved"></span></div>
       </section>
       ${isAdmin() ? `<div id="adminSettings"><div class="card skel" style="height:160px"></div></div>` : `
-      <section class="card set-card"><h2 class="set-title">Admin</h2><div class="set-row"><span><b>Admin Tools</b><span class="secondary">Profiles, allowed networks, sync and server</span></span><button class="btn secondary small" id="setAdminIn">${ic("lock")} Sign In</button></div></section>`}
+      <section class="card set-card"><h2 class="set-title">Admin</h2><div class="set-row"><span><b>Admin Tools</b><span class="secondary">Profiles, allowed networks, addons, sync and server</span></span><button class="btn secondary small" id="setAdminIn">${ic("lock")} Sign In</button></div></section>`}
     </main>`;
     wireTopbar();
     $("#editMe").onclick = () => editProfile(p, () => route());
     const saveP = async () => {
-      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked };
+      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
       ME.profile = r.profile;
       $("#prefSaved").textContent = "Saved";
       setTimeout(() => $("#prefSaved") && ($("#prefSaved").textContent = ""), 1800);
     };
-    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip"].forEach((id) => $("#" + id).addEventListener("change", saveP));
+    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pShare"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
     if (isAdmin()) drawAdminSettings();
   }
@@ -811,7 +849,9 @@
         <div class="note">Your current address is <b class="mono">${esc(mine)}</b>. <button class="linkish" id="fillMine">Use This Address</button>
           ${applied ? `<span class="${applied.ok ? "" : "err-note"}"> · nginx ${applied.ok ? `updated ${ago(applied.applied_at)}` : `not updated: ${esc(applied.error || "unknown error")}`}</span>` : ""}</div>
         <div class="form-err" id="ipErr" role="alert"></div>
-      </section>`;
+      </section>
+      <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>`;
+    drawAddons();
     $$("[data-editp]", box).forEach((b) => (b.onclick = () => editProfile(pr.profiles.find((x) => x.id === Number(b.dataset.editp)), () => drawAdminSettings())));
     $("#addP").onclick = () => editProfile(null, () => drawAdminSettings());
     $("#fillMine").onclick = () => { $("#ipCidr").value = mine; $("#ipLabel").focus(); };
@@ -824,6 +864,63 @@
       if (!(await confirmSheet("Remove this network?", `${b.dataset.rmip} won't be able to open Kino anymore.`, "Remove"))) return;
       try { await api("/api/admin/allowlist?cidr=" + encodeURIComponent(b.dataset.rmip), undefined, "DELETE"); toast("Network removed"); drawAdminSettings(); }
       catch (er) { $("#ipErr").textContent = er.message; }
+    }));
+  }
+
+  // Stremio addons, installed by pasting the manifest link like in stremio itself
+  async function drawAddons() {
+    const box = $("#addonsCard");
+    if (!box) return;
+    let r;
+    try { r = await api("/api/admin/addons"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
+    const uses = (u) => [u.catalogs && "Catalogs", u.meta && "Metadata", u.subtitles && "Subtitles", u.events && "Watch Activity"].filter(Boolean);
+    box.innerHTML = `
+      <h2 class="set-title">Addons</h2>
+      <p class="secondary set-hint">Paste the link to any Stremio addon, it ends with manifest.json. Kino uses their catalogs on Home and in Search, their metadata for matching, their subtitles in the player and their watch activity tracking. Streams from addons aren't used.</p>
+      <div class="list">${r.addons.map((a) => `<div class="addon ${a.enabled ? "" : "off"}">
+        <div class="addon-top">
+          <span class="addon-logo">${a.logo ? `<img src="${img(a.logo)}" alt="" data-fallback="hide">` : ic("puzzle")}</span>
+          <span class="grow"><b>${esc(a.name)}</b> <span class="secondary">${esc(a.version ? "v" + a.version : "")}</span>
+            ${a.description ? `<span class="addon-desc secondary">${esc(a.description)}</span>` : ""}</span>
+          <input type="checkbox" class="switch" data-aon="${a.id}" ${a.enabled ? "checked" : ""} aria-label="Turn ${esc(a.name)} on or off">
+        </div>
+        <div class="addon-tags">${uses(a.uses).map((u) => `<span class="badge">${u}</span>`).join("")}${a.uses.streams ? `<span class="badge dim">Streams Not Used</span>` : ""}
+          ${a.config_required ? `<span class="badge warn">Needs Setting Up</span>` : ""}</div>
+        ${a.config_required ? `<div class="note">This addon has to be set up on its own website first. Paste the link it gives you after setting it up.</div>` : ""}
+        <div class="addon-foot">
+        ${a.catalogs.filter((c) => c.home).length ? `<details class="addon-cats"><summary>Home Shelves</summary>${a.catalogs.filter((c) => c.home).map((c) => `
+          <label class="set-row"><span><b>${esc(c.name)}</b><span class="secondary">${c.type === "series" ? "TV Shows" : c.type === "movie" ? "Movies" : esc(c.type)}</span></span>
+          <input type="checkbox" class="switch" data-cat="${a.id}" data-key="${esc(c.key)}" ${c.shown ? "checked" : ""}></label>`).join("")}</details>` : "<span></span>"}
+        <div class="actions end"><button class="btn secondary small" data-aref="${a.id}">${ic("refresh")} Refresh</button>
+          <button class="btn danger small" data-arm="${a.id}">${ic("trash")} Remove</button></div></div>
+      </div>`).join("") || `<div class="secondary" style="padding:8px 0">No addons installed yet.</div>`}</div>
+      <form class="ip-form addon-form" id="addonForm">
+        <input id="addonUrl" placeholder="https://example.com/manifest.json" required spellcheck="false" autocapitalize="none" inputmode="url">
+        <button class="btn primary small" type="submit" id="addonGo">${ic("plus")} Install</button>
+      </form>
+      <div class="form-err" id="addonErr" role="alert"></div>`;
+    $("#addonForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const b = $("#addonGo"); b.disabled = true; $("#addonErr").textContent = "";
+      try { const x = await api("/api/admin/addons", { url: $("#addonUrl").value }); toast(`${x.name || "Addon"} installed`); drawAddons(); }
+      catch (er) { $("#addonErr").textContent = er.message; b.disabled = false; }
+    };
+    $$("[data-aon]", box).forEach((c) => (c.onchange = async () => {
+      try { await api(`/api/admin/addons/${c.dataset.aon}`, { enabled: c.checked }, "PUT"); drawAddons(); } catch (er) { toast(er.message, 5000); }
+    }));
+    $$("[data-cat]", box).forEach((c) => (c.onchange = async () => {
+      const id = c.dataset.cat;
+      const hidden = $$(`[data-cat="${id}"]`, box).filter((x) => !x.checked).map((x) => x.dataset.key);
+      try { await api(`/api/admin/addons/${id}`, { hidden }, "PUT"); toast(c.checked ? "Shelf shown on Home" : "Shelf hidden from Home"); } catch (er) { toast(er.message, 5000); }
+    }));
+    $$("[data-aref]", box).forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
+      try { await api(`/api/admin/addons/${b.dataset.aref}`, { refresh: true }, "PUT"); toast("Addon refreshed"); drawAddons(); } catch (er) { toast(er.message, 5000); b.disabled = false; }
+    }));
+    $$("[data-arm]", box).forEach((b) => (b.onclick = async () => {
+      const a = r.addons.find((x) => x.id === Number(b.dataset.arm));
+      if (!(await confirmSheet(`Remove ${a.name}?`, "Its shelves, subtitles and metadata won't be used anymore. You can install it again later.", "Remove"))) return;
+      try { await api(`/api/admin/addons/${a.id}`, undefined, "DELETE"); toast("Addon removed"); drawAddons(); } catch (er) { toast(er.message, 5000); }
     }));
   }
 
@@ -1072,10 +1169,22 @@
       await startHls(start);
     }
     pl.v.playbackRate = pl.rate;
-    if (prefs.sub_lang) {
+    const pickSub = () => {
+      if (!prefs.sub_lang || pl.subId || pl.subUserSet) return;
       const s = info.subs.find((x) => !x.forced && (x.lang === prefs.sub_lang || x.label.startsWith(prefs.sub_lang)));
       if (s) loadSubs(s.id, true);
-    }
+    };
+    pickSub();
+    pl.subUserSet = false;
+    // Subtitles from addons come in after the video starts so a slow addon never holds up playback
+    api(`/api/addon-subs/${fid}`).then((r) => {
+      if (!pl.info || pl.info.id !== fid || !r.subs.length) return;
+      const mine = (x) => (prefs.sub_lang && x.lang.startsWith(prefs.sub_lang) ? 0 : 1);
+      info.subs = info.subs.concat(r.subs.slice().sort((a, b) => mine(a) - mine(b)));
+      buildMenus();
+      pickSub();
+    }).catch(() => {});
+    pl.evStarted = false;
     pl.saveT = setInterval(saveProgress, 10000);
     wakeUi();
   }
@@ -1141,9 +1250,15 @@
     api("/api/progress", { file_id: pl.info.id, pos: pos(), dur: total() }).catch(() => {});
   }
 
+  // Tells tracking addons what's playing, only when the profile has turned that on
+  function sendEvent(action) {
+    if (!pl.info || !ME.profile || !ME.profile.prefs || !ME.profile.prefs.share_events) return;
+    api("/api/event", { file_id: pl.info.id, action, pos: pos(), dur: total() }).catch(() => {});
+  }
+
   function closePlayer(keepOpen) {
     const wasOpen = !pl.el.hidden;
-    if (pl.info) saveProgress();
+    if (pl.info) { saveProgress(); if (pl.evStarted) sendEvent("stop"); pl.evStarted = false; }
     clearInterval(pl.saveT);
     clearInterval(pl.upNextT);
     if (pl.hls) { pl.hls.destroy(); pl.hls = null; }
@@ -1189,14 +1304,14 @@
     $("#pSubs").innerHTML = ic("cc");
     $("#pSubs").hidden = !info.subs.length;
     $("#mSubs").innerHTML = `<button data-s=""><span class="chk">${!pl.subId ? ic("check") : ""}</span>Off</button>` +
-      info.subs.map((s) => `<button data-s="${s.id}"><span class="chk">${s.id === pl.subId ? ic("check") : ""}</span>${esc(s.label)}${s.kind === "embedded" && !s.ready ? ' <span class="tertiary">(prepares first)</span>' : ""}</button>`).join("");
+      info.subs.map((s) => `<button data-s="${s.id}"><span class="chk">${s.id === pl.subId ? ic("check") : ""}</span>${esc(s.label)}${s.kind === "embedded" && !s.ready ? ' <span class="tertiary">(prepares first)</span>' : ""}${s.source ? ` <span class="tertiary src">${esc(s.source)}</span>` : ""}</button>`).join("");
     $("#mSpeed").innerHTML = [0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => `<button data-r="${r}"><span class="chk">${r === pl.rate ? ic("check") : ""}</span>${r === 1 ? "Normal" : r + "×"}</button>`).join("");
     $("#pSpeed").innerHTML = ic("speed") + (pl.rate === 1 ? "" : `<span class="rate-badge">${pl.rate}×</span>`);
     $("#mAudio").querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => {
       pl.audio = Number(b.dataset.a); hideMenus(); buildMenus();
       startHls(pos());  // A different audio track needs a fresh stream from the server
     }));
-    $("#mSubs").querySelectorAll("[data-s]").forEach((b) => (b.onclick = () => { hideMenus(); loadSubs(b.dataset.s); }));
+    $("#mSubs").querySelectorAll("[data-s]").forEach((b) => (b.onclick = () => { hideMenus(); pl.subUserSet = true; loadSubs(b.dataset.s); }));
     $("#mSpeed").querySelectorAll("[data-r]").forEach((b) => (b.onclick = () => { pl.rate = Number(b.dataset.r); pl.v.playbackRate = pl.rate; hideMenus(); buildMenus(); }));
     const ad = $("#pAdminIntro");
     ad.hidden = !(info.is_admin && info.season != null);
@@ -1332,11 +1447,17 @@
   v.addEventListener("timeupdate", drawTime);
   v.addEventListener("progress", drawTime);
   v.addEventListener("waiting", () => spinner(true));
-  v.addEventListener("playing", () => { spinner(false); $("#pMsg").hidden = true; });
+  v.addEventListener("playing", () => {
+    spinner(false); $("#pMsg").hidden = true;
+    if (pl.info && (!pl.evStarted || pl.evPaused)) { pl.evStarted = true; pl.evPaused = false; sendEvent("start"); }
+  });
   v.addEventListener("canplay", () => spinner(false));
   const playIcon = () => { $("#pPlay").innerHTML = ic(v.paused ? "play" : "pause"); $("#pPlay").setAttribute("aria-label", v.paused ? "Play" : "Pause"); };
   v.addEventListener("play", playIcon);
-  v.addEventListener("pause", () => { playIcon(); wakeUi(); });
+  v.addEventListener("pause", () => {
+    playIcon(); wakeUi();
+    if (pl.info && pl.evStarted && !v.ended && v.currentSrc) { pl.evPaused = true; sendEvent("pause"); }
+  });
   playIcon();
   v.addEventListener("ended", () => {
     if (pl.mode === "hls" && pos() < total() - 30) return;
@@ -1436,6 +1557,7 @@
       if (page === "movies") await pageBrowse("movie");
       else if (page === "shows") await pageBrowse("series");
       else if (page === "title" && arg) await pageTitle(arg);
+      else if (page === "discover" && arg) await pageDiscover(decodeURIComponent(arg), decodeURIComponent((location.hash.split("?")[0].split("/")[3] || "")));
       else if (page === "search") await pageSearch();
       else if (page === "settings") await pageSettings();
       else if (page === "sync" && isAdmin()) await pageSync();

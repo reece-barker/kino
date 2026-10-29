@@ -415,7 +415,7 @@
         ${heroes.length > 1 ? `<div class="hero-dots" role="tablist">${heroes.map((t, i) => `<button role="tab" aria-selected="${i === 0}" aria-label="Show ${esc(t.name)}" data-dot="${i}"></button>`).join("")}</div>` : ""}
         ${isAdmin() ? `<a class="hero-live glass" id="heroLive" href="#/sync" hidden></a>` : ""}
       </section>
-      <main class="page" style="padding-top:8px">
+      <main class="page under-hero" style="padding-top:8px">
         ${h.shelves.map((s) => `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
           <div class="row ${s.style === "poster" ? "posters" : "wide"}">${s.items.map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, play: t.file_id,
@@ -621,7 +621,7 @@
             <div class="note">${clock(up.progress.dur - up.progress.pos)} left</div>` : ""}
         </div>
       </section>
-      <main class="page" style="padding-top:12px">
+      <main class="page under-hero" style="padding-top:12px">
         ${t.kind === "series" ? `<section class="section" style="margin-top:0">
           <div class="seasons" role="group" aria-label="Seasons">${seasons.map((s) => `<button class="seg" data-season="${s}" aria-pressed="${s === curSeason}">${s ? `Season ${s}` : "Extras"}</button>`).join("")}</div>
           <div class="episodes" id="eps"></div></section>` : ""}

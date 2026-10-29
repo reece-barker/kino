@@ -590,3 +590,6 @@ select.plain option { background: var(--bg-2); color: var(--label); }
 }
 /* Chromes own clear button looked out of place, the field clears fine with the keyboard */
 input[type="search"]::-webkit-search-cancel-button, input[type="search"]::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+
+/* Under a hero the page only needs to be as tall as its content, the full screen min height left a big empty gap */
+.page.under-hero { min-height: 0; padding-bottom: 72px; }

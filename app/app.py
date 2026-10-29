@@ -417,7 +417,7 @@ def slim_meta(m, kind):
     for v in m.get("videos") or []:
         if v.get("season") is None:
             continue
-        vids.append({"season": v.get("season"), "episode": v.get("episode") or v.get("number"),
+        vids.append({"id": v.get("id"), "season": v.get("season"), "episode": v.get("episode") or v.get("number"),
                      "name": unesc(v.get("name") or v.get("title")), "overview": unesc(v.get("overview") or v.get("description")),
                      "thumbnail": v.get("thumbnail"), "released": v.get("released")})
     return {
@@ -1023,13 +1023,15 @@ def continue_list(summ, wm):
     for r in rows:
         if r["file_id"].startswith("s"):
             st = db().q("SELECT * FROM streams WHERE id = ?", (r["file_id"],))
-            if st and not r["watched"] and r["dur"] and 0.02 < r["pos"] / r["dur"] < 0.93 and st[0]["video_id"] not in seen:
+            show = show_of(st[0]["video_id"]) if st else None
+            if st and not r["watched"] and r["dur"] and 0.02 < r["pos"] / r["dur"] < 0.93 and show not in seen:
                 st = dict(st[0])
-                seen.add(st["video_id"])
-                out.append({**ext_preview({"id": st["video_id"].split(":")[0], "name": st["name"], "poster": st["poster"],
-                                           "releaseInfo": st["year"]}, st["kind"]),
-                            "file_id": st["id"], "stream": True, "pos": r["pos"], "dur": r["dur"], "season": None,
-                            "episode": None, "next_episode": False})
+                seen.add(show)
+                parts = st["video_id"].split(":")
+                se = (int(parts[-2]), int(parts[-1])) if st["kind"] == "series" and len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit() else (None, None)
+                out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]),
+                            "file_id": st["id"], "stream": True, "pos": r["pos"], "dur": r["dur"], "season": se[0],
+                            "episode": se[1], "next_episode": False})
             continue
         f = LIB["files"].get(r["file_id"])
         if not f or f["title_id"] in seen:
@@ -1254,7 +1256,8 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
                       "watched": bool(w and w["watched"])})
     out = title_summary(t, meta, wm, rm)
     out.update(files=files, cast=(meta or {}).get("cast", []), director=(meta or {}).get("director"),
-               guess_name=t["guess_name"], is_admin=bool(admin_user(request)))
+               guess_name=t["guess_name"], is_admin=bool(admin_user(request)),
+               pd_streams=bool(meta and t["kind"] == "series" and any(supports(a["m"], "stream", "series", meta["id"] + ":1:1") for a in addon_rows())))
     return out
 
 
@@ -1325,7 +1328,7 @@ def chapter_like(chapters, pattern):
 @app.get("/api/file/{fid}")
 async def file_info(fid: str, request: Request, p=Depends(current_profile)):
     if fid.startswith("s"):
-        return stream_file_info(fid, p, request)
+        return await stream_file_info(fid, p, request)
     f = file_or_404(fid)
     try:
         pr = await get_probe(f)
@@ -2054,10 +2057,10 @@ async def addons_remove(aid: int, admin=Depends(require_admin)):
 
 
 @app.get("/api/external/{kind}/{mid:path}")
-async def external_title(kind: str, mid: str, p=Depends(current_profile)):
+async def external_title(kind: str, mid: str, stay: int = 0, p=Depends(current_profile)):
     if kind not in ("movie", "series"):
         raise HTTPException(404, "Unknown type")
-    for t in LIB["titles"].values():
+    for t in ([] if stay else LIB["titles"].values()):
         m = meta_for(t)
         if m and m.get("id") == mid:
             return {"library_id": t["id"]}
@@ -2065,7 +2068,19 @@ async def external_title(kind: str, mid: str, p=Depends(current_profile)):
     if not m:
         raise HTTPException(404, "Couldn't find details for that title")
     seasons = sorted({v["season"] for v in m.get("videos") or [] if v.get("season")})
-    return {**ext_preview({**m, "id": mid, "imdbRating": m.get("rating")}, kind), "poster": m.get("poster") or ext_poster({"id": mid}),
+    videos = []
+    if kind == "series":
+        # Episode progress for public domain streams, matched by the episode id the stream was found for
+        prog = {r["video_id"]: dict(r) for r in db().q(
+            "SELECT s.video_id, w.pos, w.dur, w.watched, w.updated FROM streams s JOIN watch w ON w.file_id = s.id "
+            "WHERE w.profile_id = ? AND s.video_id LIKE ? ORDER BY w.updated", (p["id"], f"{mid}:%"))}
+        for v in m.get("videos") or []:
+            if not v.get("season"):
+                continue
+            vid = ep_video_id(mid, v)
+            videos.append({**v, "id": vid, "progress": prog.get(vid)})
+        videos.sort(key=lambda v: (v["season"], v["episode"] or 0))
+    return {"videos": videos, "season_list": seasons,**ext_preview({**m, "id": mid, "imdbRating": m.get("rating")}, kind), "poster": m.get("poster") or ext_poster({"id": mid}),
             "background": m.get("background"), "logo": m.get("logo"), "runtime": m.get("runtime"), "cast": m.get("cast") or [],
             "director": m.get("director"), "seasons": len(seasons), "episodes": len(m.get("videos") or [])}
 
@@ -2166,7 +2181,7 @@ async def streams_for(kind: str, vid: str, p=Depends(current_profile)):
     if kind not in ("movie", "series"):
         raise HTTPException(404, "Unknown type")
     rows = [a for a in addon_rows() if supports(a["m"], "stream", kind, vid)]
-    meta = await meta_lookup(kind, vid.split(":")[0]) or {}
+    meta = await meta_lookup(kind, show_of(vid)) or {}
 
     async def one(a):
         try:
@@ -2198,15 +2213,44 @@ async def streams_for(kind: str, vid: str, p=Depends(current_profile)):
     return {"streams": out, "dropped": dropped, "checked": len(rows)}
 
 
-def stream_file_info(sid, p, request):
+def show_of(vid):
+    """The title id part of an episode id, tt123:1:2 -> tt123 and kitsu:1376:5 -> kitsu:1376"""
+    parts = str(vid).split(":")
+    return parts[0] if parts[0].startswith("tt") or len(parts) < 2 else ":".join(parts[:2])
+
+
+def ep_video_id(mid, v):
+    # Cinemeta episodes are tt123:1:2, other addons (kitsu) give each episode its own id
+    return v.get("id") if v.get("id") and str(v["id"]).startswith(str(mid)) else f"{mid}:{v['season']}:{v['episode']}"
+
+
+async def ep_context(kind, vid):
+    """For a show: which episode a video id is, and the one after it"""
+    if kind != "series":
+        return None, None, None
+    show = show_of(vid)
+    m = await meta_lookup("series", show) or {}
+    eps = sorted([v for v in m.get("videos") or [] if v.get("season")], key=lambda v: (v["season"], v["episode"] or 0))
+    ids = [ep_video_id(show, v) for v in eps]
+    if vid not in ids:
+        return m, None, None
+    i = ids.index(vid)
+    cur = {**eps[i], "id": vid}
+    nxt = {**eps[i + 1], "id": ids[i + 1], "video_id": ids[i + 1], "kind": "series"} if i + 1 < len(eps) else None
+    return m, cur, nxt
+
+
+async def stream_file_info(sid, p, request):
     r = stream_row(sid)
+    show, cur, nxt = await ep_context(r["kind"], r["video_id"])
     w = db().q("SELECT pos, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
     ext = Path(urlparse(r["url"]).path).suffix.lower()
     return {"id": sid, "stream": True, "name": r["name"], "src": f"/api/rstream/{sid}", "direct": True,
             "video": {"codec": None}, "audio": [], "default_audio": 0, "subs": [], "badges": ["archive.org"],
             "download": f"/api/rstream/{sid}?dl=1", "resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
-            "season": None, "episode": None, "title_id": None, "intro": None, "credits": None, "next": None,
-            "kind": r["kind"], "video_id": r["video_id"], "ext": ext, "prefs": p["prefs"], "is_admin": bool(admin_user(request))}
+            "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
+            "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
+            "title_id": None, "intro": None, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"], "ext": ext, "prefs": p["prefs"], "is_admin": bool(admin_user(request))}
 
 
 async def pd_open(url, headers):
@@ -2263,6 +2307,12 @@ async def save_stream(sid, r, admin):
     ext = ext if ext in VIDEO_EXT else ".mp4"
     folder = MEDIA_DIR / "archive" / (f"{safe} ({year})" if year else safe)
     target = folder / (f"{safe}.{year}{ext}" if year else f"{safe}{ext}")
+    _, cur, _ = await ep_context(r["kind"], r["video_id"])
+    if cur:
+        # Named the usual way so the scanner groups the episodes into the show
+        dots = re.sub(r"\s+", ".", safe)
+        folder = MEDIA_DIR / "archive" / safe / f"Season {int(cur['season']):02d}"
+        target = folder / f"{dots}.S{int(cur['season']):02d}E{int(cur['episode'] or 0):02d}{ext}"
     tmp = target.with_name(target.name + ".part")
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -2286,7 +2336,8 @@ async def save_stream(sid, r, admin):
         f = next((x for x in LIB["files"].values() if Path(x["path"]) == target), None)
         if f and r["kind"] in ("movie", "series"):
             t = LIB["titles"][f["title_id"]]
-            db().q("INSERT OR REPLACE INTO overrides VALUES (?,?,?,?)", (t["key"], r["kind"], r["video_id"].split(":")[0], time.time()))
+            show_id = show_of(r["video_id"])
+            db().q("INSERT OR REPLACE INTO overrides VALUES (?,?,?,?)", (t["key"], r["kind"], show_id, time.time()))
             await ensure_meta([(t["key"], t["kind"], t["guess_name"], t["year"])], force=True)
             st["title_id"] = t["id"]
         st["state"] = "done"

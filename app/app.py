@@ -1140,8 +1140,16 @@ def lib_by_meta_id(summ):
     return out
 
 
-def shelf_title(c):
+def shelf_title(c, a, several):
     n = str(c.get("name") or c.get("id") or "").strip()
+    addon = str(a["m"].get("name") or "").strip()
+    # Lots of addons name their catalogs like ids (top, publicdomainmovies), the addons own name reads much better then
+    if not n or n == c.get("id") or (n == n.lower() and (" " not in n or len(n) > 18)):
+        if not several or not n:
+            return addon or n
+        return f"{addon} {n.replace('-', ' ').replace('_', ' ').title()}" if len(n) <= 18 else addon
+    if n == n.lower():
+        n = n.title()
     if re.search(r"movie|film|show|series|tv|anime", n, re.I):
         return n
     word = {"movie": "Movies", "series": "Shows", "anime": "Anime", "tv": "Channels"}.get(c.get("type"), "")
@@ -1151,14 +1159,19 @@ def shelf_title(c):
 def addon_shelves(summ):
     have = lib_by_meta_id(summ)
     per_addon = {}
-    for a, c in home_catalogs():
+    cats = home_catalogs()
+    count = {}
+    for a, c in cats:
+        count[a["id"]] = count.get(a["id"], 0) + 1
+    for a, c in cats:
         metas = cached_catalog(a, c)
         if not metas:
             continue
         items = [have.get(m.get("id")) or ext_preview(m, c["type"]) for m in metas[:24] if isinstance(m, dict) and m.get("id")]
         if len(items) >= 3:
-            per_addon.setdefault(a["id"], []).append({"id": f"addon-{a['id']}-{c['type']}-{c['id']}", "title": shelf_title(c),
-                                                       "style": "poster", "items": items, "source": a["m"].get("name")})
+            per_addon.setdefault(a["id"], []).append({"id": f"addon-{a['id']}-{c['type']}-{c['id']}", "title": (title := shelf_title(c, a, count[a["id"]] > 1)),
+                                                       "style": "poster", "items": items,
+                                                       "source": None if (a["m"].get("name") or "") in title else a["m"].get("name")})
     # Takes turns between addons so one with loads of catalogs doesnt push the others off home
     out, lists = [], list(per_addon.values())
     while lists and len(out) < 8:
@@ -2177,7 +2190,7 @@ def stream_row(sid):
 
 
 @app.get("/api/streams/{kind}/{vid:path}")
-async def streams_for(kind: str, vid: str, p=Depends(current_profile)):
+async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_profile)):
     if kind not in ("movie", "series"):
         raise HTTPException(404, "Unknown type")
     rows = [a for a in addon_rows() if supports(a["m"], "stream", kind, vid)]
@@ -2186,22 +2199,33 @@ async def streams_for(kind: str, vid: str, p=Depends(current_profile)):
     async def one(a):
         try:
             # archive.org is slow so these get a bit longer than other addon calls
-            j = await addon_call(a, "stream", kind, vid, ttl=3 * 3600, timeout=25)
-            return a, j.get("streams") or []
+            j = await addon_call(a, "stream", kind, vid, ttl=3 * 3600, timeout=45)
+            return a, j.get("streams") or [], None
+        except httpx.TimeoutException:
+            return a, [], "took too long to answer"
         except Exception as e:
             log.info("streams from %s failed: %s", a["m"].get("name"), e)
-            return a, []
+            return a, [], "couldn't be reached" if isinstance(e, (httpx.ConnectError, socket.gaierror)) else "gave an error"
 
-    out, dropped = [], 0
-    for a, streams in await asyncio.gather(*(one(a) for a in rows)):
+    out, dropped, report = [], 0, []
+    for a, streams, err in await asyncio.gather(*(one(a) for a in rows)):
+        rep_ = {"addon": a["m"].get("name"), "found": len(streams), "kept": 0, "other": [], "error": err}
+        report.append(rep_)
         for st in streams[:40]:
             if not isinstance(st, dict):
                 continue
             url = st.get("url")
+            # archive.org works on https too, so old http links get upgraded instead of dropped
+            if isinstance(url, str) and url.startswith("http://") and pd_url_ok("https://" + url[7:]):
+                url = "https://" + url[7:]
             # Torrents, youtube ids, outside links and anything not on a public domain host are left out
             if st.get("infoHash") or st.get("ytId") or st.get("externalUrl") or not pd_url_ok(url):
                 dropped += 1
+                what = "torrent" if st.get("infoHash") else "youtube" if st.get("ytId") else urlparse(str(url or st.get("externalUrl") or "")).hostname or "unknown"
+                if what not in rep_["other"]:
+                    rep_["other"].append(what)
                 continue
+            rep_["kept"] += 1
             sid = "s" + short_id(f"{kind}:{vid}:{url}")[:15]
             label = " ".join(str(x).strip() for x in (st.get("name"), st.get("title") or st.get("description")) if x)
             db().q("INSERT OR REPLACE INTO streams VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -2210,7 +2234,11 @@ async def streams_for(kind: str, vid: str, p=Depends(current_profile)):
             w = db().q("SELECT pos, dur, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
             out.append({"id": sid, "label": label or "archive.org", "addon": a["m"].get("name"),
                         "host": urlparse(url).hostname, "progress": dict(w[0]) if w else None})
-    return {"streams": out, "dropped": dropped, "checked": len(rows)}
+    res = {"streams": out, "dropped": dropped, "checked": len(rows)}
+    if admin_user(request):
+        res["report"] = report
+        res["stream_addons"] = [a["m"].get("name") for a in addon_rows() if supports(a["m"], "stream")]
+    return res
 
 
 def show_of(vid):

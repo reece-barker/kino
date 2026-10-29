@@ -824,7 +824,7 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
   box-shadow: inset 0 1px 0 var(--glass-hi), inset 0 0 0 0.5px var(--glass-edge), var(--side-shadow);
   transition: width 0.5s var(--spring), box-shadow 0.4s ease, background-color 0.35s ease;
 }
-.side:hover, .side:focus-within, .side.pinned { width: var(--rail-open); }
+.side.open, .side.pinned { width: var(--rail-open); }
 .side-shine {
   position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
   background: radial-gradient(120% 60% at 0% 0%, rgba(255, 255, 255, 0.12), transparent 60%);
@@ -834,7 +834,7 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 .side-me:hover, .side-me:focus-visible, .side.pinned .side-me { background: var(--hover); }
 .side-me .av { flex: none; width: 34px; height: 34px; border-radius: 50%; }
 .side-lbl { white-space: nowrap; opacity: 0; transform: translateX(-8px); transition: opacity 0.25s ease, transform 0.45s var(--spring); }
-.side:hover .side-lbl, .side:focus-within .side-lbl, .side.pinned .side-lbl { opacity: 1; transform: none; transition-delay: 0.06s; }
+.side.open .side-lbl, .side.pinned .side-lbl { opacity: 1; transform: none; transition-delay: 0.06s; }
 .side-name { font-size: 17px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .side-time { font-size: 15px; color: var(--label-2); font-variant-numeric: tabular-nums; }
 .side-menu { top: calc(100% + 6px); bottom: auto; left: 0; right: 0; min-width: 0; z-index: 60; padding: 6px; border-radius: 20px; }
@@ -862,7 +862,7 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 .side-head:hover { color: var(--label); background: var(--hover); }
 .side-head svg { font-size: 18px; flex: none; transition: transform 0.45s var(--spring); }
 .side-group.open .side-head svg { transform: rotate(180deg); }
-.side:not(:hover):not(:focus-within):not(.pinned) .side-head { justify-content: center; padding: 0; }
+.side:not(.open):not(.pinned) .side-head { justify-content: center; padding: 0; }
 .side-sub { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.45s var(--spring), opacity 0.3s ease; opacity: 0; }
 .side-sub-in { min-height: 0; overflow: hidden; padding-top: 6px; }
 .side-group.open .side-sub { grid-template-rows: 1fr; opacity: 1; }
@@ -873,8 +873,8 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 .side-badge.paused .dot { background: var(--orange); }
 .side-badge.error .dot { background: var(--red); }
 /* collapsed rail shows a dot on the icon instead of the text */
-.side:not(:hover):not(:focus-within):not(.pinned) .side-badge { position: absolute; left: 40px; top: 8px; padding: 0; }
-.side:not(:hover):not(:focus-within):not(.pinned) .side-badge .txt { display: none; }
+.side:not(.open):not(.pinned) .side-badge { position: absolute; left: 40px; top: 8px; padding: 0; }
+.side:not(.open):not(.pinned) .side-badge .txt { display: none; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(48, 209, 88, 0); } }
 .theme-pick { display: flex; gap: 4px; padding: 4px; border-radius: 16px; background: var(--fill); }
 .theme-pick button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 6px; border-radius: 12px; font-size: 12px; font-weight: 600; color: var(--label-2); transition: background 0.3s var(--spring), color 0.2s, box-shadow 0.3s; }
@@ -1031,8 +1031,21 @@ body.with-side .hero-dots { left: auto; }
   .side, .side-lbl, .side-pill, .side-sub { transition: none !important; }
   .hero-dots button i { animation: none !important; width: 100%; }
 }
-.side:not(:hover):not(:focus-within):not(.pinned) .side-head .side-lbl { display: none; }
+.side:not(.open):not(.pinned) .side-head .side-lbl { display: none; }
 /* only the home hero has shelves sliding up over it, title pages keep there content below the artwork */
 .page.under-hero { margin-top: 0; }
 .hero ~ .page.under-hero { margin-top: clamp(-150px, -15vh, -110px); }
 @media (max-width: 760px) { .hero ~ .page.under-hero { margin-top: -96px; } }
+
+/* settings uses the whole width, cards flow into two columns on wide screens like a masonry grid */
+.page.narrow.settings > * { max-width: none; margin-left: 0; margin-right: 0; }
+.page.settings { columns: 2 460px; column-gap: 20px; }
+.page.settings > .large-title { column-span: all; }
+.page.settings #adminSettings { display: contents; }
+.page.settings .card { break-inside: avoid; margin: 0 0 20px; display: block; width: 100%; }
+@media (min-width: 2200px) { .page.settings { columns: 3 460px; } }
+
+/* TVs and big monitors: everything is sized up so it reads from the sofa, like the 10 foot ui on apple tv */
+@media (min-width: 1800px) { html { zoom: 1.2; } }
+@media (min-width: 2400px) { html { zoom: 1.5; } }
+@media (min-width: 3400px) { html { zoom: 2; } }

@@ -1,0 +1,57 @@
+name: Deploy kino
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets you rerun the deploy from the Actions tab
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-kino
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Catches typos before they ever reach the vps, a broken push just stops here
+      - name: Syntax checks
+        run: |
+          python3 -m py_compile app/app.py sync/sync.py
+          node --check app/static/app.js
+          bash -n install.sh
+          bash -n deploy/update.sh
+
+      - name: App starts and answers
+        run: |
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -q -r app/requirements.txt
+          mkdir -p /tmp/media /tmp/data
+          cd app
+          MEDIA_DIR=/tmp/media DATA_DIR=/tmp/data KINO_SECRET=ci OFFLINE_META=1 \
+            /tmp/venv/bin/uvicorn app:app --port 8282 &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8282/healthz && break; sleep 1; done
+          curl -fs http://127.0.0.1:8282/healthz
+          curl -fs http://127.0.0.1:8282/ | grep -q "<title>Kino</title>"
+          # Not signed in has to be refused
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8282/api/library)" = 401
+
+  deploy:
+    needs: check
+    # Pull requests only get checked, only main goes live
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: root
+          key: ${{ secrets.KINO_DEPLOY_KEY }}
+          # The key is locked to kino-update on the server so this is the only thing it can run anyway
+          script: kino-update
+          command_timeout: 20m

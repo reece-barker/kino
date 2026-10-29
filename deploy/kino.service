@@ -1,0 +1,27 @@
+[Unit]
+Description=Kino dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kino
+Group=kino
+EnvironmentFile=/etc/kino/kino.env
+WorkingDirectory=/opt/kino
+ExecStart=/opt/kino/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8282 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
+Restart=on-failure
+RestartSec=3
+StateDirectory=kino
+StateDirectoryMode=0755
+# Locks the app down so even if something goes wrong it cant touch the rest of the vps
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

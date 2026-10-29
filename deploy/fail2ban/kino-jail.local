@@ -1,0 +1,9 @@
+[kino]
+enabled  = true
+backend  = systemd
+journalmatch = _SYSTEMD_UNIT=kino.service
+filter   = kino
+maxretry = 8
+findtime = 15m
+bantime  = 12h
+port     = http,https

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the torbox sync every day
+
+[Timer]
+# 4am every day, and Persistent makes it catch up if the vps was off at that time
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

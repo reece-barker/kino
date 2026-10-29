@@ -37,6 +37,7 @@
     more: "M6 10.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3z",
     flag: "M5 3h2v18H5zm3 1h10l-2 4 2 4H8z",
     mic: "M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z",
+    globe: "M12 2a10 10 0 100 20 10 10 0 000-20zm6.9 6h-3a15.7 15.7 0 00-1.4-3.6A8 8 0 0118.9 8zM12 4a14 14 0 011.9 4h-3.8A14 14 0 0112 4zM4.3 14a8.2 8.2 0 010-4h3.4a16.5 16.5 0 000 4zm.8 2h3a15.7 15.7 0 001.4 3.6A8 8 0 015.1 16zm3-8h-3a8 8 0 014.3-3.6A15.7 15.7 0 008.1 8zM12 20a14 14 0 01-1.9-4h3.8A14 14 0 0112 20zm2.3-6H9.7a14.7 14.7 0 010-4h4.6a14.7 14.7 0 010 4zm.3 5.6a15.7 15.7 0 001.4-3.6h3a8 8 0 01-4.4 3.6zm1.7-5.6a16.5 16.5 0 000-4h3.4a8.2 8.2 0 010 4z",
     info: "M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-6h2zm0-8h-2V7h2z",
     puzzle: "M20.5 11H19V7a2 2 0 00-2-2h-4V3.5a2.5 2.5 0 00-5 0V5H4a2 2 0 00-2 2v3.8h1.5a2.7 2.7 0 010 5.4H2V20a2 2 0 002 2h3.8v-1.5a2.7 2.7 0 015.4 0V22H17a2 2 0 002-2v-4h1.5a2.5 2.5 0 000-5z",
   };
@@ -422,7 +423,7 @@
       <main class="page under-hero" style="padding-top:8px">
         ${h.shelves.map((s) => `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
           <div class="row ${s.style === "poster" ? "posters" : "wide"}">${s.items.map((t) => s.style === "poster" ? posterTile(t)
-            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, play: t.file_id,
+            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, play: t.file_id, href: t.stream ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
             : wideTile(t)).join("")}</div></section>`).join("")}
       </main>`;
@@ -431,6 +432,7 @@
 
     app.querySelectorAll("[data-play]").forEach((a) => a.addEventListener("click", async (e) => {
       e.preventDefault();
+      if (a.dataset.play.startsWith("s")) return playFile(a.dataset.play, {});
       const t = await api(`/api/title/${a.dataset.tid}`);
       const f = t.files.find((x) => x.id === a.dataset.play);
       playFile(a.dataset.play, { title: t, from: f && f.progress ? f.progress.pos : 0 });
@@ -735,7 +737,7 @@
           ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
           <div class="hero-meta">${facts.map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
           ${t.description ? `<p class="hero-desc" style="-webkit-line-clamp:4">${esc(t.description)}</p>` : ""}
-          <div class="not-lib glass">${ic("info")}<span>Not in Your Library. Kino only plays what's been downloaded to the Storage Box.</span></div>
+          <div id="pdBox"><div class="not-lib glass">${ic("info")}<span>Not in Your Library. Looking for a public domain copy…</span></div></div>
         </div>
       </section>
       <main class="page under-hero" style="padding-top:12px">
@@ -747,6 +749,51 @@
         </div></section>
       </main>`;
     wireTopbar();
+    drawStreams(kind, id, t);
+  }
+
+  // Public domain copies from addons, the server only hands back ones that are actually on archive.org
+  async function drawStreams(kind, id, t) {
+    const box = $("#pdBox");
+    const none = `<div class="not-lib glass">${ic("info")}<span>Not in Your Library. Kino only plays what's on the Storage Box, or public domain films from archive.org.</span></div>`;
+    if (kind !== "movie") { box.innerHTML = none; return; }
+    let r;
+    try { r = await api(`/api/streams/${kind}/${encodeURIComponent(id)}`); } catch (_) { r = { streams: [] }; }
+    if (!$("#pdBox")) return;
+    if (!r.streams.length) { box.innerHTML = none; return; }
+    const first = r.streams[0];
+    const res = first.progress && !first.progress.watched && first.progress.pos > 30 ? first.progress : null;
+    box.innerHTML = `<div class="actions">
+        <button class="btn primary" id="pdPlay">${ic("play")} ${res ? "Resume" : "Play"}</button>
+        ${r.streams.length > 1 ? `<button class="btn secondary" id="pdMore">${r.streams.length} Sources</button>` : ""}
+        ${isAdmin() ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
+      </div>
+      ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}
+      <div class="note pd-note">${ic("globe")} Public domain, streaming from archive.org. It can be slow to start.</div>`;
+    const play = (s) => playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
+    $("#pdPlay").onclick = () => play(first);
+    const more = $("#pdMore");
+    if (more) more.onclick = () => {
+      const sh = sheet(`<h2>Sources</h2><p class="secondary">All of these are public domain copies on archive.org. The quality and cut can differ.</p>
+        <div class="fm-results">${r.streams.map((s, i) => `<button class="fm-item" data-src="${i}"><span class="grow"><b>${esc(nice(s.label))}</b><span class="secondary">${esc(s.addon)} · ${esc(s.host)}</span></span>${ic("play")}</button>`).join("")}</div>
+        <div class="actions end"><button class="btn secondary small" data-close>Close</button></div>`, { wide: true });
+      $$("[data-src]", sh.el).forEach((b) => (b.onclick = () => { sh.close(); play(r.streams[Number(b.dataset.src)]); }));
+    };
+    const save = $("#pdSave");
+    if (save) save.onclick = async () => {
+      if (!(await confirmSheet(`Save ${t.name} to the Library?`, "Kino downloads this public domain copy from archive.org to the Storage Box, so it plays like everything else. Big films can take a while.", "Save to Library", false))) return;
+      try { await api(`/api/admin/streams/${first.id}/save`, {}); toast("Saving to the Library, you can keep browsing"); watchSave(first.id); }
+      catch (e) { toast(e.message, 5000); }
+    };
+  }
+
+  function watchSave(sid) {
+    const t = setInterval(async () => {
+      let s;
+      try { s = await api(`/api/admin/streams/${sid}/save`); } catch (_) { clearInterval(t); return; }
+      if (s.state === "done") { clearInterval(t); toast("Saved to the Library"); if (s.title_id && location.hash.startsWith("#/discover/")) location.hash = `#/title/${s.title_id}`; }
+      else if (s.state === "failed") { clearInterval(t); toast(`Saving failed: ${s.error || "unknown error"}`, 6000); }
+    }, 4000);
   }
 
   // Fix match: search cinemeta and pick the right title, it sticks even after rescans
@@ -876,7 +923,7 @@
     const uses = (u) => [u.catalogs && "Catalogs", u.meta && "Metadata", u.subtitles && "Subtitles", u.events && "Watch Activity"].filter(Boolean);
     box.innerHTML = `
       <h2 class="set-title">Addons</h2>
-      <p class="secondary set-hint">Paste the link to any Stremio addon, it ends with manifest.json. Kino uses their catalogs on Home and in Search, their metadata for matching, their subtitles in the player and their watch activity tracking. Streams from addons aren't used.</p>
+      <p class="secondary set-hint">Paste the link to any Stremio addon, it ends with manifest.json. Kino uses their catalogs on Home and in Search, their metadata for matching, their subtitles in the player and their watch activity tracking. Streams are only played when they're public domain films on archive.org, anything else an addon offers is ignored.</p>
       <div class="list">${r.addons.map((a) => `<div class="addon ${a.enabled ? "" : "off"}">
         <div class="addon-top">
           <span class="addon-logo">${a.logo ? `<img src="${img(a.logo)}" alt="" data-fallback="hide">` : ic("puzzle")}</span>
@@ -884,7 +931,7 @@
             ${a.description ? `<span class="addon-desc secondary">${esc(a.description)}</span>` : ""}</span>
           <input type="checkbox" class="switch" data-aon="${a.id}" ${a.enabled ? "checked" : ""} aria-label="Turn ${esc(a.name)} on or off">
         </div>
-        <div class="addon-tags">${uses(a.uses).map((u) => `<span class="badge">${u}</span>`).join("")}${a.uses.streams ? `<span class="badge dim">Streams Not Used</span>` : ""}
+        <div class="addon-tags">${uses(a.uses).map((u) => `<span class="badge">${u}</span>`).join("")}${a.uses.streams ? `<span class="badge">Streams (archive.org Only)</span>` : ""}
           ${a.config_required ? `<span class="badge warn">Needs Setting Up</span>` : ""}</div>
         ${a.config_required ? `<div class="note">This addon has to be set up on its own website first. Paste the link it gives you after setting it up.</div>` : ""}
         <div class="addon-foot">
@@ -1147,6 +1194,29 @@
     if (prefs.audio_lang) { const a = info.audio.find((x) => x.lang === prefs.audio_lang); if (a) pl.audio = a.n; }
     const t = opts.title;
     $("#pTitle").textContent = t ? t.name : info.name;
+    if (info.stream) {
+      $("#pSub").textContent = "Public Domain · archive.org";
+      buildMenus();
+      setupDeviceButtons();
+      pl.mode = "direct";
+      pl.v.src = info.src;
+      const from = opts.from != null ? opts.from : info.resume || 0;
+      pl.v.addEventListener("loadedmetadata", () => { if (from && from < pl.v.duration - 10) pl.v.currentTime = from; }, { once: true });
+      pl.v.addEventListener("error", () => { if (pl.info === info) showMsg("This copy won't play here", "archive.org may be slow or the format isn't supported by this browser. Try another source.", `<a class="btn secondary small" href="${esc(info.download)}">${ic("download")} Download instead</a>`); }, { once: true });
+      pl.v.play().catch(() => {});
+      pl.v.playbackRate = pl.rate;
+      api(`/api/addon-subs/${fid}`).then((r) => {
+        if (!pl.info || pl.info.id !== fid || !r.subs.length) return;
+        const mine = (x) => (prefs.sub_lang && x.lang.startsWith(prefs.sub_lang) ? 0 : 1);
+        info.subs = r.subs.slice().sort((a, b) => mine(a) - mine(b));
+        buildMenus();
+        if (prefs.sub_lang && !pl.subId) { const s = info.subs.find((x) => x.lang.startsWith(prefs.sub_lang)); if (s) loadSubs(s.id, true); }
+      }).catch(() => {});
+      pl.evStarted = false; pl.subUserSet = false;
+      pl.saveT = setInterval(saveProgress, 10000);
+      wakeUi();
+      return;
+    }
     const f = t && t.files.find((x) => x.id === fid);
     $("#pSub").textContent = t && t.kind === "series" && f ? `${epLabel(f.season, f.episode)}${f.ep_name ? "  " + nice(f.ep_name) : ""}` : (info.badges || []).join("  ");
     buildMenus();
@@ -1273,7 +1343,7 @@
       document.body.style.overflow = "";
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       // Redraws the page behind so resume bars and watched ticks are up to date
-      if (ME.profile && (location.hash.startsWith("#/title/") || location.hash === "#/home" || !location.hash)) setTimeout(route, 400);
+      if (ME.profile && (location.hash.startsWith("#/title/") || location.hash.startsWith("#/discover/") || location.hash === "#/home" || !location.hash)) setTimeout(route, 400);
     }
   }
 

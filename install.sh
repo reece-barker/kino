@@ -21,7 +21,8 @@ if ! mountpoint -q /srv/torbox; then
   # A first install needs the box, an update can still go ahead and the dashboard will say its not mounted
   [ "$UPDATE" = 1 ] && warn "/srv/torbox isnt mounted right now" || die "/srv/torbox isnt mounted, run 'mount -a' and check 'df -h /srv/torbox' first"
 fi
-if ss -ltn | grep -q ":$PORT " && ! systemctl is-active -q kino.service; then
+# The old sb1 dashboard used the same port, its moved over further down so it doesnt count
+if ss -ltn | grep -q ":$PORT " && ! systemctl is-active -q kino.service && ! systemctl is-active -q sb1.service; then
   die "Something else is already using port $PORT"
 fi
 

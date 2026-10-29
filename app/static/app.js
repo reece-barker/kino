@@ -36,6 +36,7 @@
     lock: "M7 10V7a5 5 0 0110 0v3h1a1 1 0 011 1v9a1 1 0 01-1 1H6a1 1 0 01-1-1v-9a1 1 0 011-1zm2 0h6V7a3 3 0 00-6 0z",
     more: "M6 10.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm6 0a1.5 1.5 0 110 3 1.5 1.5 0 010-3z",
     flag: "M5 3h2v18H5zm3 1h10l-2 4 2 4H8z",
+    mic: "M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z",
   };
   const ic = (n) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${P[n]}"/></svg>`;
 
@@ -111,6 +112,12 @@
     if (s < 3600) return `${Math.floor(s / 60)} min ago`;
     if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
     return `${Math.floor(s / 86400)} d ago`;
+  };
+  // Some episode names come in ALL CAPS from cinemeta, this makes them read normally
+  const SMALL = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "vs"]);
+  const nice = (t) => {
+    if (!t || t !== t.toUpperCase() || !/[A-Z]{3}/.test(t)) return t;
+    return t.toLowerCase().split(" ").map((w, i) => (i && SMALL.has(w) ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(" ");
   };
   const epLabel = (s, e) => (s != null && e != null ? `S${s}, E${e}` : e != null ? `Episode ${e}` : "");
 
@@ -195,7 +202,7 @@
 
   // ---------------------------------------------------------- shell
   function topbar(active) {
-    const tabs = [["home", "Home"], ["movies", "Movies"], ["shows", "Shows"]];
+    const tabs = [["home", "Home"], ["movies", "Movies"], ["shows", "Shows"], ["search", "Search"]];
     if (isAdmin()) tabs.push(["sync", "Sync"], ["server", "Server"]);
     const p = ME.profile;
     return `<header class="topbar" id="topbar">
@@ -203,14 +210,13 @@
       <nav class="tabs glass" aria-label="Sections">${tabs.map(([k, l]) => `<a class="tab" href="#/${k}" ${k === active ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>
       <div class="top-right">
         ${isAdmin() ? `<a href="#/sync" class="sync-chip glass" id="syncChip"><span class="dot"></span><span class="txt">Sync</span></a>` : ""}
-        <a class="icon-btn" href="#/search" aria-label="Search" ${active === "search" ? 'aria-current="page"' : ""}>${ic("search")}</a>
         <div class="menu-wrap">
           <button class="avatar-btn" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu">${avatar(p.icon, "sm")}</button>
           <div class="menu drop" id="avatarMenu" hidden>
             <div class="menu-head">${avatar(p.icon, "xs")}<span>${esc(p.name)}</span></div>
-            <a href="#/profiles" class="mi">Switch profile</a>
+            <a href="#/profiles" class="mi">Switch Profile</a>
             <a href="#/settings" class="mi">Settings</a>
-            ${isAdmin() ? `<button class="mi" id="adminOut">Sign out of admin (${esc(ME.admin)})</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin sign in</button>`}
+            ${isAdmin() ? `<button class="mi" id="adminOut">Sign Out of Admin</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin Sign In</button>`}
           </div>
         </div>
       </div>
@@ -253,7 +259,7 @@
   function adminLogin(then) {
     const s = sheet(`<form id="adminForm" autocomplete="on">
       <div class="sheet-icon">${ic("lock")}</div>
-      <h2>Admin sign in</h2>
+      <h2>Admin Sign In</h2>
       <p class="secondary">For the sync, server and settings. Watching doesn't need this.</p>
       <label class="field"><span class="sr">Username</span><input name="username" autocomplete="username" placeholder="Username" required autocapitalize="none" spellcheck="false"></label>
       <label class="field"><span class="sr">Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Password" required></label>
@@ -288,9 +294,9 @@
     ME.admin = r.admin;
     app.innerHTML = `<main class="who">
       <div class="who-corner">${isAdmin()
-        ? `<span class="secondary">Admin: ${esc(ME.admin)}</span><button class="btn secondary small" id="adminOut2">Sign out</button>`
+        ? `<span class="secondary">Signed in as ${esc(ME.admin)}</span><button class="btn secondary small" id="adminOut2">Sign Out</button>`
         : `<button class="btn secondary small" id="adminIn2">${ic("lock")} Admin</button>`}</div>
-      <h1 class="who-title">${manage ? "Manage Profiles" : "Who's watching?"}</h1>
+      <h1 class="who-title">${manage ? "Manage Profiles" : "Who's Watching?"}</h1>
       <div class="who-grid ${manage ? "managing" : ""}">
         ${r.profiles.map((p) => `<button class="who-tile" data-pid="${p.id}" aria-label="${manage ? "Edit" : "Watch as"} ${esc(p.name)}">
           <span class="who-av">${avatar(p.icon, "lg")}${manage ? `<span class="who-edit">${ic("pencil")}</span>` : ""}</span>
@@ -322,7 +328,7 @@
     const s = sheet(`<h2>${isNew ? "Add Profile" : "Edit Profile"}</h2>
       <div class="edit-top"><span id="epPreview">${avatar(icon, "lg")}</span>
         <label class="field grow"><span class="sr">Name</span><input id="epName" maxlength="24" placeholder="Name" value="${esc(p ? p.name : "")}"></label></div>
-      <h3 class="sheet-sub">Choose an icon</h3>
+      <h3 class="sheet-sub">Choose an Icon</h3>
       <div class="icon-grid" role="radiogroup" aria-label="Profile icon">${AV.map((a, i) => `<button class="icon-pick" role="radio" aria-checked="${i === icon}" data-i="${i}" aria-label="${a[0]}">${avatar(i, "md")}</button>`).join("")}</div>
       <div class="form-err" id="epErr" role="alert"></div>
       <div class="actions between">
@@ -493,9 +499,9 @@
       <h1 class="large-title">${kind === "movie" ? "Movies" : "TV Shows"}</h1>
       <div class="toolbar">
         <label class="search">${ic("search")}<span class="sr">Filter</span><input id="q" type="search" placeholder="Filter ${kind === "movie" ? "movies" : "shows"}"></label>
-        <select class="plain" id="sort" aria-label="Sort"><option value="added">Recently added</option><option value="name">Name</option><option value="year">Year</option><option value="rating">Rating</option></select>
-        <select class="plain" id="genre" aria-label="Genre"><option value="">All genres</option>${genres.map((g) => `<option>${esc(g)}</option>`).join("")}</select>
-        <select class="plain" id="seen" aria-label="Watched"><option value="">Watched and unwatched</option><option value="no">Unwatched</option><option value="yes">Watched</option></select>
+        <select class="plain" id="sort" aria-label="Sort"><option value="added">Recently Added</option><option value="name">Name</option><option value="year">Year</option><option value="rating">Rating</option></select>
+        <select class="plain" id="genre" aria-label="Genre"><option value="">All Genres</option>${genres.map((g) => `<option>${esc(g)}</option>`).join("")}</select>
+        <select class="plain" id="seen" aria-label="Watched"><option value="">Watched and Unwatched</option><option value="no">Unwatched</option><option value="yes">Watched</option></select>
         <span class="secondary" id="count" style="font-size:15px"></span>
       </div>
       <div class="grid" id="grid"></div></main>`;
@@ -516,11 +522,13 @@
   async function pageSearch() {
     const start = decodeURIComponent((location.hash.split("?q=")[1] || ""));
     app.innerHTML = topbar("search") + `<main class="page">
-      <label class="search big">${ic("search")}<span class="sr">Search</span><input id="sq" type="search" placeholder="Films, shows, actors, genres, episodes" value="${esc(start)}" autocomplete="off"></label>
+      <div class="search big">${ic("search")}<label class="sr" for="sq">Search</label><input id="sq" type="search" placeholder="Films, shows, actors and more" value="${esc(start)}" autocomplete="off">
+        <button class="mic-btn" id="micBtn" type="button" aria-label="Search by Voice" title="Search by Voice" hidden>${ic("mic")}</button></div>
       <div id="sres"></div></main>`;
     wireTopbar();
     const input = $("#sq");
     input.focus();
+    setupMic(input, () => run());
     let t, seq = 0;
     const run = async () => {
       const q = input.value.trim();
@@ -533,7 +541,7 @@
       box.innerHTML = (r.titles.length ? `<h2 class="section-title" style="margin-top:28px">Films and Shows</h2><div class="grid">${r.titles.map(posterTile).join("")}</div>` : "")
         + (r.episodes.length ? `<h2 class="section-title" style="margin-top:36px">Episodes</h2><div class="grid wide-grid">${r.episodes.map((e) => `
           <a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail)}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
-          <div class="cap">${esc(e.name)}</div><div class="sub">${esc(e.show)} · ${esc(epLabel(e.season, e.episode))}</div></a>`).join("")}</div>` : "")
+          <div class="cap">${esc(nice(e.name))}</div><div class="sub">${esc(e.show)} · ${esc(epLabel(e.season, e.episode))}</div></a>`).join("")}</div>` : "")
         || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor or genre.</p></div>`;
       $$("[data-play]", box).forEach((a) => a.addEventListener("click", async (ev) => {
         ev.preventDefault();
@@ -543,6 +551,38 @@
     };
     input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(run, 220); });
     run();
+  }
+
+  // Voice search with the browsers own speech recognition, the button only shows where the browser has it
+  function setupMic(input, onDone) {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const btn = $("#micBtn");
+    if (!SR || !btn) return;
+    btn.hidden = false;
+    let rec = null;
+    btn.onclick = () => {
+      if (rec) { rec.stop(); return; }
+      rec = new SR();
+      rec.lang = navigator.language || "en-GB";
+      rec.interimResults = true;
+      rec.maxAlternatives = 1;
+      btn.classList.add("listening");
+      btn.setAttribute("aria-label", "Stop Listening");
+      input.placeholder = "Listening…";
+      rec.onresult = (e) => {
+        input.value = Array.from(e.results).map((r) => r[0].transcript).join("").replace(/[.?!]$/, "");
+        input.dispatchEvent(new Event("input"));
+      };
+      rec.onerror = (e) => toast(e.error === "not-allowed" || e.error === "service-not-allowed" ? "Microphone access is blocked, allow it in your browser settings" : e.error === "no-speech" ? "Didn't catch that, try again" : "Voice search isn't working right now");
+      rec.onend = () => {
+        rec = null;
+        btn.classList.remove("listening");
+        btn.setAttribute("aria-label", "Search by Voice");
+        input.placeholder = "Films, shows, actors and more";
+        onDone && onDone();
+      };
+      try { rec.start(); } catch (_) { rec = null; btn.classList.remove("listening"); }
+    };
   }
 
   // ---------------------------------------------------------- title detail
@@ -572,9 +612,9 @@
             ${t.kind === "movie" && up ? `<button class="round-btn" id="dlMain" aria-label="Download" title="Download">${ic("download")}</button>` : ""}
             ${t.is_admin ? `<div class="menu-wrap"><button class="round-btn" id="adminMore" aria-haspopup="true" aria-label="Admin options" title="Admin options">${ic("more")}</button>
               <div class="menu drop up-left" id="adminMenu" hidden>
-                <button class="mi" id="fixMatch">${ic("wand")} Fix match</button>
-                <button class="mi" id="rescanT">${ic("refresh")} Rescan library</button>
-                <button class="mi danger" id="delTitle">${ic("trash")} Delete from library</button>
+                <button class="mi" id="fixMatch">${ic("wand")} Fix Match</button>
+                <button class="mi" id="rescanT">${ic("refresh")} Rescan Library</button>
+                <button class="mi danger" id="delTitle">${ic("trash")} Delete from Library</button>
               </div></div>` : ""}
           </div>
           ${resume ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(up.progress.pos / up.progress.dur) * 100}%"></i></div>
@@ -592,7 +632,7 @@
         ${t.cast?.length ? `<section class="section"><h2 class="section-title">Cast</h2><div class="cast">${t.cast.map((c) => `<a href="#/search?q=${encodeURIComponent(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
         <section class="section"><div class="facts">
           ${t.director ? `<div><h4>Director</h4><p>${esc([].concat(t.director).join(", "))}</p></div>` : ""}
-          <div><h4>In your library</h4><p>${t.files.length} file${t.files.length === 1 ? "" : "s"}, ${bytes(t.size)}</p></div>
+          <div><h4>In Your Library</h4><p>${t.files.length} file${t.files.length === 1 ? "" : "s"}, ${bytes(t.size)}</p></div>
           ${t.genres?.length ? `<div><h4>Genres</h4><p>${esc(t.genres.join(", "))}</p></div>` : ""}
           ${!t.matched ? `<div><h4>Info</h4><p>Couldn't find this title on Cinemeta, so its shown with the file name.${t.is_admin ? " Use Fix match to pick the right one." : ""}</p></div>` : ""}
         </div></section>
@@ -609,7 +649,7 @@
           <div class="ep-row"><div class="num">${esc(epLabel(f.season, f.episode) || "Extra")}${f.duration ? ` · ${Math.max(1, Math.round(f.duration / 60))} min` : ""}</div>
             <button class="ep-mark" data-epwatch="${f.id}" data-state="${f.watched ? 1 : 0}" aria-label="${f.watched ? "Mark as unwatched" : "Mark as watched"}" title="${f.watched ? "Watched, click to unmark" : "Mark as watched"}">${ic(f.watched ? "check" : "plus")}</button>
             ${t.is_admin ? `<button class="ep-mark" data-delfile="${f.id}" aria-label="Delete this episode" title="Delete this episode">${ic("trash")}</button>` : ""}</div>
-          <div class="cap">${esc(f.ep_name || f.name)}</div>${f.ep_overview ? `<div class="ov">${esc(f.ep_overview)}</div>` : ""}</div>`;
+          <div class="cap">${esc(nice(f.ep_name) || f.name)}</div>${f.ep_overview ? `<div class="ov">${esc(f.ep_overview)}</div>` : ""}</div>`;
       }).join("");
       wireFileButtons();
     };
@@ -674,7 +714,7 @@
 
   // Fix match: search cinemeta and pick the right title, it sticks even after rescans
   function fixMatch(t) {
-    const s = sheet(`<h2>Fix match</h2><p class="secondary">The file is named <b>${esc(t.guess_name)}</b>. Search for the right film or show.</p>
+    const s = sheet(`<h2>Fix Match</h2><p class="secondary">The file is named <b>${esc(t.guess_name)}</b>. Search for the right film or show.</p>
       <div class="toolbar" style="margin:14px 0">
         <label class="search grow">${ic("search")}<input id="fmq" value="${esc(t.guess_name)}" placeholder="Title"></label>
         <select class="plain" id="fmk"><option value="movie" ${t.kind === "movie" ? "selected" : ""}>Movie</option><option value="series" ${t.kind === "series" ? "selected" : ""}>TV Show</option></select>
@@ -722,15 +762,15 @@
       </section>
       <section class="card set-card">
         <h2 class="set-title">Playback</h2>
-        <div class="set-row"><span><b>Audio language</b><span class="secondary">Picked automatically when a film has more than one</span></span>${sel("pAudioL", [["", "Original"], ...LANG_OPTS.map((l) => [l, l])], pr.audio_lang)}</div>
+        <div class="set-row"><span><b>Audio Language</b><span class="secondary">Picked automatically when a film has more than one</span></span>${sel("pAudioL", [["", "Original"], ...LANG_OPTS.map((l) => [l, l])], pr.audio_lang)}</div>
         <div class="set-row"><span><b>Subtitles</b><span class="secondary">Turned on automatically when the language is there</span></span>${sel("pSubL", [["", "Off"], ...LANG_OPTS.map((l) => [l, l])], pr.sub_lang)}</div>
-        <div class="set-row"><span><b>Subtitle size</b></span>${sel("pSubS", [["s", "Small"], ["m", "Medium"], ["l", "Large"]], pr.sub_size)}</div>
-        ${toggle("pAuto", pr.autoplay, "Autoplay next episode", "Starts the next episode after a short countdown")}
-        ${toggle("pSkip", pr.skip_intro, "Skip intros automatically", "Only works where Kino knows the intro")}
+        <div class="set-row"><span><b>Subtitle Size</b></span>${sel("pSubS", [["s", "Small"], ["m", "Medium"], ["l", "Large"]], pr.sub_size)}</div>
+        ${toggle("pAuto", pr.autoplay, "Autoplay Next Episode", "Starts the next episode after a short countdown")}
+        ${toggle("pSkip", pr.skip_intro, "Skip Intros Automatically", "Only works where Kino knows the intro")}
         <div class="actions end"><span class="secondary" id="prefSaved"></span></div>
       </section>
       ${isAdmin() ? `<div id="adminSettings"><div class="card skel" style="height:160px"></div></div>` : `
-      <section class="card set-card"><h2 class="set-title">Admin</h2><div class="set-row"><span><b>Admin tools</b><span class="secondary">Profiles, allowed networks, sync and server</span></span><button class="btn secondary small" id="setAdminIn">${ic("lock")} Sign in</button></div></section>`}
+      <section class="card set-card"><h2 class="set-title">Admin</h2><div class="set-row"><span><b>Admin Tools</b><span class="secondary">Profiles, allowed networks, sync and server</span></span><button class="btn secondary small" id="setAdminIn">${ic("lock")} Sign In</button></div></section>`}
     </main>`;
     wireTopbar();
     $("#editMe").onclick = () => editProfile(p, () => route());
@@ -759,7 +799,7 @@
         <div class="actions end"><button class="btn secondary small" id="addP">${ic("plus")} Add Profile</button></div>
       </section>
       <section class="card set-card">
-        <h2 class="set-title">Allowed networks</h2>
+        <h2 class="set-title">Allowed Networks</h2>
         <p class="secondary set-hint">Only these internet addresses can open Kino. Add the home IP of each family member. Changes apply within a few seconds.</p>
         <div class="list">${al.entries.map((e) => `<div class="li"><span class="grow"><b>${esc(e.label)}</b> <span class="secondary mono">${esc(e.cidr)}</span></span>
           <span class="r">${e.added ? ago(e.added) : ""}</span><button class="round-btn sm" data-rmip="${esc(e.cidr)}" aria-label="Remove ${esc(e.label)}" title="Remove">${ic("trash")}</button></div>`).join("")}</div>
@@ -768,7 +808,7 @@
           <input id="ipCidr" placeholder="IP address, like 84.150.12.34" required spellcheck="false" autocapitalize="none">
           <button class="btn primary small" type="submit">${ic("plus")} Add</button>
         </form>
-        <div class="note">Your current address is <b class="mono">${esc(mine)}</b>. <button class="linkish" id="fillMine">Use it</button>
+        <div class="note">Your current address is <b class="mono">${esc(mine)}</b>. <button class="linkish" id="fillMine">Use This Address</button>
           ${applied ? `<span class="${applied.ok ? "" : "err-note"}"> · nginx ${applied.ok ? `updated ${ago(applied.applied_at)}` : `not updated: ${esc(applied.error || "unknown error")}`}</span>` : ""}</div>
         <div class="form-err" id="ipErr" role="alert"></div>
       </section>`;
@@ -843,28 +883,28 @@
           </div>
         </div>
       </section>
-      <section class="card span-4"><h3>Next sync</h3>
+      <section class="card span-4"><h3>Next Sync</h3>
         <div class="big" style="font-size:26px">${s.paused ? "Paused" : esc(when(s.timer.next))}</div>
         <div class="note">${s.timer.last ? `Last started ${esc(when(s.timer.last))}` : "Runs every day on the timer"}${s.timer.state && s.timer.state !== "active" ? ". The timer is off, enable it with systemctl" : ""}</div></section>
-      <section class="card span-4"><h3>Last run</h3>
+      <section class="card span-4"><h3>Last Run</h3>
         <div class="big" style="font-size:26px">${last ? `${last.new} new` : "–"}</div>
         <div class="note ${last && last.result === "error" ? "err-note" : ""}">${last ? `${last.failed ? `${last.failed} failed, ` : ""}${last.skipped ? `${last.skipped} skipped, ` : ""}took ${dur(last.finished - last.started)}${last.result === "error" && last.message ? `. ${esc(last.message)}` : ""}` : "Nothing yet"}</div></section>
       <section class="card span-4"><h3>Service</h3>
         <div class="big" style="font-size:26px;text-transform:capitalize">${esc(svc.state || "unknown")}</div>
         <div class="note">${svc.error ? esc(svc.error) : `Result: ${esc(svc.result || "–")}`}</div></section>
-      <section class="card span-6"><h3>Pause syncing</h3>
+      <section class="card span-6"><h3>Pause Syncing</h3>
         <div class="secondary" style="font-size:15px">Stops the current download and skips scheduled syncs until the time runs out.</div>
         <div class="presets">${[[24, "1 day"], [48, "2 days"], [72, "3 days"], [168, "1 week"], [336, "2 weeks"], [0, "Until I resume"]]
           .map(([h, l]) => `<button class="btn secondary small" data-pause="${h}">${l}</button>`).join("")}</div>
         <form class="custom-pause" id="customPause"><label for="ph">Or pause for</label><input id="ph" type="number" min="1" max="2000" step="1" value="6" inputmode="numeric"><span>hours</span>
           <button class="btn secondary small" type="submit">Pause</button></form></section>
-      <section class="card span-6"><h3>Recently downloaded</h3>
+      <section class="card span-6"><h3>Recently Downloaded</h3>
         <div class="list">${(st.recent || []).slice(0, 8).map((r) => `<div class="li"><span class="grow">${esc(r.name)}</span><span class="r">${bytes(r.size)}</span><span class="r">${ago(r.at)}</span></div>`).join("") || `<div class="secondary" style="font-size:15px;padding-top:8px">Finished downloads show up here.</div>`}</div>
       </section>
-      ${failed.length ? `<section class="card span-6"><h3 style="display:flex;align-items:center">Failed downloads<button class="btn secondary small" style="margin-left:auto" data-act="retry" ${running ? "disabled" : ""}>${ic("refresh")} Retry Failed</button></h3>
+      ${failed.length ? `<section class="card span-6"><h3 style="display:flex;align-items:center">Failed Downloads<button class="btn secondary small" style="margin-left:auto" data-act="retry" ${running ? "disabled" : ""}>${ic("refresh")} Retry Failed</button></h3>
         <div class="list">${failed.slice(0, 8).map((f) => `<div class="li"><span class="grow" title="${esc(f.error)}">${esc(f.name)}</span><span class="r err-note">${esc((f.error || "Failed").slice(0, 40))}</span></div>`).join("")}</div>
         <div class="note">Failed files are tried again on every sync, Retry just does it now.</div></section>` : ""}
-      ${skipped.length ? `<section class="card span-6"><h3>Skipped as duplicates</h3>
+      ${skipped.length ? `<section class="card span-6"><h3>Skipped as Duplicates</h3>
         <div class="list">${skipped.slice(0, 8).map((f) => `<div class="li"><span class="grow" title="${esc(f.name)}">${esc(f.name)}</span><span class="r">${esc(f.reason)}</span></div>`).join("")}</div>
         <div class="note">Kino skips copies of something you already have in 1080p or better, and only keeps one copy when TorBox has several.</div></section>` : ""}
       <section class="card span-12" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
@@ -928,12 +968,12 @@
         <div class="note">${bytes(s.mem.used)} of ${bytes(s.mem.total)}${s.swap.total ? `, swap ${bytes(s.swap.used)}` : ""}</div></section>
       <section class="card span-3"><h3>Network</h3><div class="big" style="font-size:26px">${rate(last.rx)}</div>${spark(h.map((x) => x.rx), netMax, "#64d2ff")}
         <div class="legend"><span><i style="background:#64d2ff"></i>In ${rate(last.rx)}</span><span><i style="background:#bf5af2"></i>Out ${rate(last.tx)}</span></div></section>
-      <section class="card span-3"><h3>Disk activity</h3><div class="big" style="font-size:26px">${rate(last.rd + last.wr)}</div>${spark(h.map((x) => x.rd + x.wr), ioMax, "#ff9f0a")}
+      <section class="card span-3"><h3>Disk Activity</h3><div class="big" style="font-size:26px">${rate(last.rd + last.wr)}</div>${spark(h.map((x) => x.rd + x.wr), ioMax, "#ff9f0a")}
         <div class="legend"><span>Read ${rate(last.rd)}</span><span>Write ${rate(last.wr)}</span></div></section>
       ${storageCard("Storage Box", s.disks.box, "blue", "The watchdog reconnects it automatically within a minute.")}
-      ${storageCard("VPS disk", s.disks.vps, "")}
-      <section class="card span-8"><h3>Busiest processes</h3><div class="list">${s.procs.map((p) => `<div class="li"><span class="grow">${esc(p.name)} <span class="tertiary">${esc(p.user || "")}</span></span><span class="r">${p.cpu.toFixed(1)}% CPU</span><span class="r">${bytes(p.mem)}</span></div>`).join("")}</div></section>
-      <section class="card span-4"><h3>Mount watchdog</h3>
+      ${storageCard("VPS Disk", s.disks.vps, "")}
+      <section class="card span-8"><h3>Busiest Processes</h3><div class="list">${s.procs.map((p) => `<div class="li"><span class="grow">${esc(p.name)} <span class="tertiary">${esc(p.user || "")}</span></span><span class="r">${p.cpu.toFixed(1)}% CPU</span><span class="r">${bytes(p.mem)}</span></div>`).join("")}</div></section>
+      <section class="card span-4"><h3>Mount Watchdog</h3>
         ${wd ? `<div class="state-line ${wd.ok ? "running" : "error"}" style="margin-top:6px"><span class="dot"></span>${wd.ok ? "Storage Box connected" : "Reconnecting"}</div>
           <div class="note">Checked ${ago(wd.last_check)}. ${wd.remounts ? `Reconnected ${wd.remounts} time${wd.remounts === 1 ? "" : "s"}, last ${ago(wd.last_remount)}.` : "No reconnects needed."}${wd.last_error ? `<br><span class="err-note">${esc(wd.last_error)}</span>` : ""}</div>`
           : `<div class="note">The watchdog hasn't reported yet. It runs every minute once installed.</div>`}
@@ -964,7 +1004,7 @@
   $("#pFwd").innerHTML = ic("fwd10");
   $("#pFull").innerHTML = ic("full");
   $("#pMute").innerHTML = ic("vol");
-  $("#pSpeed").innerHTML = `${ic("speed")} 1×`;
+  $("#pSpeed").innerHTML = ic("speed");
   $("#pAir").innerHTML = ic("airplay");
   $("#pPip").innerHTML = ic("pip");
 
@@ -1011,7 +1051,7 @@
     const t = opts.title;
     $("#pTitle").textContent = t ? t.name : info.name;
     const f = t && t.files.find((x) => x.id === fid);
-    $("#pSub").textContent = t && t.kind === "series" && f ? `${epLabel(f.season, f.episode)}${f.ep_name ? "  " + f.ep_name : ""}` : (info.badges || []).join("  ");
+    $("#pSub").textContent = t && t.kind === "series" && f ? `${epLabel(f.season, f.episode)}${f.ep_name ? "  " + nice(f.ep_name) : ""}` : (info.badges || []).join("  ");
     buildMenus();
     setupDeviceButtons();
     const start = opts.from != null ? opts.from : 0;
@@ -1143,15 +1183,15 @@
 
   function buildMenus() {
     const info = pl.info;
-    $("#pAudio").innerHTML = `${ic("audio")} Audio`;
+    $("#pAudio").innerHTML = ic("audio");
     $("#pAudio").hidden = info.audio.length < 2;
     $("#mAudio").innerHTML = info.audio.map((a) => `<button data-a="${a.n}"><span class="chk">${a.n === pl.audio ? ic("check") : ""}</span>${esc(a.label)}</button>`).join("");
-    $("#pSubs").innerHTML = `${ic("cc")} Subtitles`;
+    $("#pSubs").innerHTML = ic("cc");
     $("#pSubs").hidden = !info.subs.length;
     $("#mSubs").innerHTML = `<button data-s=""><span class="chk">${!pl.subId ? ic("check") : ""}</span>Off</button>` +
       info.subs.map((s) => `<button data-s="${s.id}"><span class="chk">${s.id === pl.subId ? ic("check") : ""}</span>${esc(s.label)}${s.kind === "embedded" && !s.ready ? ' <span class="tertiary">(prepares first)</span>' : ""}</button>`).join("");
     $("#mSpeed").innerHTML = [0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => `<button data-r="${r}"><span class="chk">${r === pl.rate ? ic("check") : ""}</span>${r === 1 ? "Normal" : r + "×"}</button>`).join("");
-    $("#pSpeed").innerHTML = `${ic("speed")} ${pl.rate === 1 ? "1×" : pl.rate + "×"}`;
+    $("#pSpeed").innerHTML = ic("speed") + (pl.rate === 1 ? "" : `<span class="rate-badge">${pl.rate}×</span>`);
     $("#mAudio").querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => {
       pl.audio = Number(b.dataset.a); hideMenus(); buildMenus();
       startHls(pos());  // A different audio track needs a fresh stream from the server
@@ -1160,8 +1200,8 @@
     $("#mSpeed").querySelectorAll("[data-r]").forEach((b) => (b.onclick = () => { pl.rate = Number(b.dataset.r); pl.v.playbackRate = pl.rate; hideMenus(); buildMenus(); }));
     const ad = $("#pAdminIntro");
     ad.hidden = !(info.is_admin && info.season != null);
-    $("#mIntro").innerHTML = `<button data-intro="start">Intro starts here</button><button data-intro="end">Intro ends here</button>
-      ${info.intro && info.intro.source === "marked" ? `<button data-intro="clear">Clear marked intro</button>` : ""}`;
+    $("#mIntro").innerHTML = `<button data-intro="start">Intro Starts Here</button><button data-intro="end">Intro Ends Here</button>
+      ${info.intro && info.intro.source === "marked" ? `<button data-intro="clear">Clear Marked Intro</button>` : ""}`;
     $$("#mIntro [data-intro]").forEach((b) => (b.onclick = () => markIntro(b.dataset.intro)));
   }
   const hideMenus = () => $$(".player .menu").forEach((m) => (m.hidden = true));
@@ -1251,7 +1291,7 @@
     const auto = !info.prefs || info.prefs.autoplay !== false;
     let left = 10;
     box.innerHTML = `<div class="un-thumb">${n.thumbnail ? `<img src="${img(n.thumbnail)}" alt="" data-fallback="hide">` : ""}${auto ? `<svg class="un-ring" viewBox="0 0 36 36"><circle cx="18" cy="18" r="16" /></svg>` : ""}</div>
-      <div class="un-body"><div class="lbl">Next episode${auto ? ` in <b id="unLeft">${left}</b>` : ""}</div><div class="nm">${esc(epLabel(n.season, n.episode))}${n.name ? "  " + esc(n.name) : ""}</div>
+      <div class="un-body"><div class="lbl">Next episode${auto ? ` in <b id="unLeft">${left}</b>` : ""}</div><div class="nm">${esc(epLabel(n.season, n.episode))}${n.name ? "  " + esc(nice(n.name)) : ""}</div>
       <div class="actions"><button class="btn primary small" id="unPlay">${ic("play")} Play Now</button><button class="btn secondary small" id="unHide">${auto ? "Cancel" : "Hide"}</button></div></div>`;
     box.hidden = false;
     const go = () => { clearInterval(pl.upNextT); box.hidden = true; saveProgress(); playFile(n.id, { title: pl.title, from: 0 }); };
@@ -1329,7 +1369,7 @@
   $("#pVol").oninput = (e) => { v.volume = Number(e.target.value); v.muted = v.volume === 0; $("#pMute").innerHTML = ic(v.muted ? "mute" : "vol"); };
   const menuBtn = (btn, menu) => ($(btn).onclick = (e) => { e.stopPropagation(); const m = $(menu); const was = m.hidden; hideMenus(); m.hidden = !was; });
   menuBtn("#pAudio", "#mAudio"); menuBtn("#pSubs", "#mSubs"); menuBtn("#pSpeed", "#mSpeed"); menuBtn("#pAdminIntro", "#mIntro");
-  $("#pAdminIntro").innerHTML = `${ic("flag")} Intro`;
+  $("#pAdminIntro").innerHTML = ic("flag");
   pl.el.addEventListener("click", (e) => {
     if (!e.target.closest(".menu-wrap")) hideMenus();
     if (e.target === v || e.target.id === "playerUi") toggle();

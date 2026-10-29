@@ -32,13 +32,27 @@ jobs:
           /tmp/venv/bin/pip install -q -r app/requirements.txt
           mkdir -p /tmp/media /tmp/data
           cd app
-          MEDIA_DIR=/tmp/media DATA_DIR=/tmp/data KINO_SECRET=ci OFFLINE_META=1 \
+          MEDIA_DIR=/tmp/media DATA_DIR=/tmp/data KINO_SECRET=ci OFFLINE_META=1 COOKIE_SECURE=0 \
             /tmp/venv/bin/uvicorn app:app --port 8282 &
           for i in $(seq 1 30); do curl -fs http://127.0.0.1:8282/healthz && break; sleep 1; done
           curl -fs http://127.0.0.1:8282/healthz
           curl -fs http://127.0.0.1:8282/ | grep -q "<title>Kino</title>"
-          # Not signed in has to be refused
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8282/api/library)" = 401
+          H='X-Kino: 1'
+          # No profile picked yet has to send you to the profile screen
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8282/api/library)" = 409
+          # Admin pages need the admin login
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8282/api/admin/sync)" = 401
+          # Changes without the header get refused
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8282/api/profiles/1/select)" = 403
+          # Picking a profile works and then the home page loads
+          curl -fs -c /tmp/cj -H "$H" -X POST http://127.0.0.1:8282/api/profiles/1/select > /dev/null
+          curl -fs -b /tmp/cj http://127.0.0.1:8282/api/home | grep -q '"shelves"'
+          # A request from an address thats not on the allow list gets blocked
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Real-IP: 203.0.113.9' -b /tmp/cj http://127.0.0.1:8282/api/home)" = 403
+
+      - name: Sync helper scripts
+        run: |
+          python3 -m py_compile deploy/kino-watchdog.py deploy/kino-allowlist.py
 
   deploy:
     needs: check

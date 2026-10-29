@@ -6,16 +6,24 @@
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#000000">
 <meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kino">
 <title>Kino</title>
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/app.css">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="stylesheet" href="/static/app.css?v=__V__">
 </head>
 <body>
 <div id="app" aria-live="polite"></div>
 <div id="player" class="player" hidden>
-  <video id="video" playsinline preload="auto"></video>
+  <video id="video" playsinline preload="auto" x-webkit-airplay="allow"></video>
   <div class="subs-layer" id="subsLayer" aria-live="off"></div>
   <div class="player-spinner" id="playerSpinner" hidden><div class="spin"></div></div>
+  <button class="skip-intro" id="skipIntro" hidden>Skip Intro</button>
+  <div class="up-next glass" id="upNext" role="status" hidden></div>
   <div class="player-ui" id="playerUi">
     <div class="player-top">
       <button class="glass-btn round" id="pClose" aria-label="Close player"></button>
@@ -40,7 +48,11 @@
       <div class="player-row tools">
         <div class="menu-wrap"><button class="pill-btn" id="pAudio" aria-haspopup="true"></button><div class="menu" id="mAudio" hidden></div></div>
         <div class="menu-wrap"><button class="pill-btn" id="pSubs" aria-haspopup="true"></button><div class="menu" id="mSubs" hidden></div></div>
+        <div class="menu-wrap"><button class="pill-btn" id="pSpeed" aria-haspopup="true" aria-label="Playback speed"></button><div class="menu" id="mSpeed" hidden></div></div>
+        <div class="menu-wrap"><button class="pill-btn" id="pAdminIntro" aria-haspopup="true" hidden></button><div class="menu" id="mIntro" hidden></div></div>
         <span class="spacer"></span>
+        <button class="icon-btn" id="pAir" aria-label="AirPlay" hidden></button>
+        <button class="icon-btn" id="pPip" aria-label="Picture in picture" hidden></button>
         <button class="icon-btn" id="pMute" aria-label="Mute"></button>
         <input type="range" id="pVol" min="0" max="1" step="0.05" value="1" aria-label="Volume">
         <button class="icon-btn" id="pFull" aria-label="Full screen"></button>
@@ -50,6 +62,6 @@
 </div>
 <div id="toast" class="toast glass" role="status" hidden></div>
 <script src="/static/hls.min.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=__V__"></script>
 </body>
 </html>

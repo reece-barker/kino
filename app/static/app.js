@@ -83,6 +83,9 @@
 
   // ---------------------------------------------------------- helpers
   const $ = (s, r = document) => r.querySelector(s);
+  // Set when running inside the kino android app, and on android tv / fire tv
+  const ANDROID = /KinoAndroid/.test(navigator.userAgent) && !!window.KinoAndroid;
+  const TV = /KinoTV/.test(navigator.userAgent) || /[?&]tv=1/.test(location.search);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const app = $("#app");
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -827,6 +830,18 @@
   function setupMic(input, onDone) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const btn = $("#micBtn");
+    // In the android app the phone's own voice typing does it, webviews dont have speech recognition
+    if (btn && ANDROID && window.KinoAndroid.hasVoice()) {
+      btn.hidden = false;
+      window.kinoVoice = (text) => {
+        if (!text) return;
+        input.value = text.replace(/[.?!]$/, "");
+        input.dispatchEvent(new Event("input"));
+        onDone && onDone();
+      };
+      btn.onclick = () => window.KinoAndroid.startVoice();
+      return;
+    }
     if (!SR || !btn) return;
     btn.hidden = false;
     let rec = null;
@@ -1176,6 +1191,13 @@
       <section class="card set-card">
         <h2 class="set-title">Appearance</h2>
         <div class="set-row"><span><b>Theme</b><span class="secondary">Automatic follows this device's light or dark setting</span></span>${themePicker("setTheme")}</div>
+      </section>
+      <section class="card set-card">
+        <h2 class="set-title">Android App</h2>
+        ${ANDROID ? `<div class="set-row"><span><b>Kino for Android ${esc(window.KinoAndroid.version())}</b><span class="secondary">You're using the app${TV ? " on a TV" : ""}. Get updates from the same link below.</span></span></div>` : ""}
+        <div class="set-row"><span><b>Phones, Tablets and Android TV</b><span class="secondary">Full screen player, picture in picture, voice search and TV remote support</span></span>
+          <a class="btn secondary small" href="/app" download>${ic("download")} Download</a></div>
+        <div class="set-row"><span><b>Fire TV</b><span class="secondary">Install the free Downloader app, then type <b class="mono">${esc(location.host)}/app</b> into it</span></span></div>
       </section>
       <section class="card set-card">
         <h2 class="set-title">Playback</h2>
@@ -1934,6 +1956,10 @@
   v.addEventListener("canplay", () => spinner(false));
   const playIcon = () => { $("#pPlay").innerHTML = ic(v.paused ? "play" : "pause"); $("#pPlay").setAttribute("aria-label", v.paused ? "Play" : "Pause"); };
   v.addEventListener("play", playIcon);
+  if (ANDROID) {
+    v.addEventListener("playing", () => window.KinoAndroid.setPlaying(true));
+    ["pause", "ended", "emptied"].forEach((ev) => v.addEventListener(ev, () => window.KinoAndroid.setPlaying(false)));
+  }
   v.addEventListener("pause", () => {
     playIcon(); wakeUi();
     if (pl.info && pl.evStarted && !v.ended && v.currentSrc) { pl.evPaused = true; sendEvent("pause"); }
@@ -2014,15 +2040,101 @@
 
   document.addEventListener("keydown", (e) => {
     if (pl.el.hidden || e.target.tagName === "INPUT" || sheetClose) return;
-    if (e.key === " " || e.key === "k") { e.preventDefault(); toggle(); }
-    else if (e.key === "ArrowLeft" && e.target !== scrub) seekTo(pos() - 10);
-    else if (e.key === "ArrowRight" && e.target !== scrub) seekTo(pos() + 10);
+    const onControl = TV && e.target.closest && e.target.closest(".player-row, .menu, .up-next, .player-top, .skip-intro");
+    if ((e.key === " " || e.key === "k") && !onControl) { e.preventDefault(); toggle(); }
+    else if (e.key === "ArrowLeft" && e.target !== scrub && !onControl) seekTo(pos() - 10);
+    else if (e.key === "ArrowRight" && e.target !== scrub && !onControl) seekTo(pos() + 10);
     else if (e.key === "f") $("#pFull").click();
     else if (e.key === "m") $("#pMute").click();
     else if (e.key === "s" && !$("#skipIntro").hidden) $("#skipIntro").click();
     else if (e.key === "Escape" && !document.fullscreenElement) closePlayer();
   });
   window.addEventListener("pagehide", saveProgress);
+
+  // ---------------------------------------------------------- android app and tv remotes
+  // The android app adds KinoAndroid to the user agent and gives the page a small bridge. On tvs (KinoTV) the
+  // remote's arrows move focus around the page like on apple tv, the browser itself cant do that
+  function nav(e) {
+    const dirs = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+    const d = dirs[e.key];
+    if (!d || e.altKey || e.ctrlKey || e.metaKey) return;
+    const cur = document.activeElement;
+    if (cur && cur.matches("input[type=search], input[type=text], input:not([type])") && d[0] && cur.value) return;  // moving the text cursor
+    if (cur && cur.tagName === "SELECT") return;
+    if (cur && cur.id === "scrub" && d[0]) return;   // the timeline seeks with left and right
+    const playerOpen = !pl.el.hidden;
+    if (playerOpen && (!cur || !pl.el.contains(cur) || cur === pl.v) && d[0]) return;  // left and right seek
+    const scope = sheetClose ? $(".sheet-wrap") : playerOpen ? pl.el : document;
+    if (playerOpen) wakeUi();
+    const items = $$('a[href], button, input, select, [tabindex]:not([tabindex="-1"])', scope).filter((el) => {
+      if (el.disabled || el.closest("[hidden]") || el.closest('[aria-hidden="true"]') || el.closest(".hero-dots")) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 2 && r.height > 2 && getComputedStyle(el).visibility !== "hidden";
+    });
+    if (!items.length) return;
+    e.preventDefault();
+    if (!cur || cur === document.body || !scope.contains(cur)) {
+      const first = (playerOpen && $("#pPlay")) || $("[data-heroplay], [data-heroresume], .hero-slide.on .btn.primary, #pdPlay, #playMain", scope) || items.find((el) => !el.closest("#chrome")) || items[0];
+      first.focus({ preventScroll: false });
+      return;
+    }
+    const a = cur.getBoundingClientRect();
+    const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
+    // The sidebar is its own column: up and down stay inside it, and things tucked behind it aren't targets
+    const side = $("#side"), inSide = !!(side && side.contains(cur));
+    const sideRight = side && !playerOpen && !sheetClose ? side.getBoundingClientRect().right : -1;
+    let best = null, bestScore = Infinity;
+    for (const el of items) {
+      if (el === cur) continue;
+      const elSide = !!(side && side.contains(el));
+      if (d[1] && elSide !== inSide) continue;
+      if (d[0] > 0 && inSide && elSide) continue;
+      if (!elSide && scope === document) { const r = el.getBoundingClientRect(); if (r.left + r.width / 2 < sideRight) continue; }
+      const b = el.getBoundingClientRect();
+      const bx = b.left + b.width / 2, by = b.top + b.height / 2;
+      const main = d[0] ? (bx - ax) * d[0] : (by - ay) * d[1];
+      if (main <= 4) continue;
+      // Edges overlapping in the other direction count as in line, so rows and columns feel natural
+      const cross = d[0] ? Math.max(0, Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom)) ? Math.abs(by - ay) : 0
+                         : Math.max(0, Math.max(a.left, b.left) - Math.min(a.right, b.right)) ? Math.abs(bx - ax) : 0;
+      const score = main + cross * 3;
+      if (score < bestScore) { bestScore = score; best = el; }
+    }
+    if (best) {
+      best.focus({ preventScroll: true });
+      best.scrollIntoView({ block: d[1] ? "center" : "nearest", inline: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
+    }
+  }
+  if (TV) {
+    document.body.classList.add("tv");
+    document.addEventListener("keydown", nav, true);
+  }
+  // Back on a remote or phone closes whatever is on top first, the app goes back a page when this says no
+  window.kinoBack = () => {
+    const menu = $$(".player .menu").find((m) => !m.hidden);
+    if (menu) { hideMenus(); return true; }
+    if (sheetClose) { closeSheet(); return true; }
+    if (!pl.el.hidden) { closePlayer(); return true; }
+    const am = $("#avatarMenu");
+    if (am && !am.hidden) { am.hidden = true; $("#side").classList.remove("pinned"); return true; }
+    if (TV && document.activeElement && !document.activeElement.closest("#chrome") && $("#side")) {
+      // On a tv, back first jumps to the sidebar like apple tv, and from there it leaves
+      const cur = $(".side-item[aria-current='page']") || $(".side-item");
+      if (cur) { cur.focus(); return true; }
+    }
+    return false;
+  };
+  window.kinoMedia = (cmd) => {
+    if (pl.el.hidden) return;
+    wakeUi();
+    if (cmd === "playpause") toggle();
+    else if (cmd === "play") pl.v.play().catch(() => {});
+    else if (cmd === "pause") pl.v.pause();
+    else if (cmd === "forward") seekTo(pos() + 10);
+    else if (cmd === "back") seekTo(pos() - 10);
+    else if (cmd === "stop") closePlayer();
+  };
+  window.kinoPip = (on) => document.body.classList.toggle("pip", !!on);
 
   // ---------------------------------------------------------- router
   const applyPrefs = () => document.body.classList.toggle("blur-watched", !!(ME.profile && ME.profile.prefs && ME.profile.prefs.blur_watched));
@@ -2078,6 +2190,12 @@
         void app.offsetWidth; app.classList.add("enter");
         // Only the first draw of a page animates, pages that refresh themselves every few seconds stay still
         clearTimeout(ENTER_T); ENTER_T = setTimeout(() => app.classList.remove("enter"), 900);
+        // On a tv the remote lands on the page's main button after picking something in the sidebar
+        if (TV) {
+          const el = $(".hero-slide.on [data-heroresume], .hero-slide.on [data-heroplay], #playMain, #sq, .tile, main button, main a[href]", app);
+          if (el) el.focus({ preventScroll: true });
+          const side = $("#side"); if (side) side.classList.remove("open");
+        }
       }
       LAST_PAGE = location.hash.split("?")[0];
     } catch (e) {

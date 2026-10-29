@@ -1,0 +1,46 @@
+// The kino android app, a small native shell around kino.reece.page for phones, tablets and android tv / fire tv
+plugins { id "com.android.application" }
+
+android {
+    namespace "page.reece.kino"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "page.reece.kino"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "1.0"
+        // The address the app opens, change it here if kino ever moves
+        buildConfigField "String", "KINO_URL", "\"https://kino.reece.page/\""
+    }
+
+    buildFeatures { buildConfig true }
+
+    // Release builds get signed with the kino key when its there (CI passes it in), otherwise the debug key
+    signingConfigs {
+        kino {
+            def ks = System.getenv("KINO_KEYSTORE")
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv("KINO_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KINO_KEY_ALIAS") ?: "kino"
+                keyPassword System.getenv("KINO_KEY_PASSWORD") ?: System.getenv("KINO_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            signingConfig System.getenv("KINO_KEYSTORE") ? signingConfigs.kino : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

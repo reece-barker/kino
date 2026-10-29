@@ -76,7 +76,7 @@ IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.spa
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
 AVATAR_COUNT = 18  # Has to match the AVATARS list in app.js
-DEFAULT_PREFS = {"audio_lang": "", "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False}
+DEFAULT_PREFS = {"audio_lang": "", "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("kino")
@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS overrides (key TEXT PRIMARY KEY, kind TEXT, imdb_id T
 CREATE TABLE IF NOT EXISTS intros (title_id TEXT, season INTEGER, start REAL, end REAL, PRIMARY KEY (title_id, season));
 CREATE TABLE IF NOT EXISTS addons (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE NOT NULL, manifest TEXT NOT NULL,
     enabled INTEGER DEFAULT 1, hidden TEXT DEFAULT '[]', added REAL, updated REAL);
+CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, kind TEXT, first REAL);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
 """
@@ -137,6 +138,11 @@ class DB:
             rows = cur.fetchall()
             self.c.commit()
             return rows
+
+    def many(self, sql, rows):
+        with self.lock:
+            self.c.executemany(sql, rows)
+            self.c.commit()
 
 
 _db = None
@@ -669,6 +675,24 @@ def box_mounted():
 
 # ---------------------------------------------------------------- sync control
 
+TS_KEYS = {"ExecMainStartTimestamp", "ExecMainExitTimestamp", "NextElapseUSecRealtime", "LastTriggerUSec"}
+
+
+def to_unix(v):
+    # Some systemd versions ignore --timestamp=unix for timer properties and print "Fri 2026-10-30 03:00:00 CET"
+    # or plain microseconds, which showed up as Invalid Date on the sync page
+    if v.isdigit():
+        n = int(v)
+        return n // 1_000_000 if n > 10**12 else n or None
+    if v in ("n/a", "0", ""):
+        return None
+    try:
+        out = subprocess.run(["date", "-d", v, "+%s"], capture_output=True, text=True, timeout=3).stdout.strip()
+        return int(out) if out.isdigit() else None
+    except Exception:
+        return None
+
+
 def systemctl_show():
     try:
         out = subprocess.run(["systemctl", "show", SYNC_UNIT, TIMER_UNIT, "--timestamp=unix", "-p",
@@ -688,6 +712,8 @@ def systemctl_show():
                     v = int(v[1:])
                 except ValueError:
                     pass
+            elif k in TS_KEYS and v:
+                v = to_unix(v)
             d[k] = v
         return d
 
@@ -870,7 +896,7 @@ async def profile_update(request: Request, p=Depends(current_profile)):
             prefs[k] = str(v or "")[:30]
         elif k == "sub_size" and v in ("s", "m", "l"):
             prefs[k] = v
-        elif k in ("autoplay", "skip_intro", "share_events"):
+        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched"):
             prefs[k] = bool(v)
     db().q("UPDATE profiles SET name = ?, icon = ?, prefs = ? WHERE id = ?", (name, icon, json.dumps(prefs), p["id"]))
     return {"ok": True, "profile": profile_row(p["id"])}
@@ -1082,6 +1108,13 @@ async def home(p=Depends(current_profile)):
     hero_pool = [s for s in (by_score if has_signal else recent) if s["background"] and s["matched"] and not s["watched"]]
     hero = (hero_pool or [s for s in recent if s["background"]] or recent)[:5]
 
+    # Titles from addons that can actually play something get mixed into the main shelves with the library
+    pool = addon_pool(p["id"], lib_by_meta_id(summ))
+    for s in pool:
+        s["score"] = rec_score(s, weights, now)
+    by_score = sorted(visible + pool, key=lambda s: s["score"], reverse=True)
+    recent = sorted(summ + pool, key=lambda s: s["added"], reverse=True)
+
     shelves = []
     cont = continue_list(summ, wm)
     if cont:
@@ -1130,6 +1163,34 @@ async def home(p=Depends(current_profile)):
 
     return {"hero": hero, "shelves": shelves, "empty": not summ, "scanning": LIB["scanning"], "error": LIB["error"],
             "mounted": box_mounted()}
+
+
+def addon_pool(pid, have):
+    """Catalog titles from addons that have streams, shaped like library titles. added is when Kino first saw them"""
+    out, ids = {}, []
+    for a, c in home_catalogs():
+        if not supports(a["m"], "stream") or c.get("type") not in ("movie", "series"):
+            continue
+        for m in (cached_catalog(a, c) or [])[:60]:
+            mid = isinstance(m, dict) and m.get("id")
+            if not mid or mid in have or mid in out:
+                continue
+            out[mid] = ext_preview(m, c["type"])
+            ids.append((mid, out[mid]["kind"]))
+    if not out:
+        return []
+    now = time.time()
+    db().many("INSERT OR IGNORE INTO seen VALUES (?,?,?)", [(i, k, now) for i, k in ids])
+    first = {r["id"]: r["first"] for r in db().q("SELECT id, first FROM seen")}
+    # Watched shows up the same as library titles, from the progress of whatever stream was played for it
+    done = {}
+    for r in db().q("SELECT s.video_id, w.watched FROM streams s JOIN watch w ON w.file_id = s.id WHERE w.profile_id = ?", (pid,)):
+        sh = show_of(r["video_id"])
+        done[sh] = done.get(sh, False) or bool(r["watched"])
+    for mid, s in out.items():
+        s["added"] = first.get(mid, now)
+        s["watched"] = done.get(mid, False)
+    return list(out.values())
 
 
 def lib_by_meta_id(summ):
@@ -2274,7 +2335,7 @@ async def stream_file_info(sid, p, request):
     w = db().q("SELECT pos, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
     ext = Path(urlparse(r["url"]).path).suffix.lower()
     return {"id": sid, "stream": True, "name": r["name"], "src": f"/api/rstream/{sid}", "direct": True,
-            "video": {"codec": None}, "audio": [], "default_audio": 0, "subs": [], "badges": ["archive.org"],
+            "video": {"codec": None}, "audio": [], "default_audio": 0, "subs": [], "badges": [],
             "download": f"/api/rstream/{sid}?dl=1", "resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
             "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
             "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,

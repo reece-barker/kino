@@ -100,8 +100,9 @@
     return `${s} sec`;
   };
   const when = (ts) => {
-    if (!ts) return "Not scheduled";
+    if (!ts || typeof ts !== "number") return "Not scheduled";
     const d = new Date(ts * 1000), now = new Date();
+    if (isNaN(d)) return "Not scheduled";
     const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const day = Math.round((new Date(d.toDateString()) - new Date(now.toDateString())) / 86400000);
     if (day === 0) return `Today at ${time}`;
@@ -367,6 +368,13 @@
     };
   }
 
+  // Season dropdown, with how many episodes each one has
+  function seasonPick(seasons, cur, eps) {
+    const n = (s) => eps.filter((e) => (e.season ?? 0) === s).length;
+    return `<label class="season-pick"><span class="sr">Season</span><select class="plain" id="seasonPick">${seasons.map((s) =>
+      `<option value="${s}" ${s === cur ? "selected" : ""}>${s ? `Season ${s}` : "Extras"} (${n(s)} episode${n(s) === 1 ? "" : "s"})</option>`).join("")}</select></label>`;
+  }
+
   // ---------------------------------------------------------- tiles
   function posterTile(t) {
     const art = t.poster
@@ -376,7 +384,7 @@
       : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
     const mark = t.watched ? `<span class="tile-check" title="Watched">${ic("check")}</span>` : "";
     const href = t.external ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : `#/title/${t.id}`;
-    return `<a class="tile poster ${t.external ? "ext" : ""}" href="${href}"><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
+    return `<a class="tile poster ${t.external ? "ext" : ""} ${t.watched ? "is-watched" : ""}" href="${href}"><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
   }
   function wideTile(t, opts = {}) {
     const bg = t.background
@@ -384,7 +392,7 @@
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
     const logo = t.logo && t.background && opts.progress == null ? `<img class="logo-over" loading="lazy" src="${img(t.logo, 1)}" alt="" data-fallback="hide">` : "";
     const bar = opts.progress != null && opts.progress > 0 ? `<div class="bar"><i style="width:${Math.min(100, opts.progress * 100)}%"></i></div>` : "";
-    const href = opts.href || `#/title/${t.id}`;
+    const href = opts.href || (t.external ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : `#/title/${t.id}`);
     return `<a class="tile landscape" href="${href}" ${opts.play ? `data-play="${opts.play}" data-tid="${t.id}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}</div>
       <div class="cap">${esc(t.name)}</div><div class="sub">${esc(opts.sub || t.genres?.slice(0, 2).join(", ") || t.releaseInfo || "")}</div></a>`;
   }
@@ -636,9 +644,9 @@
       </section>
       <main class="page under-hero" style="padding-top:12px">
         ${t.kind === "series" ? `<section class="section" style="margin-top:0">
-          <div class="seasons" role="group" aria-label="Seasons">${seasons.map((s) => `<button class="seg" data-season="${s}" aria-pressed="${s === curSeason}">${s ? `Season ${s}` : "Extras"}</button>`).join("")}</div>
+          <div class="seasons">${seasonPick(seasons, curSeason, t.files)}</div>
           <div class="episodes" id="eps"></div>
-          ${t.pd_streams ? `<a class="btn secondary small pd-more" href="#/discover/series/${encodeURIComponent(t.imdb)}?all=1">${ic("globe")} All Episodes on archive.org</a>` : ""}</section>` : ""}
+          ${t.pd_streams ? `<a class="btn secondary small pd-more" href="#/discover/series/${encodeURIComponent(t.imdb)}?all=1">${ic("globe")} More Episodes</a>` : ""}</section>` : ""}
         ${t.kind === "movie" && t.files.length > 1 ? `<section class="section"><h2 class="section-title">Versions</h2><div class="versions">${t.files.map((f) => `
           <div class="v"><div class="grow"><div class="badges">${f.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join("")}</div><div class="nm">${esc(f.name)}</div></div>
           <span class="secondary" style="font-size:14px">${bytes(f.size)}</span><button class="btn secondary small" data-playfile="${f.id}">${ic("play")} Play</button>
@@ -659,7 +667,7 @@
       $("#eps").innerHTML = eps.map((f) => {
         const p = f.progress && f.progress.dur ? f.progress.pos / f.progress.dur : null;
         const art = f.thumbnail ? `<img loading="lazy" src="${img(f.thumbnail)}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
-        return `<div class="ep"><button class="tile landscape" data-playfile="${f.id}" aria-label="Play ${esc(epLabel(f.season, f.episode))} ${esc(f.ep_name || "")}"><div class="art">${art}${p != null ? `<div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div>` : ""}${f.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
+        return `<div class="ep"><button class="tile landscape ${f.watched ? "is-watched" : ""}" data-playfile="${f.id}" aria-label="Play ${esc(epLabel(f.season, f.episode))} ${esc(f.ep_name || "")}"><div class="art">${art}${p != null ? `<div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div>` : ""}${f.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(f.season, f.episode) || "Extra")}${f.duration ? ` · ${Math.max(1, Math.round(f.duration / 60))} min` : ""}</div>
             <button class="ep-mark" data-epwatch="${f.id}" data-state="${f.watched ? 1 : 0}" aria-label="${f.watched ? "Mark as unwatched" : "Mark as watched"}" title="${f.watched ? "Watched, click to unmark" : "Mark as watched"}">${ic(f.watched ? "check" : "plus")}</button>
             ${t.is_admin ? `<button class="ep-mark" data-delfile="${f.id}" aria-label="Delete this episode" title="Delete this episode">${ic("trash")}</button>` : ""}</div>
@@ -684,10 +692,7 @@
       }));
     };
     if (t.kind === "series") {
-      $$("[data-season]").forEach((b) => (b.onclick = () => {
-        $$("[data-season]").forEach((x) => x.setAttribute("aria-pressed", x === b));
-        drawEps(Number(b.dataset.season));
-      }));
+      $("#seasonPick").onchange = (e) => drawEps(Number(e.target.value));
       drawEps(curSeason);
     } else wireFileButtons();
 
@@ -743,7 +748,7 @@
       </section>
       <main class="page under-hero" style="padding-top:12px">
         ${t.videos?.length ? `<section class="section" style="margin-top:0">
-          <div class="seasons" role="group" aria-label="Seasons">${t.season_list.map((s) => `<button class="seg" data-season="${s}">Season ${s}</button>`).join("")}</div>
+          <div class="seasons" id="extSeasons"></div>
           <div class="episodes" id="eps"></div></section>` : ""}
         ${t.cast?.length ? `<section class="section"><h2 class="section-title">Cast</h2><div class="cast">${t.cast.map((c) => `<a href="#/search?q=${encodeURIComponent(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
         <section class="section"><div class="facts">
@@ -762,11 +767,10 @@
       target = started.progress.watched || (started.progress.dur && started.progress.pos / started.progress.dur > 0.93) ? t.videos[i + 1] || started : started;
     }
     const drawEps = (season) => {
-      $$("[data-season]").forEach((b) => b.setAttribute("aria-pressed", Number(b.dataset.season) === season));
       $("#eps").innerHTML = t.videos.filter((v) => v.season === season).map((v) => {
         const pr = v.progress && v.progress.dur ? v.progress.pos / v.progress.dur : null;
         const art = v.thumbnail ? `<img loading="lazy" src="${img(v.thumbnail)}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(v.season, v.episode))}</div>`;
-        return `<div class="ep"><button class="tile landscape" data-playep="${esc(v.id)}" aria-label="Play ${esc(epLabel(v.season, v.episode))} ${esc(v.name || "")}"><div class="art">${art}${pr != null ? `<div class="bar"><i style="width:${Math.min(100, pr * 100)}%"></i></div>` : ""}${v.progress && v.progress.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
+        return `<div class="ep"><button class="tile landscape ${v.progress && v.progress.watched ? "is-watched" : ""}" data-playep="${esc(v.id)}" aria-label="Play ${esc(epLabel(v.season, v.episode))} ${esc(v.name || "")}"><div class="art">${art}${pr != null ? `<div class="bar"><i style="width:${Math.min(100, pr * 100)}%"></i></div>` : ""}${v.progress && v.progress.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(v.season, v.episode))}</div>
             ${isAdmin() ? `<button class="ep-mark" data-saveep="${esc(v.id)}" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}</div>
           <div class="cap">${esc(nice(v.name) || epLabel(v.season, v.episode))}</div>${v.overview ? `<div class="ov">${esc(v.overview)}</div>` : ""}</div>`;
@@ -774,14 +778,14 @@
       $$("[data-playep]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playep, t.videos.find((v) => v.id === b.dataset.playep))));
       $$("[data-saveep]").forEach((b) => (b.onclick = () => saveEpisode(b.dataset.saveep, t)));
     };
-    $$("[data-season]").forEach((b) => (b.onclick = () => drawEps(Number(b.dataset.season))));
+    $("#extSeasons").innerHTML = seasonPick(t.season_list, target.season, t.videos);
+    $("#seasonPick").onchange = (e) => drawEps(Number(e.target.value));
     drawEps(target.season);
     drawStreams(kind, target.id, t, target);
   }
 
   // Finds the public domain copy of one episode and plays it
   async function playEpisode(vid, v) {
-    toast("Looking for this episode on archive.org…", 2500);
     let r;
     try { r = await api(`/api/streams/series/${encodeURIComponent(vid)}`); } catch (e) { toast(e.message, 5000); return false; }
     if (!r.streams.length) { toast("There's no public domain copy of this episode"); return false; }
@@ -800,7 +804,7 @@
   // Public domain copies from addons, the server only hands back ones that are actually on archive.org
   async function drawStreams(kind, id, t, ep) {
     const box = $("#pdBox");
-    const none = `<div class="not-lib glass">${ic("info")}<span>Not in Your Library. Kino only plays what's on the Storage Box, or public domain ${kind === "series" ? "shows" : "films"} from archive.org.</span></div>`;
+    const none = `<div class="not-lib glass">${ic("info")}<span>Not in Your Library</span></div>`;
     let r;
     try { r = await api(`/api/streams/${kind}/${encodeURIComponent(id)}`); } catch (_) { r = { streams: [] }; }
     if (!$("#pdBox")) return;
@@ -810,7 +814,7 @@
       if (isAdmin() && r.report) {
         if (!r.report.length) why = r.stream_addons && r.stream_addons.length ? `None of your stream addons (${r.stream_addons.join(", ")}) handle this title.` : "No addon with streams is installed. Install the Archive.org addon to play public domain films.";
         else why = r.report.map((x) => x.error ? `${x.addon} ${x.error}.` : !x.found ? `${x.addon} found nothing for this title.`
-          : `${x.addon} found ${x.found}, but ${x.other.length ? `they're on ${x.other.join(", ")}, not archive.org` : "none were on archive.org"}.`).join(" ");
+          : `${x.addon} found ${x.found}, but none could be used${x.other.length ? ` (${x.other.join(", ")})` : ""}.`).join(" ");
       }
       box.innerHTML = none + (why ? `<div class="note pd-note">${ic("info")} ${esc(why)}</div>` : "");
       return;
@@ -822,20 +826,19 @@
         ${r.streams.length > 1 ? `<button class="btn secondary" id="pdMore">${r.streams.length} Sources</button>` : ""}
         ${isAdmin() ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
       </div>
-      ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}
-      <div class="note pd-note">${ic("globe")} Public domain, streaming from archive.org. It can be slow to start.</div>`;
+      ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
     const play = (s) => playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
     $("#pdPlay").onclick = () => play(first);
     const more = $("#pdMore");
     if (more) more.onclick = () => {
-      const sh = sheet(`<h2>Sources</h2><p class="secondary">All of these are public domain copies on archive.org. The quality and cut can differ.</p>
+      const sh = sheet(`<h2>Sources</h2>
         <div class="fm-results">${r.streams.map((s, i) => `<button class="fm-item" data-src="${i}"><span class="grow"><b>${esc(nice(s.label))}</b><span class="secondary">${esc(s.addon)} · ${esc(s.host)}</span></span>${ic("play")}</button>`).join("")}</div>
         <div class="actions end"><button class="btn secondary small" data-close>Close</button></div>`, { wide: true });
       $$("[data-src]", sh.el).forEach((b) => (b.onclick = () => { sh.close(); play(r.streams[Number(b.dataset.src)]); }));
     };
     const save = $("#pdSave");
     if (save) save.onclick = async () => {
-      if (!(await confirmSheet(`Save ${t.name}${ep ? " " + epLabel(ep.season, ep.episode) : ""} to the Library?`, "Kino downloads this public domain copy from archive.org to the Storage Box, so it plays like everything else. Big films can take a while.", "Save to Library", false))) return;
+      if (!(await confirmSheet(`Save ${t.name}${ep ? " " + epLabel(ep.season, ep.episode) : ""} to the Library?`, "Kino downloads this copy to the Storage Box, so it plays like everything else. Big films can take a while.", "Save to Library", false))) return;
       try { await api(`/api/admin/streams/${first.id}/save`, {}); toast("Saving to the Library, you can keep browsing"); watchSave(first.id, !!ep); }
       catch (e) { toast(e.message, 5000); }
     };
@@ -905,6 +908,7 @@
         <div class="set-row"><span><b>Subtitle Size</b></span>${sel("pSubS", [["s", "Small"], ["m", "Medium"], ["l", "Large"]], pr.sub_size)}</div>
         ${toggle("pAuto", pr.autoplay, "Autoplay Next Episode", "Starts the next episode after a short countdown")}
         ${toggle("pSkip", pr.skip_intro, "Skip Intros Automatically", "Only works where Kino knows the intro")}
+        ${toggle("pBlur", pr.blur_watched, "Blur Watched", "Blurs the artwork of films and episodes you've already watched")}
         ${toggle("pShare", pr.share_events, "Share Watch Activity with Addons", "Lets tracking addons like Trakt see what this profile watches")}
         <div class="actions end"><span class="secondary" id="prefSaved"></span></div>
       </section>
@@ -914,13 +918,14 @@
     wireTopbar();
     $("#editMe").onclick = () => editProfile(p, () => route());
     const saveP = async () => {
-      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked };
+      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
       ME.profile = r.profile;
+      applyPrefs();
       $("#prefSaved").textContent = "Saved";
       setTimeout(() => $("#prefSaved") && ($("#prefSaved").textContent = ""), 1800);
     };
-    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pShare"].forEach((id) => $("#" + id).addEventListener("change", saveP));
+    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
     if (isAdmin()) drawAdminSettings();
   }
@@ -977,7 +982,7 @@
     const uses = (u) => [u.catalogs && "Catalogs", u.meta && "Metadata", u.subtitles && "Subtitles", u.events && "Watch Activity"].filter(Boolean);
     box.innerHTML = `
       <h2 class="set-title">Addons</h2>
-      <p class="secondary set-hint">Paste the link to any Stremio addon, it ends with manifest.json. Kino uses their catalogs on Home and in Search, their metadata for matching, their subtitles in the player and their watch activity tracking. Streams are only played when they're public domain films on archive.org, anything else an addon offers is ignored.</p>
+      <p class="secondary set-hint">Paste the link to any Stremio addon, it ends with manifest.json. Kino uses their catalogs on Home and in Search, their metadata for matching, their subtitles in the player and their watch activity tracking.</p>
       <div class="list">${r.addons.map((a) => `<div class="addon ${a.enabled ? "" : "off"}">
         <div class="addon-top">
           <span class="addon-logo">${a.logo ? `<img src="${img(a.logo)}" alt="" data-fallback="hide">` : ic("puzzle")}</span>
@@ -985,7 +990,7 @@
             ${a.description ? `<span class="addon-desc secondary">${esc(a.description)}</span>` : ""}</span>
           <input type="checkbox" class="switch" data-aon="${a.id}" ${a.enabled ? "checked" : ""} aria-label="Turn ${esc(a.name)} on or off">
         </div>
-        <div class="addon-tags">${uses(a.uses).map((u) => `<span class="badge">${u}</span>`).join("")}${a.uses.streams ? `<span class="badge">Streams (archive.org Only)</span>` : ""}
+        <div class="addon-tags">${uses(a.uses).map((u) => `<span class="badge">${u}</span>`).join("")}${a.uses.streams ? `<span class="badge">Streams</span>` : ""}
           ${a.config_required ? `<span class="badge warn">Needs Setting Up</span>` : ""}</div>
         ${a.config_required ? `<div class="note">This addon has to be set up on its own website first. Paste the link it gives you after setting it up.</div>` : ""}
         <div class="addon-foot">
@@ -1249,7 +1254,7 @@
     const t = opts.title;
     $("#pTitle").textContent = t ? t.name : info.name;
     if (info.stream) {
-      $("#pSub").textContent = [info.season != null ? epLabel(info.season, info.episode) : "", nice(info.ep_name || ""), "Public Domain · archive.org"].filter(Boolean).join("  ");
+      $("#pSub").textContent = [info.season != null ? epLabel(info.season, info.episode) : "", nice(info.ep_name || "")].filter(Boolean).join("  ");
       buildMenus();
       setupDeviceButtons();
       pl.mode = "direct";
@@ -1669,6 +1674,8 @@
   window.addEventListener("pagehide", saveProgress);
 
   // ---------------------------------------------------------- router
+  const applyPrefs = () => document.body.classList.toggle("blur-watched", !!(ME.profile && ME.profile.prefs && ME.profile.prefs.blur_watched));
+
   async function route() {
     stopPoll();
     clearInterval(HERO_T);
@@ -1683,6 +1690,7 @@
         if (!ME.profile || page === "profiles") return pageProfiles(false);
         if (!page) { location.hash = "#/home"; return; }
       }
+      applyPrefs();
       if (page === "movies") await pageBrowse("movie");
       else if (page === "shows") await pageBrowse("series");
       else if (page === "title" && arg) await pageTitle(arg);

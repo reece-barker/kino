@@ -804,7 +804,17 @@
     let r;
     try { r = await api(`/api/streams/${kind}/${encodeURIComponent(id)}`); } catch (_) { r = { streams: [] }; }
     if (!$("#pdBox")) return;
-    if (!r.streams.length) { box.innerHTML = none; return; }
+    if (!r.streams.length) {
+      // Admins get told why nothing can play, so a missing addon or a slow archive.org is easy to spot
+      let why = "";
+      if (isAdmin() && r.report) {
+        if (!r.report.length) why = r.stream_addons && r.stream_addons.length ? `None of your stream addons (${r.stream_addons.join(", ")}) handle this title.` : "No addon with streams is installed. Install the Archive.org addon to play public domain films.";
+        else why = r.report.map((x) => x.error ? `${x.addon} ${x.error}.` : !x.found ? `${x.addon} found nothing for this title.`
+          : `${x.addon} found ${x.found}, but ${x.other.length ? `they're on ${x.other.join(", ")}, not archive.org` : "none were on archive.org"}.`).join(" ");
+      }
+      box.innerHTML = none + (why ? `<div class="note pd-note">${ic("info")} ${esc(why)}</div>` : "");
+      return;
+    }
     const first = r.streams[0];
     const res = first.progress && !first.progress.watched && first.progress.pos > 30 ? first.progress : null;
     box.innerHTML = `<div class="actions">

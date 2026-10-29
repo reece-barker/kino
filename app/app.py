@@ -22,6 +22,7 @@ import logging
 import math
 import os
 import re
+import random
 import secrets
 import shutil
 import socket
@@ -122,6 +123,10 @@ CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, kind TEXT, first REAL);
 CREATE TABLE IF NOT EXISTS mylist (profile_id INTEGER, key TEXT, kind TEXT, title_id TEXT, name TEXT, poster TEXT,
     added REAL, checked REAL, PRIMARY KEY (profile_id, key));
 CREATE TABLE IF NOT EXISTS kids_rules (key TEXT PRIMARY KEY, allow INTEGER);
+CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, code TEXT, name TEXT, ua TEXT, ip TEXT, status TEXT,
+    created REAL, last_seen REAL);
+CREATE TABLE IF NOT EXISTS search_recent (profile_id INTEGER, key TEXT, kind TEXT, title_id TEXT, name TEXT, poster TEXT,
+    at REAL, PRIMARY KEY (profile_id, key));
 CREATE TABLE IF NOT EXISTS auto_intros (file_id TEXT PRIMARY KEY, start REAL, end REAL, tried REAL);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
@@ -251,6 +256,45 @@ def allowed_nets():
                 pass
         _ALLOW_CACHE.update(mtime=mt, nets=nets)
     return _ALLOW_CACHE["nets"]
+
+
+# ---- allowed devices
+# Websites cant read real hardware ids (serial numbers, mac addresses) so every browser or installed app gets
+# its own random id in a long lasting cookie instead. The admin approves that device once and it works from any network
+DEVICE_COOKIE = "kino_device"
+
+
+def device_token(request):
+    t = request.cookies.get(DEVICE_COOKIE, "")
+    return t if re.fullmatch(r"[A-Za-z0-9_-]{32,64}", t) else None
+
+
+def device_key(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def device_code(token):
+    # Short code people can read out, made from the id so it never changes for that device
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    n = int(device_key(token)[:12], 16)
+    chars = "".join(alphabet[(n >> (5 * i)) & 31] for i in range(6))
+    return f"{chars[:3]}-{chars[3:]}"
+
+
+def device_allowed(request):
+    t = device_token(request)
+    if not t:
+        return False
+    row = db().q("SELECT status, last_seen FROM devices WHERE id = ?", (device_key(t),))
+    if not row or row[0]["status"] != "allowed":
+        return False
+    if time.time() - (row[0]["last_seen"] or 0) > 300:
+        db().q("UPDATE devices SET last_seen = ?, ip = ? WHERE id = ?", (time.time(), client_ip(request), device_key(t)))
+    return True
+
+
+def access_ok(request):
+    return ip_allowed(client_ip(request)) or device_allowed(request)
 
 
 def ip_allowed(ip):
@@ -866,10 +910,12 @@ async def guard(request: Request, call_next):
     # Every change request needs this header, other websites cant add it so they cant trick your browser into doing stuff
     if request.method in ("POST", "PUT", "DELETE") and request.headers.get("x-kino") != "1":
         return JSONResponse({"detail": "Missing request header"}, status_code=403)
-    if path.startswith("/api/") and not path.startswith("/api/dl/") and not ip_allowed(client_ip(request)):
+    if path.startswith("/api/") and not path.startswith(("/api/dl/", "/api/gate")) and not access_ok(request):
         log.warning("kino blocked ip=%s path=%s", client_ip(request), path)
-        return JSONResponse({"detail": "This network isn't on the allow list"}, status_code=403)
+        return JSONResponse({"detail": "This network or device isn't on the allow list"}, status_code=403)
     resp = await call_next(request)
+    if not device_token(request) and (path in ("/", "/gate") or path.startswith("/api/me")):
+        set_cookie(resp, DEVICE_COOKIE, secrets.token_urlsafe(32), 10 * 365 * 86400)
     resp.headers["Content-Security-Policy"] = CSP
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "no-referrer"
@@ -1195,11 +1241,15 @@ async def home(request: Request, p=Depends(current_profile)):
     by_score = sorted(visible + pool, key=lambda s: s["score"], reverse=True)
     recent = sorted(summ + pool, key=lambda s: s["added"], reverse=True)
 
+    cont = continue_list(summ, wm)
+    first = next((c for c in cont if c.get("background")), None)
+    if first:
+        # The hero always starts with whatever was watched last, in its own continue style
+        hero = [{**first, "cont": True}] + [h for h in hero if h["id"] != first.get("id") or first.get("stream")][:5]
     shelves = []
     mine, fresh = mylist_items(p, summ, wm)
     if fresh:
         shelves.append({"id": "fresh", "title": "New Episodes in My List", "style": "fresh", "items": fresh[:6]})
-    cont = continue_list(summ, wm)
     if cont:
         shelves.append({"id": "continue", "title": f"Continue Watching for {p['name']}", "style": "continue", "items": cont})
     if has_signal:
@@ -2729,6 +2779,171 @@ async def storage_review(admin=Depends(require_admin)):
     everyone.sort(key=lambda x: x["size"], reverse=True)
     idle.sort(key=lambda x: x["size"], reverse=True)
     return {"storage": st, "watched_by_everyone": everyone[:30], "never_watched": idle[:30]}
+
+
+
+# ---------------------------------------------------------------- gate for devices
+# nginx asks /api/gate on every request from an address thats not on the ip list (satisfy any + auth_request),
+# a device the admin approved gets through, everything else lands on /gate where it can ask for access
+@app.get("/api/gate")
+async def gate(request: Request):
+    return Response(status_code=204 if access_ok(request) else 403)
+
+
+GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light"><meta name="robots" content="noindex, nofollow"><title>Kino</title>
+<link rel="stylesheet" href="/static/app.css?v=__V__"></head><body class="gate-body"><main class="gate" id="gate">
+<div class="gate-card glass-card"><div class="gate-ic"></div><h1>This Device Isn't Allowed Yet</h1>
+<p class="secondary">Kino only opens on your family's networks or on devices the admin has approved. Ask for access and give the admin this code.</p>
+<div class="gate-code" id="gateCode">···-···</div>
+<form id="gateForm" class="gate-form"><input id="gateName" maxlength="40" placeholder="Name this device, like Mum's iPad" required>
+<button class="btn primary" type="submit">Ask for Access</button></form>
+<p class="note" id="gateMsg"></p></div></main><script src="/static/gate.js?v=__V__"></script></body></html>"""
+
+
+@app.get("/gate")
+async def gate_page():
+    return Response(GATE_HTML.replace("__V__", STATIC_VERSION["v"]), media_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/gate/status")
+async def gate_status(request: Request):
+    t = device_token(request)
+    if not t:
+        return {"code": None, "status": "none", "allowed": access_ok(request)}
+    row = db().q("SELECT status, name FROM devices WHERE id = ?", (device_key(t),))
+    return {"code": device_code(t), "status": row[0]["status"] if row else "none", "name": row[0]["name"] if row else None,
+            "allowed": access_ok(request)}
+
+
+@app.post("/api/gate/request")
+async def gate_request(request: Request):
+    t = device_token(request)
+    if not t:
+        raise HTTPException(400, "Reload the page and try again")
+    b = await request.json()
+    name = re.sub(r"\s+", " ", str(b.get("name") or "")).strip()[:40] or "Unnamed device"
+    db().q("DELETE FROM devices WHERE status = 'pending' AND created < ?", (time.time() - 7 * 86400,))
+    if db().q("SELECT COUNT(*) AS n FROM devices WHERE status = 'pending'")[0]["n"] >= 30:
+        raise HTTPException(429, "Too many devices are waiting, ask the admin to clear them")
+    row = db().q("SELECT status FROM devices WHERE id = ?", (device_key(t),))
+    if row and row[0]["status"] in ("allowed", "denied"):
+        return {"ok": True, "status": row[0]["status"]}
+    db().q("INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?,?,?,?)", (device_key(t), device_code(t), name,
+           request.headers.get("user-agent", "")[:200], client_ip(request), "pending", time.time(), time.time()))
+    log.info("kino device %s asked for access as %s from %s", device_code(t), name, client_ip(request))
+    return {"ok": True, "status": "pending"}
+
+
+def device_out(r, mine):
+    return {"id": r["id"], "code": r["code"], "name": r["name"], "ua": r["ua"], "ip": r["ip"], "status": r["status"],
+            "created": r["created"], "last_seen": r["last_seen"], "this": r["id"] == mine}
+
+
+@app.get("/api/admin/devices")
+async def devices_list(request: Request, admin=Depends(require_admin)):
+    t = device_token(request)
+    mine = device_key(t) if t else None
+    rows = db().q("SELECT * FROM devices ORDER BY status = 'pending' DESC, created DESC")
+    return {"devices": [device_out(r, mine) for r in rows], "this_code": device_code(t) if t else None,
+            "this_allowed": bool(mine and any(r["id"] == mine and r["status"] == "allowed" for r in rows))}
+
+
+@app.post("/api/admin/devices")
+async def devices_approve(request: Request, admin=Depends(require_admin)):
+    """Approves a device by the code it shows, or this device when this is set"""
+    b = await request.json()
+    name = str(b.get("name") or "").strip()[:40]
+    if b.get("this"):
+        t = device_token(request)
+        if not t:
+            raise HTTPException(400, "Reload the page first so this device gets an id")
+        db().q("INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?,?,?,?)", (device_key(t), device_code(t), name or "This device",
+               request.headers.get("user-agent", "")[:200], client_ip(request), "allowed", time.time(), time.time()))
+        return {"ok": True}
+    code = re.sub(r"[^A-Z0-9]", "", str(b.get("code") or "").upper())
+    code = f"{code[:3]}-{code[3:6]}"
+    row = db().q("SELECT id FROM devices WHERE code = ?", (code,))
+    if not row:
+        raise HTTPException(404, "No device with that code has asked for access yet. Open Kino on it and tap Ask for Access first")
+    db().q("UPDATE devices SET status = 'allowed', name = COALESCE(NULLIF(?, ''), name) WHERE id = ?", (name, row[0]["id"]))
+    log.info("kino device %s allowed by %s", code, admin)
+    return {"ok": True}
+
+
+@app.put("/api/admin/devices/{did}")
+async def devices_edit(did: str, request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    if b.get("status") in ("allowed", "denied"):
+        db().q("UPDATE devices SET status = ? WHERE id = ?", (b["status"], did))
+    if b.get("name"):
+        db().q("UPDATE devices SET name = ? WHERE id = ?", (str(b["name"]).strip()[:40], did))
+    return {"ok": True}
+
+
+@app.delete("/api/admin/devices/{did}")
+async def devices_remove(did: str, request: Request, admin=Depends(require_admin)):
+    t = device_token(request)
+    if t and device_key(t) == did and not ip_allowed(client_ip(request)):
+        raise HTTPException(400, "That's the device you're using and this network isn't allowed, you'd lock yourself out")
+    db().q("DELETE FROM devices WHERE id = ?", (did,))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- search start page
+def resolve_saved(p, rows, summ):
+    by_meta, by_id = lib_by_meta_id(summ), {s["id"]: s for s in summ}
+    out = []
+    for r in rows:
+        s = by_meta.get(r["key"]) or by_id.get(r["title_id"] or (r["key"][4:] if r["key"].startswith("lib:") else ""))
+        if s:
+            out.append(s)
+        elif not r["key"].startswith("lib:") and not r["title_id"]:
+            item = ext_preview({"id": r["key"], "name": r["name"], "poster": r["poster"]}, r["kind"])
+            if not p.get("kids") or kids_ok(item["genres"], r["key"]):
+                out.append(item)
+    return out
+
+
+@app.post("/api/search/recent")
+async def search_recent_add(request: Request, p=Depends(current_profile)):
+    b = await request.json()
+    if b.get("title_id"):
+        t = LIB["titles"].get(b["title_id"])
+        if not t:
+            raise HTTPException(404, "Unknown title")
+        m = meta_for(t) or {}
+        row = (list_key_for(t, m), t["kind"], t["id"], m.get("name") or t["guess_name"], m.get("poster"))
+    else:
+        kind, mid = b.get("kind"), str(b.get("id") or "")[:80]
+        if kind not in ("movie", "series") or not mid:
+            raise HTTPException(400, "Unknown title")
+        row = (mid, kind, None, str(b.get("name") or mid)[:120], b.get("poster"))
+    db().q("INSERT OR REPLACE INTO search_recent VALUES (?,?,?,?,?,?,?)", (p["id"], *row, time.time()))
+    db().q("DELETE FROM search_recent WHERE profile_id = ? AND key NOT IN (SELECT key FROM search_recent WHERE profile_id = ? "
+           "ORDER BY at DESC LIMIT 18)", (p["id"], p["id"]))
+    return {"ok": True}
+
+
+@app.delete("/api/search/recent")
+async def search_recent_clear(p=Depends(current_profile)):
+    db().q("DELETE FROM search_recent WHERE profile_id = ?", (p["id"],))
+    return {"ok": True}
+
+
+@app.get("/api/search/start")
+async def search_start(p=Depends(current_profile)):
+    summ, wm, _ = all_summaries(p["id"])
+    rows = db().q("SELECT * FROM search_recent WHERE profile_id = ? ORDER BY at DESC", (p["id"],))
+    recent = resolve_saved(p, rows, summ)
+    pool = addon_pool(p["id"], lib_by_meta_id(summ))
+    if p.get("kids"):
+        pool = [s for s in pool if kids_ok(s["genres"], s["imdb"])]
+    explore = [s for s in summ if s["my_rating"] != -1] + pool
+    # Changes a few times a day so it feels fresh without jumping around while someone is looking
+    rng = random.Random(f"{p['id']}:{int(time.time() // 21600)}")
+    rng.shuffle(explore)
+    return {"recent": recent, "explore": explore[:18]}
 
 
 # ---- admin: library tools

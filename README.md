@@ -18,6 +18,12 @@ Netflix style family library for the storage box, with the torbox sync, server s
 - The sync skips nfo files, samples and extras, skips anything you already have in 1080p or better, and only downloads the best copy when TorBox has several.
 - `kino-watchdog` checks the storage box mount every minute and reconnects it if it drops or freezes.
 
+## Allowed devices
+
+Next to the ip list there's **Settings > Allowed Devices**. An approved device can open Kino from any network (mobile data, holidays, a friend's wifi). nginx lets a request in when its ip is on the list *or* the app says the device is approved (`satisfy any` with an `auth_request` to `/api/gate`). Everything else is sent to `/gate`, which shows the device's code and an Ask for Access button. Approve it in Settings, or type the code there.
+
+Real hardware ids (serial numbers, MAC addresses, the iPhone UDID, Android id) can't be read by a website at all, browsers block that for privacy. So Kino gives every browser and installed app its own random id in a long lasting cookie, shown as a short code like `K7F-29Q`. Clearing the browser's site data, or using a different browser, means a new code. On iPhone the Home Screen app and Safari count as two devices.
+
 ## Look
 
 Kino is laid out like the Apple TV app: a floating sidebar on the left (Search, Home, Movies, TV Shows, My List, and a Settings group that folds open with Settings, Sync and Server), an icon rail on smaller screens and a tab bar on phones. The profile at the top of the sidebar opens Switch Profile, admin sign in and Appearance. Light and dark follow the device unless you pick one (per device, under Appearance or in Settings). Artwork heroes and the player always stay dark.

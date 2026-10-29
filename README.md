@@ -18,6 +18,10 @@ Netflix style family library for the storage box, with the torbox sync, server s
 - The sync skips nfo files, samples and extras, skips anything you already have in 1080p or better, and only downloads the best copy when TorBox has several.
 - `kino-watchdog` checks the storage box mount every minute and reconnects it if it drops or freezes.
 
+## Look
+
+Kino is laid out like the Apple TV app: a floating sidebar on the left (Search, Home, Movies, TV Shows, My List, and a Settings group that folds open with Settings, Sync and Server), an icon rail on smaller screens and a tab bar on phones. The profile at the top of the sidebar opens Switch Profile, admin sign in and Appearance. Light and dark follow the device unless you pick one (per device, under Appearance or in Settings). Artwork heroes and the player always stay dark.
+
 ## My List, kids and intros
 
 - **My List:** every profile can add films and shows (from the library or from addons) with the + button. When a show in someone's list gets new episodes on the Storage Box, a big "New Episodes in My List" card shows up at the top of their Home until they open the show.

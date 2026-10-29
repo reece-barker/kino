@@ -2097,7 +2097,10 @@ def home_catalogs():
     for a in addon_rows():
         for c in a["m"].get("catalogs") or []:
             needs = list(c.get("extraRequired") or []) + [e.get("name") for e in c.get("extra") or [] if e.get("isRequired")]
-            if needs or f"{c.get('type')}/{c.get('id')}" in a["hidden"] or not c.get("type"):
+            if needs or f"{c.get('type')}/{c.get('id')}" in a["hidden"] or c.get("type") not in ("movie", "series", "anime"):
+                continue
+            # Your own torbox list already plays through TorBox first, so its addon catalog dosent get a shelf too
+            if "torbox" in f"{a['m'].get('id', '')} {a['m'].get('name', '')} {c.get('name', '')}".lower():
                 continue
             out.append((a, c))
     return out

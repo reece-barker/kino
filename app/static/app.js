@@ -311,11 +311,13 @@
     const pill = $("#sidePill"), cur = $(`.side-item[aria-current="page"]`);
     if (!pill) return;
     if (!cur || !cur.offsetParent) { pill.style.opacity = "0"; return; }
-    const box = pill.parentElement.getBoundingClientRect(), r = cur.getBoundingClientRect();
+    // Layout offsets instead of screen positions, so it still lines up when TVs zoom the whole page
+    let top = 0;
+    for (let el = cur; el && el !== pill.parentElement; el = el.offsetParent) top += el.offsetTop;
     if (instant) pill.style.transition = "none";
     pill.style.opacity = "1";
-    pill.style.transform = `translateY(${r.top - box.top}px)`;
-    pill.style.height = `${r.height}px`;
+    pill.style.transform = `translateY(${top}px)`;
+    pill.style.height = `${cur.offsetHeight}px`;
     if (instant) { void pill.offsetWidth; pill.style.transition = ""; }
   }
   function toggleGroup(open, save = true) {
@@ -334,6 +336,16 @@
   setInterval(() => { const t = $("#sideTime"); if (t) t.textContent = clockNow(); }, 20000);
   addEventListener("resize", () => placePill(true));
 
+  function setOpen(open) {
+    const side = $("#side");
+    if (!side || side.classList.contains("open") === open) return;
+    side.classList.toggle("open", open);
+    // Opening the rail changes item sizes, so the pill follows it while it grows or shrinks
+    const t0 = performance.now();
+    const follow = () => { placePill(true); if (performance.now() - t0 < 520) requestAnimationFrame(follow); };
+    requestAnimationFrame(follow);
+  }
+
   function wireSide() {
     const side = $("#side"), b = $("#avatarBtn"), m = $("#avatarMenu");
     b.onclick = (e) => { e.stopPropagation(); m.hidden = !m.hidden; side.classList.toggle("pinned", !m.hidden); };
@@ -343,11 +355,16 @@
     const ai = $("#adminIn"); if (ai) ai.onclick = () => adminLogin(() => route());
     const ao = $("#adminOut"); if (ao) ao.onclick = async () => { await api("/api/admin/logout", {}); ME.admin = null; toast("Signed out of admin"); route(); };
     $("#sideHead").onclick = () => toggleGroup(!$("#sideGroup").classList.contains("open"));
-    // Opening the rail changes item sizes, so the pill gets placed again as it grows
-    ["mouseenter", "mouseleave", "focusin", "focusout"].forEach((ev) => side.addEventListener(ev, () => {
-      const t0 = performance.now();
-      const follow = () => { placePill(true); if (performance.now() - t0 < 520) requestAnimationFrame(follow); };
-      requestAnimationFrame(follow);
+    // Opens when you point at it or tab into it with the keyboard, and folds away again as soon as you pick
+    // something, like the apple tv sidebar. Clicking leaves focus on the link, so focus alone never keeps it open
+    side.addEventListener("mouseenter", () => { if (!side.classList.contains("rest")) setOpen(true); });
+    side.addEventListener("mouseleave", () => { side.classList.remove("rest"); setOpen(false); });
+    side.addEventListener("focusin", (e) => { if (e.target.matches(":focus-visible")) setOpen(true); });
+    side.addEventListener("focusout", (e) => { if (!side.contains(e.relatedTarget)) setOpen(false); });
+    $$(".side-item", side).forEach((a) => a.addEventListener("click", () => {
+      side.classList.add("rest");
+      setOpen(false);
+      a.blur();
     }));
     // Phones get a tab bar, the last tab opens everything else
     $("#tbMore").onclick = () => {
@@ -1149,7 +1166,7 @@
     const sel = (id, opts, val) => `<select class="plain" id="${id}">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === val ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
     const toggle = (id, on, label, hint) => `<label class="set-row"><span><b>${label}</b>${hint ? `<span class="secondary">${hint}</span>` : ""}</span><input type="checkbox" class="switch" id="${id}" ${on ? "checked" : ""}></label>`;
 
-    app.innerHTML = topbar("settings") + `<main class="page narrow">
+    app.innerHTML = topbar("settings") + `<main class="page narrow settings">
       <h1 class="large-title">Settings</h1>
       <section class="card set-card">
         <h2 class="set-title">Profile</h2>
@@ -2012,7 +2029,7 @@
 
   // Which sidebar item a page belongs to
   const sideFor = (page) => ({ title: "", discover: "" })[page] ?? (page || "home");
-  let LAST_PAGE = null, ROUTE_N = 0;
+  let LAST_PAGE = null, ROUTE_N = 0, ENTER_T = null;
 
   // Apple style placeholders that show the shape of the page while it loads
   function skeleton(page) {
@@ -2057,7 +2074,11 @@
       else if (page === "server" && isAdmin()) await pageServer();
       else await pageHome();
       if (isAdmin() && page !== "sync" && page !== "home") api("/api/admin/sync").then((s) => { SYNC = s; updateSyncChip(); }).catch(() => {});
-      if (changed && n === ROUTE_N) { void app.offsetWidth; app.classList.add("enter"); }
+      if (changed && n === ROUTE_N) {
+        void app.offsetWidth; app.classList.add("enter");
+        // Only the first draw of a page animates, pages that refresh themselves every few seconds stay still
+        clearTimeout(ENTER_T); ENTER_T = setTimeout(() => app.classList.remove("enter"), 900);
+      }
       LAST_PAGE = location.hash.split("?")[0];
     } catch (e) {
       if (e.message === "pick profile") return;

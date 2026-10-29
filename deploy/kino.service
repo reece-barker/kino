@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 User=kino
 Group=kino
+# The torbox key comes from the sync's own env file so its only kept in one place, kino.env still wins for everything else
+EnvironmentFile=-/root/torbox-sync/.env
 EnvironmentFile=/etc/kino/kino.env
 WorkingDirectory=/opt/kino
 ExecStart=/opt/kino/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8282 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header

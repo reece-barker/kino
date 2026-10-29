@@ -1679,11 +1679,18 @@ async def download(fid: str, u: str, exp: int, sig: str, request: Request):
 
 @app.post("/api/play/{fid}")
 async def play_start(fid: str, request: Request, p=Depends(current_profile)):
-    f = file_or_404(fid)
     body = await request.json()
     t = max(0.0, float(body.get("t") or 0))
     a = int(body.get("audio") or 0)
-    pr = await get_probe(f)
+    if fid.startswith("s"):
+        r = stream_row(fid)
+        if not r["url"].startswith("torbox:"):
+            raise HTTPException(400, "That stream plays directly")
+        url, pr = await tb_probe(r)
+        f = {"id": fid, "path": url}
+    else:
+        f = file_or_404(fid)
+        pr = await get_probe(f)
     v = pr.get("video")
     if not v:
         raise HTTPException(415, "This file has no video track")
@@ -2426,6 +2433,22 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
             return a, [], "couldn't be reached" if isinstance(e, (httpx.ConnectError, socket.gaierror)) else "gave an error"
 
     out, dropped, report = [], 0, []
+    # Your own torbox copy goes first, it's nearly always better than a public domain one
+    try:
+        tb = await tb_matches(kind, vid, meta)
+    except Exception as e:
+        log.info("torbox lookup failed: %s", e)
+        tb = []
+    for f in sorted(tb, key=lambda f: -f["size"])[:6]:
+        url = f"torbox:{f['kind']}:{f['item']}:{f['file']}"
+        sid = "s" + short_id(f"{kind}:{vid}:{url}")[:15]
+        db().q("INSERT OR REPLACE INTO streams VALUES (?,?,?,?,?,?,?,?,?,?)",
+               (sid, url, kind, vid, meta.get("name") or vid, f["name"][:200], "TorBox", meta.get("poster"),
+                str(meta.get("releaseInfo") or "")[:4], time.time()))
+        w = db().q("SELECT pos, dur, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
+        facts = stream_facts({"behaviorHints": {"videoSize": f["size"]}}, "https://x/" + quote(f["name"]), f["name"])
+        out.append({"id": sid, **facts, "plays": True, "torbox": True, "addon": "TorBox",
+                    "progress": dict(w[0]) if w else None, "_url": url})
     for a, streams, err in await asyncio.gather(*(one(a) for a in rows)):
         rep_ = {"addon": a["m"].get("name"), "found": len(streams), "kept": 0, "other": [], "error": err}
         report.append(rep_)
@@ -2455,7 +2478,7 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
             out.append({"id": sid, **stream_facts(st, url, label), "addon": a["m"].get("name"),
                         "progress": dict(w[0]) if w else None, "_url": url})
     # Ones that play in a browser first, then the best quality
-    out.sort(key=lambda x: (not x["plays"], -x["height"], -(x["bytes"] or 0)))
+    out.sort(key=lambda x: (not x.get("torbox"), not x["plays"], -x["height"], -(x["bytes"] or 0)))
     for x in out:
         x.pop("_url", None)
     res = {"streams": out, "dropped": dropped, "checked": len(rows)}
@@ -2529,6 +2552,20 @@ async def stream_file_info(sid, p, request):
         if not kids_ok((m or {}).get("genres"), show_of(r["video_id"])):
             raise HTTPException(404, "That title isn't available on this profile")
     w = db().q("SELECT pos, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
+    common = {"resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
+              "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
+              "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
+              "title_id": None, "intro": None, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"],
+              "prefs": p["prefs"], "is_admin": bool(admin_user(request))}
+    if r["url"].startswith("torbox:"):
+        _, pr = await tb_probe(r)
+        a = next((x for x in pr["audio"] if x.get("default")), pr["audio"][0] if pr["audio"] else None)
+        return {"id": sid, "stream": True, "name": r["name"], "src": None, "direct": False, "video": pr.get("video") or {},
+                "audio": [{"n": x["n"], "lang": lang_name(x["lang"]) if x.get("lang") else "",
+                           "label": " ".join(str(y) for y in (x.get("title") or lang_name(x.get("lang")), x.get("codec", "").upper(), f"{x.get('channels')}ch") if y)}
+                          for x in pr["audio"]],
+                "default_audio": a["n"] if a else 0, "subs": [], "badges": badges(pr), "duration": pr.get("duration"),
+                "download": f"/api/rstream/{sid}?dl=1", **common}
     ext = Path(urlparse(r["url"]).path).suffix.lower()
     return {"id": sid, "stream": True, "name": r["name"], "src": f"/api/rstream/{sid}", "direct": True,
             "video": {"codec": None}, "audio": [], "default_audio": 0, "subs": [], "badges": [],
@@ -2536,6 +2573,26 @@ async def stream_file_info(sid, p, request):
             "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
             "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
             "title_id": None, "intro": None, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"], "ext": ext, "prefs": p["prefs"], "is_admin": bool(admin_user(request))}
+
+
+async def tb_open(url, headers):
+    """Opens a file from your torbox account, the link came from torbox itself so it can go to there download servers"""
+    client = httpx.AsyncClient(timeout=httpx.Timeout(30, read=60), follow_redirects=False)
+    try:
+        for _ in range(5):
+            if urlparse(url).scheme != "https" and not ADDON_ALLOW_PRIVATE:
+                raise HTTPException(502, "TorBox sent an unexpected link")
+            await check_host(urlparse(url).hostname)
+            r = await client.send(client.build_request("GET", url, headers=headers), stream=True)
+            if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                await r.aclose()
+                url = urljoin(url, r.headers["location"])
+                continue
+            return client, r
+        raise HTTPException(502, "Too many redirects")
+    except BaseException:
+        await client.aclose()
+        raise
 
 
 async def pd_open(url, headers):
@@ -2568,7 +2625,10 @@ async def pd_open(url, headers):
 async def rstream(sid: str, request: Request, dl: int = 0, p=Depends(current_profile)):
     r = stream_row(sid)
     hdr = {"Range": request.headers["range"]} if request.headers.get("range") else {}
-    client, up = await pd_open(r["url"], hdr)
+    if r["url"].startswith("torbox:"):
+        client, up = await tb_open(await tb_link(*tb_parts(r["url"])), hdr)
+    else:
+        client, up = await pd_open(r["url"], hdr)
     ctype = up.headers.get("content-type", "")
     if up.status_code not in (200, 206) or not (ctype.startswith("video/") or ctype in ("application/octet-stream", "application/ogg")):
         await up.aclose(); await client.aclose()
@@ -2944,6 +3004,120 @@ async def search_start(p=Depends(current_profile)):
     rng = random.Random(f"{p['id']}:{int(time.time() // 21600)}")
     rng.shuffle(explore)
     return {"recent": recent, "explore": explore[:18]}
+
+
+
+# ---------------------------------------------------------------- torbox first
+# If something isnt on the storage box yet but its already in your torbox account, Kino plays it from there
+# before it looks at public domain copies. Only files from your own account, found through the torbox api
+TORBOX_KEY = env("TORBOX_API_KEY", "")
+TORBOX_API = env("TORBOX_API", "https://api.torbox.app/v1/api")
+TB_KINDS = [("torrents", "torrent_id"), ("webdl", "web_id"), ("usenet", "usenet_id")]
+TB_CACHE = {"at": 0, "files": [], "lock": None}
+TB_LINKS = {}   # (kind, item, file) -> (time, url)
+
+
+def tb_guess(name):
+    from guessit import guessit
+    try:
+        g = dict(guessit(name))
+    except Exception:
+        g = {}
+    return g
+
+
+async def tb_files():
+    """Every finished video in the torbox account, parsed once and kept for 5 minutes"""
+    if not TORBOX_KEY:
+        return []
+    if TB_CACHE["lock"] is None:
+        TB_CACHE["lock"] = asyncio.Lock()
+    async with TB_CACHE["lock"]:
+        if time.time() - TB_CACHE["at"] < 300:
+            return TB_CACHE["files"]
+        out = []
+        async with httpx.AsyncClient(timeout=30, headers={"Authorization": f"Bearer {TORBOX_KEY}"}) as c:
+            for kind, _ in TB_KINDS:
+                try:
+                    r = await c.get(f"{TORBOX_API}/{kind}/mylist", params={"limit": 1000, "bypass_cache": "true"})
+                    if r.status_code != 200:
+                        continue
+                    items = r.json().get("data") or []
+                except Exception as e:
+                    log.info("torbox %s list failed: %s", kind, e)
+                    continue
+                for it in items:
+                    if not (it.get("download_finished") or it.get("download_present")):
+                        continue
+                    for f in it.get("files") or []:
+                        name = str(f.get("short_name") or f.get("name") or "")
+                        if Path(name).suffix.lower() not in VIDEO_EXT or ("sample" in name.lower() and (f.get("size") or 0) < 400 * 1024**2):
+                            continue
+                        g = await asyncio.to_thread(tb_guess, f"{it.get('name', '')}/{Path(str(f.get('name') or name)).name}")
+                        out.append({"kind": kind, "item": it.get("id"), "file": f.get("id"), "name": Path(name).name,
+                                    "size": f.get("size") or 0, "title": norm(g.get("title") or ""), "year": g.get("year"),
+                                    "season": first(g.get("season")), "episode": first(g.get("episode"))})
+        TB_CACHE.update(at=time.time(), files=out)
+        return out
+
+
+async def tb_matches(kind, vid, meta):
+    if not TORBOX_KEY or not meta:
+        return []
+    want = norm(meta.get("name") or "")
+    try:
+        year = int(str(meta.get("releaseInfo") or "")[:4])
+    except ValueError:
+        year = None
+    se = None
+    if kind == "series":
+        _, cur, _ = await ep_context(kind, vid)
+        if not cur:
+            return []
+        se = (cur["season"], cur["episode"])
+    hits = []
+    for f in await tb_files():
+        if not want or f["title"] != want:
+            continue
+        if kind == "movie":
+            if f["episode"] is not None or (year and f["year"] and abs(int(f["year"]) - year) > 1):
+                continue
+        elif (f["season"], f["episode"]) != se:
+            continue
+        hits.append(f)
+    return hits
+
+
+async def tb_link(kind, item, file):
+    key = (kind, item, file)
+    hit = TB_LINKS.get(key)
+    if hit and time.time() - hit[0] < 2 * 3600:   # torbox links last about 3 hours
+        return hit[1]
+    id_param = dict(TB_KINDS)[kind]
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(f"{TORBOX_API}/{kind}/requestdl", params={"token": TORBOX_KEY, id_param: item, "file_id": file})
+    if r.status_code != 200 or not r.json().get("data"):
+        raise HTTPException(502, "TorBox didn't give a link for that file, it might have been removed")
+    url = r.json()["data"]
+    if urlparse(url).scheme != "https" and not ADDON_ALLOW_PRIVATE:
+        raise HTTPException(502, "TorBox sent an unexpected link")
+    TB_LINKS[key] = (time.time(), url)
+    return url
+
+
+def tb_parts(url):
+    _, kind, item, file = url.split(":", 3)
+    return kind, item, file
+
+
+async def tb_probe(r):
+    url = await tb_link(*tb_parts(r["url"]))
+    rows = db().q("SELECT data FROM probe WHERE path = ?", (r["url"],))
+    if rows:
+        return url, json.loads(rows[0]["data"])
+    data = await asyncio.to_thread(run_probe, url)
+    db().q("INSERT OR REPLACE INTO probe VALUES (?,?,?,?)", (r["url"], 0, 0, json.dumps(data)))
+    return url, data
 
 
 # ---- admin: library tools

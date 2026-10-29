@@ -623,3 +623,4 @@ input[type="search"]::-webkit-search-cancel-button, input[type="search"]::-webki
 .pd-note { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
 .pd-note svg { width: 16px; height: 16px; flex: none; }
 #pdBox .actions { margin-top: 6px; }
+.pd-more { margin-top: 20px; }

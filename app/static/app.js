@@ -637,7 +637,8 @@
       <main class="page under-hero" style="padding-top:12px">
         ${t.kind === "series" ? `<section class="section" style="margin-top:0">
           <div class="seasons" role="group" aria-label="Seasons">${seasons.map((s) => `<button class="seg" data-season="${s}" aria-pressed="${s === curSeason}">${s ? `Season ${s}` : "Extras"}</button>`).join("")}</div>
-          <div class="episodes" id="eps"></div></section>` : ""}
+          <div class="episodes" id="eps"></div>
+          ${t.pd_streams ? `<a class="btn secondary small pd-more" href="#/discover/series/${encodeURIComponent(t.imdb)}?all=1">${ic("globe")} All Episodes on archive.org</a>` : ""}</section>` : ""}
         ${t.kind === "movie" && t.files.length > 1 ? `<section class="section"><h2 class="section-title">Versions</h2><div class="versions">${t.files.map((f) => `
           <div class="v"><div class="grow"><div class="badges">${f.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join("")}</div><div class="nm">${esc(f.name)}</div></div>
           <span class="secondary" style="font-size:14px">${bytes(f.size)}</span><button class="btn secondary small" data-playfile="${f.id}">${ic("play")} Play</button>
@@ -727,7 +728,7 @@
 
   // A title from an addon catalog, Kino can show what it is but only plays whats in the library
   async function pageDiscover(kind, id) {
-    const t = await api(`/api/external/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`);
+    const t = await api(`/api/external/${encodeURIComponent(kind)}/${encodeURIComponent(id)}${location.hash.includes("?all=1") ? "?stay=1" : ""}`);
     if (t.library_id) { location.replace(`#/title/${t.library_id}`); return; }
     const facts = metaLine({ ...t, kind });
     app.innerHTML = topbar(kind === "series" ? "shows" : "movies") + `
@@ -741,7 +742,10 @@
         </div>
       </section>
       <main class="page under-hero" style="padding-top:12px">
-        ${t.cast?.length ? `<section class="section" style="margin-top:0"><h2 class="section-title">Cast</h2><div class="cast">${t.cast.map((c) => `<a href="#/search?q=${encodeURIComponent(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
+        ${t.videos?.length ? `<section class="section" style="margin-top:0">
+          <div class="seasons" role="group" aria-label="Seasons">${t.season_list.map((s) => `<button class="seg" data-season="${s}">Season ${s}</button>`).join("")}</div>
+          <div class="episodes" id="eps"></div></section>` : ""}
+        ${t.cast?.length ? `<section class="section"><h2 class="section-title">Cast</h2><div class="cast">${t.cast.map((c) => `<a href="#/search?q=${encodeURIComponent(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
         <section class="section"><div class="facts">
           ${t.director ? `<div><h4>Director</h4><p>${esc([].concat(t.director).join(", "))}</p></div>` : ""}
           ${t.genres?.length ? `<div><h4>Genres</h4><p>${esc(t.genres.join(", "))}</p></div>` : ""}
@@ -749,14 +753,54 @@
         </div></section>
       </main>`;
     wireTopbar();
-    drawStreams(kind, id, t);
+    if (!t.videos?.length) return drawStreams(kind, id, t);
+    // Carries on where the profile left off, otherwise the first episode
+    const started = t.videos.filter((v) => v.progress).sort((a, b) => b.progress.updated - a.progress.updated)[0];
+    let target = t.videos[0];
+    if (started) {
+      const i = t.videos.indexOf(started);
+      target = started.progress.watched || (started.progress.dur && started.progress.pos / started.progress.dur > 0.93) ? t.videos[i + 1] || started : started;
+    }
+    const drawEps = (season) => {
+      $$("[data-season]").forEach((b) => b.setAttribute("aria-pressed", Number(b.dataset.season) === season));
+      $("#eps").innerHTML = t.videos.filter((v) => v.season === season).map((v) => {
+        const pr = v.progress && v.progress.dur ? v.progress.pos / v.progress.dur : null;
+        const art = v.thumbnail ? `<img loading="lazy" src="${img(v.thumbnail)}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(v.season, v.episode))}</div>`;
+        return `<div class="ep"><button class="tile landscape" data-playep="${esc(v.id)}" aria-label="Play ${esc(epLabel(v.season, v.episode))} ${esc(v.name || "")}"><div class="art">${art}${pr != null ? `<div class="bar"><i style="width:${Math.min(100, pr * 100)}%"></i></div>` : ""}${v.progress && v.progress.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
+          <div class="ep-row"><div class="num">${esc(epLabel(v.season, v.episode))}</div>
+            ${isAdmin() ? `<button class="ep-mark" data-saveep="${esc(v.id)}" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}</div>
+          <div class="cap">${esc(nice(v.name) || epLabel(v.season, v.episode))}</div>${v.overview ? `<div class="ov">${esc(v.overview)}</div>` : ""}</div>`;
+      }).join("");
+      $$("[data-playep]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playep, t.videos.find((v) => v.id === b.dataset.playep))));
+      $$("[data-saveep]").forEach((b) => (b.onclick = () => saveEpisode(b.dataset.saveep, t)));
+    };
+    $$("[data-season]").forEach((b) => (b.onclick = () => drawEps(Number(b.dataset.season))));
+    drawEps(target.season);
+    drawStreams(kind, target.id, t, target);
+  }
+
+  // Finds the public domain copy of one episode and plays it
+  async function playEpisode(vid, v) {
+    toast("Looking for this episode on archive.org…", 2500);
+    let r;
+    try { r = await api(`/api/streams/series/${encodeURIComponent(vid)}`); } catch (e) { toast(e.message, 5000); return false; }
+    if (!r.streams.length) { toast("There's no public domain copy of this episode"); return false; }
+    const s = r.streams[0];
+    playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
+    return true;
+  }
+
+  async function saveEpisode(vid, t) {
+    const r = await api(`/api/streams/series/${encodeURIComponent(vid)}`).catch(() => ({ streams: [] }));
+    if (!r.streams.length) { toast("There's no public domain copy of this episode"); return; }
+    try { await api(`/api/admin/streams/${r.streams[0].id}/save`, {}); toast(`Saving to the Library`); watchSave(r.streams[0].id, true); }
+    catch (e) { toast(e.message, 5000); }
   }
 
   // Public domain copies from addons, the server only hands back ones that are actually on archive.org
-  async function drawStreams(kind, id, t) {
+  async function drawStreams(kind, id, t, ep) {
     const box = $("#pdBox");
-    const none = `<div class="not-lib glass">${ic("info")}<span>Not in Your Library. Kino only plays what's on the Storage Box, or public domain films from archive.org.</span></div>`;
-    if (kind !== "movie") { box.innerHTML = none; return; }
+    const none = `<div class="not-lib glass">${ic("info")}<span>Not in Your Library. Kino only plays what's on the Storage Box, or public domain ${kind === "series" ? "shows" : "films"} from archive.org.</span></div>`;
     let r;
     try { r = await api(`/api/streams/${kind}/${encodeURIComponent(id)}`); } catch (_) { r = { streams: [] }; }
     if (!$("#pdBox")) return;
@@ -764,7 +808,7 @@
     const first = r.streams[0];
     const res = first.progress && !first.progress.watched && first.progress.pos > 30 ? first.progress : null;
     box.innerHTML = `<div class="actions">
-        <button class="btn primary" id="pdPlay">${ic("play")} ${res ? "Resume" : "Play"}</button>
+        <button class="btn primary" id="pdPlay">${ic("play")} ${res ? "Resume" : "Play"}${ep ? " " + esc(epLabel(ep.season, ep.episode)) : ""}</button>
         ${r.streams.length > 1 ? `<button class="btn secondary" id="pdMore">${r.streams.length} Sources</button>` : ""}
         ${isAdmin() ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
       </div>
@@ -781,17 +825,17 @@
     };
     const save = $("#pdSave");
     if (save) save.onclick = async () => {
-      if (!(await confirmSheet(`Save ${t.name} to the Library?`, "Kino downloads this public domain copy from archive.org to the Storage Box, so it plays like everything else. Big films can take a while.", "Save to Library", false))) return;
-      try { await api(`/api/admin/streams/${first.id}/save`, {}); toast("Saving to the Library, you can keep browsing"); watchSave(first.id); }
+      if (!(await confirmSheet(`Save ${t.name}${ep ? " " + epLabel(ep.season, ep.episode) : ""} to the Library?`, "Kino downloads this public domain copy from archive.org to the Storage Box, so it plays like everything else. Big films can take a while.", "Save to Library", false))) return;
+      try { await api(`/api/admin/streams/${first.id}/save`, {}); toast("Saving to the Library, you can keep browsing"); watchSave(first.id, !!ep); }
       catch (e) { toast(e.message, 5000); }
     };
   }
 
-  function watchSave(sid) {
+  function watchSave(sid, stay) {
     const t = setInterval(async () => {
       let s;
       try { s = await api(`/api/admin/streams/${sid}/save`); } catch (_) { clearInterval(t); return; }
-      if (s.state === "done") { clearInterval(t); toast("Saved to the Library"); if (s.title_id && location.hash.startsWith("#/discover/")) location.hash = `#/title/${s.title_id}`; }
+      if (s.state === "done") { clearInterval(t); toast("Saved to the Library"); if (s.title_id && !stay && location.hash.startsWith("#/discover/")) location.hash = `#/title/${s.title_id}`; }
       else if (s.state === "failed") { clearInterval(t); toast(`Saving failed: ${s.error || "unknown error"}`, 6000); }
     }, 4000);
   }
@@ -1195,7 +1239,7 @@
     const t = opts.title;
     $("#pTitle").textContent = t ? t.name : info.name;
     if (info.stream) {
-      $("#pSub").textContent = "Public Domain · archive.org";
+      $("#pSub").textContent = [info.season != null ? epLabel(info.season, info.episode) : "", nice(info.ep_name || ""), "Public Domain · archive.org"].filter(Boolean).join("  ");
       buildMenus();
       setupDeviceButtons();
       pl.mode = "direct";
@@ -1384,7 +1428,7 @@
     $("#mSubs").querySelectorAll("[data-s]").forEach((b) => (b.onclick = () => { hideMenus(); pl.subUserSet = true; loadSubs(b.dataset.s); }));
     $("#mSpeed").querySelectorAll("[data-r]").forEach((b) => (b.onclick = () => { pl.rate = Number(b.dataset.r); pl.v.playbackRate = pl.rate; hideMenus(); buildMenus(); }));
     const ad = $("#pAdminIntro");
-    ad.hidden = !(info.is_admin && info.season != null);
+    ad.hidden = !(info.is_admin && info.season != null && !info.stream);
     $("#mIntro").innerHTML = `<button data-intro="start">Intro Starts Here</button><button data-intro="end">Intro Ends Here</button>
       ${info.intro && info.intro.source === "marked" ? `<button data-intro="clear">Clear Marked Intro</button>` : ""}`;
     $$("#mIntro [data-intro]").forEach((b) => (b.onclick = () => markIntro(b.dataset.intro)));
@@ -1479,7 +1523,7 @@
       <div class="un-body"><div class="lbl">Next episode${auto ? ` in <b id="unLeft">${left}</b>` : ""}</div><div class="nm">${esc(epLabel(n.season, n.episode))}${n.name ? "  " + esc(nice(n.name)) : ""}</div>
       <div class="actions"><button class="btn primary small" id="unPlay">${ic("play")} Play Now</button><button class="btn secondary small" id="unHide">${auto ? "Cancel" : "Hide"}</button></div></div>`;
     box.hidden = false;
-    const go = () => { clearInterval(pl.upNextT); box.hidden = true; saveProgress(); playFile(n.id, { title: pl.title, from: 0 }); };
+    const go = () => { clearInterval(pl.upNextT); box.hidden = true; saveProgress(); playNext(n); };
     $("#unPlay").onclick = go;
     $("#unHide").onclick = () => { clearInterval(pl.upNextT); box.hidden = true; };
     if (auto) {
@@ -1535,13 +1579,18 @@
     if (pl.info && pl.info.next && (!pl.info.prefs || pl.info.prefs.autoplay !== false)) {
       const n = pl.info.next;
       clearInterval(pl.upNextT);
-      playFile(n.id, { title: pl.title, from: 0 });
+      playNext(n);
       return;
     }
     closePlayer();
   });
+  // Library episodes play straight away, public domain episodes need their archive.org copy looked up first
+  function playNext(n) {
+    if (n.video_id) return playEpisode(n.video_id, n).then((ok) => ok || closePlayer());
+    playFile(n.id, { title: pl.title, from: 0 });
+  }
   v.addEventListener("error", () => {
-    if (pl.mode === "direct" && pl.info) startHls(pos());  // If direct play fails the server converts it instead
+    if (pl.mode === "direct" && pl.info && !pl.info.stream) startHls(pos());  // If direct play fails the server converts it instead
   });
 
   const toggle = () => (v.paused ? v.play().catch(() => {}) : v.pause());

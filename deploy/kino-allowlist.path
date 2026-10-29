@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch the Kino allow list for changes
+
+[Path]
+PathChanged=/var/lib/kino/allowlist.json
+PathModified=/var/lib/kino/allowlist.json
+Unit=kino-allowlist.service
+
+[Install]
+WantedBy=multi-user.target

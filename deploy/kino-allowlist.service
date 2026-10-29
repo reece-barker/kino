@@ -1,0 +1,6 @@
+[Unit]
+Description=Apply the Kino allow list to nginx
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/kino-tools/kino-allowlist.py

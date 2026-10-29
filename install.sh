@@ -97,10 +97,28 @@ mkdir -p /etc/polkit-1/rules.d
 cp "$HERE/deploy/50-kino-sync.rules" /etc/polkit-1/rules.d/
 systemctl restart polkit 2>/dev/null || true
 
+step "Allow list, mount watchdog and helpers"
+mkdir -p /opt/kino-tools /var/lib/kino
+install -m 755 "$HERE/deploy/kino-watchdog.py" "$HERE/deploy/kino-allowlist.py" /opt/kino-tools/
+# The settings page keeps the allow list in a json file, the first time its filled from the nginx list you already have
+if [ ! -s /var/lib/kino/allowlist.json ]; then
+  SRC=/etc/nginx/snippets/kino-allow.conf
+  [ -f "$SRC" ] || SRC="$HERE/deploy/nginx/kino-allow.conf"
+  python3 - "$SRC" > /var/lib/kino/allowlist.json <<'PY'
+import json, re, sys, time
+cidrs = re.findall(r"^\s*allow\s+([0-9a-fA-F:./]+)\s*;", open(sys.argv[1]).read(), re.M)
+print(json.dumps({"entries": [{"cidr": c, "label": "Home" if i == 0 else f"Imported {i + 1}", "added": time.time(), "by": "installer"}
+                              for i, c in enumerate(cidrs)], "updated": time.time()}, indent=1))
+PY
+fi
+chown -R kino:kino /var/lib/kino
+cp "$HERE"/deploy/kino-watchdog.service "$HERE"/deploy/kino-watchdog.timer \
+   "$HERE"/deploy/kino-allowlist.service "$HERE"/deploy/kino-allowlist.path /etc/systemd/system/
+
 step "Starting the dashboard service"
 cp "$HERE/deploy/kino.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable -q --now torbox-sync.timer
+systemctl enable -q --now torbox-sync.timer kino-watchdog.timer kino-allowlist.path
 systemctl enable -q kino.service
 systemctl restart kino.service
 for i in $(seq 1 30); do
@@ -132,6 +150,8 @@ cp "$HERE/deploy/nginx/kino.conf" /etc/nginx/sites-available/kino.conf
 ln -sf /etc/nginx/sites-available/kino.conf /etc/nginx/sites-enabled/kino.conf
 nginx -t || die "nginx config test failed, nothing was reloaded"
 systemctl reload nginx
+# Writes the nginx ip list from the settings page list once now, after that it updates by itself on every change
+systemctl start kino-allowlist.service || warn "Couldnt apply the allow list, check: journalctl -u kino-allowlist"
 
 step "fail2ban for repeated failed logins"
 cp "$HERE/deploy/fail2ban/kino.local" /etc/fail2ban/filter.d/kino.conf
@@ -147,16 +167,16 @@ if [ "$UPDATE" = 1 ]; then
   exit 0
 fi
 
-step "Users"
+step "Admin account"
 USERS="$(sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py users 2>/dev/null || true)"
 if ! grep -q admin <<<"$USERS"; then
   read -rp "Pick an admin username: " ADMIN
-  sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py adduser "$ADMIN" --role admin
+  sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py adduser "$ADMIN"
 else
   echo "$USERS"
 fi
 
 step "Done"
 echo "Open https://$DOMAIN"
-echo "Logs:   journalctl -u kino -f"
-echo "Users:  sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py adduser NAME --role viewer"
+echo "Logs:          journalctl -u kino -f"
+echo "Admin account: sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py passwd NAME"

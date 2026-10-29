@@ -1,0 +1,7 @@
+[Unit]
+Description=Kino storage box mount watchdog
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/kino-tools/kino-watchdog.py
+TimeoutStartSec=3min

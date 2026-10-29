@@ -11,7 +11,7 @@ EnvironmentFile=/root/torbox-sync/.env
 Environment=SYNC_STATUS=/var/lib/torbox-sync/status.json
 Environment=PAUSE_FILE=/var/lib/kino/pause.json
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /root/torbox-sync/sync.py
+ExecStart=/opt/kino/venv/bin/python /root/torbox-sync/sync.py
 # Makes /var/lib/torbox-sync for the status file the dashboard reads
 StateDirectory=torbox-sync
 StateDirectoryMode=0755

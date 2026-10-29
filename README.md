@@ -1,6 +1,22 @@
-# Kino dashboard
+# Kino
 
-Dashboard for kino.reece.page, it shows the torbox sync live with pause and stop buttons, the vps stats and storage, and the whole storage box library as apple tv style tiles with its own player. Everything runs on the vps behind nginx and only listens on 127.0.0.1:8282 itself.
+Netflix style family library for the storage box, with the torbox sync, server stats and settings for the admin. Runs on the vps behind nginx at kino.reece.page and only listens on 127.0.0.1:8282 itself.
+
+## How people get in
+
+- Family dont need a login. If there internet address is on the allow list they see the **Who's watching?** screen and pick a profile.
+- Each profile has its own continue watching, watched ticks, thumbs up or down, recommendations and playback settings (audio and subtitle language, subtitle size, autoplay, skip intros).
+- The **Admin** button in the corner of the profile screen is the only login. It unlocks the Sync and Server pages, adding and deleting profiles, the allow list, fix match, deleting from the library and marking intros.
+- Add family networks under Settings > Allowed networks. A small root helper (`kino-allowlist`) rewrites the nginx list within a few seconds, the app checks the same list as a second lock.
+
+## What else it does
+
+- Home shelves: continue watching, top picks, recently added, because you watched, critically acclaimed, genre shelves and not watched yet. Picks come from what each profile watched and rated.
+- Search across titles, actors, genres and episode names.
+- Player: up next with a countdown, skip intro (from chapters in the file or times the admin marked for a season), playback speed, AirPlay and picture in picture where the device supports them.
+- Installable as an app on iPhone, iPad and Mac (Share > Add to Home Screen, or the install button in Chrome).
+- The sync skips nfo files, samples and extras, skips anything you already have in 1080p or better, and only downloads the best copy when TorBox has several.
+- `kino-watchdog` checks the storage box mount every minute and reconnects it if it drops or freezes.
 
 ## Setup
 
@@ -27,19 +43,16 @@ Repo secrets (Settings > Secrets and variables > Actions):
 - `DEPLOY_HOST`: `169.58.99.51`
 - `KINO_DEPLOY_KEY`: the private key from `/root/.ssh/kino_actions` on the vps
 
-## Adding family
+## Admin account
 
 ```
-sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py adduser NAME --role viewer
+sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py adduser NAME
+sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py passwd NAME
 ```
-Viewers get the library, player and downloads but not the Sync or Server pages.
-Other commands: `passwd NAME`, `deluser NAME`, `users`.
-
-Family outside your home wifi wont get in because of the ip lock. Either add there ip to `/etc/nginx/snippets/kino-allow.conf`, or delete the three allow/deny lines in that file to rely on the login, rate limit and fail2ban. Then run `nginx -t && systemctl reload nginx`.
 
 ## Your home ip changed
 
-Edit `/etc/nginx/snippets/kino-allow.conf`, then `nginx -t && systemctl reload nginx`. To see what ip the server sees: `tail -n 5 /var/log/nginx/kino.access.log`.
+If you can still get in from somewhere on the list, change it under Settings > Allowed networks. If youre locked out, ssh into the vps and edit `/var/lib/kino/allowlist.json`, the nginx list updates by itself. To see what ip the server sees: `tail -n 5 /var/log/nginx/kino.access.log`.
 
 ## Useful commands
 

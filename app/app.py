@@ -2634,6 +2634,14 @@ async def mylist_add(request: Request, p=Depends(current_profile)):
     return {"ok": True, "key": key}
 
 
+@app.get("/api/mylist")
+async def mylist_get(p=Depends(current_profile)):
+    summ, wm, _ = all_summaries(p["id"])
+    items, fresh = mylist_items(p, summ, wm)
+    new = {f["id"]: f["new_count"] for f in fresh}
+    return {"items": [{**i, "new_count": new.get(i.get("id"), 0)} for i in items]}
+
+
 @app.delete("/api/mylist")
 async def mylist_remove(key: str, p=Depends(current_profile)):
     db().q("DELETE FROM mylist WHERE profile_id = ? AND key = ?", (p["id"], key))

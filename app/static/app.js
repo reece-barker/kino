@@ -40,6 +40,16 @@
     globe: "M12 2a10 10 0 100 20 10 10 0 000-20zm6.9 6h-3a15.7 15.7 0 00-1.4-3.6A8 8 0 0118.9 8zM12 4a14 14 0 011.9 4h-3.8A14 14 0 0112 4zM4.3 14a8.2 8.2 0 010-4h3.4a16.5 16.5 0 000 4zm.8 2h3a15.7 15.7 0 001.4 3.6A8 8 0 015.1 16zm3-8h-3a8 8 0 014.3-3.6A15.7 15.7 0 008.1 8zM12 20a14 14 0 01-1.9-4h3.8A14 14 0 0112 20zm2.3-6H9.7a14.7 14.7 0 010-4h4.6a14.7 14.7 0 010 4zm.3 5.6a15.7 15.7 0 001.4-3.6h3a8 8 0 01-4.4 3.6zm1.7-5.6a16.5 16.5 0 000-4h3.4a8.2 8.2 0 010 4z",
     eye: "M12 5C6.5 5 2.7 8.6 1 12c1.7 3.4 5.5 7 11 7s9.3-3.6 11-7c-1.7-3.4-5.5-7-11-7zm0 11.5a4.5 4.5 0 110-9 4.5 4.5 0 010 9zm0-7a2.5 2.5 0 100 5 2.5 2.5 0 000-5z",
     kids: "M12 2a3 3 0 110 6 3 3 0 010-6zm-5 7h10l-1.5 6H14v7h-4v-7H8.5z",
+    home: "M12 3.2l9 7.6V21a1 1 0 01-1 1h-5.5v-6.5h-5V22H4a1 1 0 01-1-1V10.8z",
+    film: "M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1zm1 2v2h2V6zm12 0v2h2V6zM5 10v4h2v-4zm12 0v4h2v-4zM5 16v2h2v-2zm12 0v2h2v-2zM9 6v12h6V6z",
+    tv: "M3 5h18a1 1 0 011 1v11a1 1 0 01-1 1h-6v2h3v2H6v-2h3v-2H3a1 1 0 01-1-1V6a1 1 0 011-1z",
+    bookmark: "M6 3h12a1 1 0 011 1v17.2a.5.5 0 01-.8.4L12 17.5l-6.2 4.1a.5.5 0 01-.8-.4V4a1 1 0 011-1z",
+    server: "M4 3h16a1 1 0 011 1v5a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1zm2 3v1.5h2V6zM4 14h16a1 1 0 011 1v5a1 1 0 01-1 1H4a1 1 0 01-1-1v-5a1 1 0 011-1zm2 3v1.5h2V17z",
+    chevron: "M7.4 9.2L12 13.8l4.6-4.6L18 10.6l-6 6-6-6z",
+    sun: "M12 7a5 5 0 110 10 5 5 0 010-10zm-1-5h2v3h-2zm0 17h2v3h-2zM2 11h3v2H2zm17 0h3v2h-3zM4.2 5.6l1.4-1.4 2.1 2.1-1.4 1.4zm12.1 12.1l1.4-1.4 2.1 2.1-1.4 1.4zM4.2 18.4l2.1-2.1 1.4 1.4-2.1 2.1zM16.3 6.3l2.1-2.1 1.4 1.4-2.1 2.1z",
+    moon: "M14.5 2.5A9.5 9.5 0 1021.5 15 8 8 0 0114.5 2.5z",
+    auto: "M12 2a10 10 0 100 20 10 10 0 000-20zm0 2v16a8 8 0 010-16z",
+    people: "M9 11a4 4 0 110-8 4 4 0 010 8zm8 0a3 3 0 110-6 3 3 0 010 6zM2 20c0-3.3 3.1-6 7-6s7 2.7 7 6v1H2zm15.5-5.9c2.6.4 4.5 2.4 4.5 4.9v1h-4v-1c0-1.9-.2-3.4-.5-4.9z",
     info: "M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-6h2zm0-8h-2V7h2z",
     puzzle: "M20.5 11H19V7a2 2 0 00-2-2h-4V3.5a2.5 2.5 0 00-5 0V5H4a2 2 0 00-2 2v3.8h1.5a2.7 2.7 0 010 5.4H2V20a2 2 0 002 2h3.8v-1.5a2.7 2.7 0 015.4 0V22H17a2 2 0 002-2v-4h1.5a2.5 2.5 0 000-5z",
   };
@@ -209,36 +219,97 @@
   const isAdmin = () => !!ME.admin && !kidsMode();
 
   // ---------------------------------------------------------- shell
-  function topbar(active) {
-    const tabs = [["home", "Home"], ["movies", "Movies"], ["shows", "Shows"], ["search", "Search"]];
-    if (isAdmin()) tabs.push(["sync", "Sync"], ["server", "Server"]);
-    const p = ME.profile;
-    return `<header class="topbar" id="topbar">
-      <a class="brand" href="#/home" aria-label="Kino home"><span class="brand-dot">${ic("play")}</span><span>Kino</span></a>
-      <nav class="tabs glass" aria-label="Sections">${tabs.map(([k, l]) => `<a class="tab" href="#/${k}" ${k === active ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>
-      <div class="top-right">
-        ${isAdmin() ? `<a href="#/sync" class="sync-chip glass" id="syncChip"><span class="dot"></span><span class="txt">Sync</span></a>` : ""}
-        <div class="menu-wrap">
-          <button class="avatar-btn" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu">${avatar(p.icon, "sm")}</button>
-          <div class="menu drop" id="avatarMenu" hidden>
-            <div class="menu-head">${avatar(p.icon, "xs")}<span>${esc(p.name)}</span></div>
-            <a href="#/profiles" class="mi">Switch Profile</a>
-            <a href="#/settings" class="mi">Settings</a>
-            ${kidsMode() ? "" : isAdmin() ? `<button class="mi" id="adminOut">Sign Out of Admin</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin Sign In</button>`}
-          </div>
-        </div>
-      </div>
-    </header>`;
+  // ---------------------------------------------------------- appearance, follows the device unless the person picks one
+  const THEME_KEY = "kino-theme";
+  const getTheme = () => { try { return localStorage.getItem(THEME_KEY) || "auto"; } catch (_) { return "auto"; } };
+  function applyTheme(t = getTheme()) {
+    if (t === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", t);
+    const dark = t === "dark" || (t === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+    const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = dark ? "#000000" : "#ffffff";
+  }
+  function setTheme(t) { try { localStorage.setItem(THEME_KEY, t); } catch (_) {} applyTheme(t); }
+  applyTheme();
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => applyTheme());
+  const themePicker = (id) => `<div class="theme-pick" role="radiogroup" aria-label="Appearance" id="${id}">${[["auto", "Automatic", "auto"], ["light", "Light", "sun"], ["dark", "Dark", "moon"]]
+    .map(([v, l, i]) => `<button role="radio" aria-checked="${getTheme() === v}" data-theme-set="${v}" title="${l}">${ic(i)}<span>${l}</span></button>`).join("")}</div>`;
+  function wireThemePicker(root) {
+    $$("[data-theme-set]", root).forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation();
+      setTheme(b.dataset.themeSet);
+      $$("[data-theme-set]").forEach((x) => x.setAttribute("aria-checked", x.dataset.themeSet === b.dataset.themeSet));
+    }));
   }
 
+  // ---------------------------------------------------------- sidebar, like the apple tv app
+  // Settings, Sync and Server live in one group that folds open, Switch Profile and admin are in the profile menu
+  const GROUP_KEY = "kino-settings-open";
+  function topbar(active) {
+    const p = ME.profile;
+    const inGroup = ["settings", "sync", "server"].includes(active);
+    let open = inGroup;
+    try { open = inGroup || localStorage.getItem(GROUP_KEY) === "1"; } catch (_) {}
+    const item = (k, label, icon, extra = "") => `<a class="side-item" href="#/${k}" ${k === active ? 'aria-current="page"' : ""}><span class="side-ic">${ic(icon)}</span><span class="side-lbl">${label}</span>${extra}</a>`;
+    const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ["mylist", "My List", "bookmark"]];
+    const group = [["settings", "Settings", "gear"]];
+    if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["server", "Server", "server"]);
+    return `<aside class="side" id="side" aria-label="Kino">
+      <div class="menu-wrap side-top">
+        <button class="side-me" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu">${avatar(p.icon, "xs")}<span class="side-lbl side-name">${esc(p.name)}</span><span class="side-lbl side-time" id="sideTime">${clockNow()}</span></button>
+        <div class="menu drop side-menu" id="avatarMenu" hidden>
+          <a href="#/profiles" class="mi">${ic("people")} Switch Profile</a>
+          ${kidsMode() ? "" : isAdmin() ? `<button class="mi" id="adminOut">${ic("lock")} Sign Out of Admin</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin Sign In</button>`}
+          <div class="menu-sep"></div>
+          <div class="menu-label">Appearance</div>
+          ${themePicker("menuTheme")}
+        </div>
+      </div>
+      <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i)).join("")}</nav>
+      <div class="side-group ${open ? "open" : ""}" id="sideGroup">
+        <button class="side-head" id="sideHead" aria-expanded="${open}"><span class="side-lbl">Settings</span>${ic("chevron")}</button>
+        <div class="side-sub">${group.map(([k, l, i]) => item(k, l, i, k === "sync" ? `<span class="side-badge" id="syncChip"><span class="dot"></span><span class="txt"></span></span>` : "")).join("")}</div>
+      </div>
+    </aside>
+    <nav class="tabbar" aria-label="Sections">
+      ${[["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ["search", "Search", "search"]].map(([k, l, i]) =>
+        `<a class="tb-item" href="#/${k}" ${k === active ? 'aria-current="page"' : ""}>${ic(i)}<span>${l}</span></a>`).join("")}
+      <button class="tb-item ${["mylist", ...group.map((g) => g[0])].includes(active) ? "on" : ""}" id="tbMore">${avatar(p.icon, "xs")}<span>${esc(p.name)}</span></button>
+    </nav>`;
+  }
+  const clockNow = () => new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  setInterval(() => { const t = $("#sideTime"); if (t) t.textContent = clockNow(); }, 20000);
+
   function wireTopbar() {
+    document.body.classList.add("with-side");
     const b = $("#avatarBtn"), m = $("#avatarMenu");
     b.onclick = (e) => { e.stopPropagation(); m.hidden = !m.hidden; };
+    m.addEventListener("click", (e) => e.stopPropagation());
+    $$(".mi", m).forEach((x) => x.addEventListener("click", () => (m.hidden = true)));
+    wireThemePicker(m);
     const ai = $("#adminIn"); if (ai) ai.onclick = () => adminLogin(() => route());
     const ao = $("#adminOut"); if (ao) ao.onclick = async () => { await api("/api/admin/logout", {}); ME.admin = null; toast("Signed out of admin"); route(); };
-    const tb = $("#topbar");
-    const onScroll = () => tb.classList.toggle("solid", window.scrollY > 40);
-    window.onscroll = onScroll; onScroll();
+    const g = $("#sideGroup");
+    $("#sideHead").onclick = () => {
+      const open = !g.classList.contains("open");
+      g.classList.toggle("open", open);
+      $("#sideHead").setAttribute("aria-expanded", open);
+      try { localStorage.setItem(GROUP_KEY, open ? "1" : "0"); } catch (_) {}
+    };
+    // Phones get a tab bar, the last tab opens everything else
+    $("#tbMore").onclick = () => {
+      const p = ME.profile;
+      const row = (href, icon, label) => `<a class="more-row" href="${href}" data-close>${ic(icon)}<span>${label}</span>${ic("chevron")}</a>`;
+      const sh = sheet(`<div class="more-head">${avatar(p.icon, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
+        <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/settings", "gear", "Settings")}
+          ${isAdmin() ? row("#/sync", "refresh", "Sync") + row("#/server", "server", "Server") : ""}
+          ${row("#/profiles", "people", "Switch Profile")}</div>
+        <div class="menu-label">Appearance</div>${themePicker("sheetTheme")}
+        ${kidsMode() ? "" : `<div class="actions end" style="margin-top:18px">${isAdmin() ? `<button class="btn secondary small" id="mAdminOut">Sign Out of Admin</button>` : `<button class="btn secondary small" id="mAdminIn">${ic("lock")} Admin Sign In</button>`}</div>`}`);
+      wireThemePicker(sh.el);
+      const mi = $("#mAdminIn", sh.el); if (mi) mi.onclick = () => { sh.close(); adminLogin(() => route()); };
+      const mo = $("#mAdminOut", sh.el); if (mo) mo.onclick = async () => { sh.close(); await api("/api/admin/logout", {}); ME.admin = null; toast("Signed out of admin"); route(); };
+    };
+    window.onscroll = null;
     updateSyncChip();
   }
   document.addEventListener("click", () => { const m = $("#avatarMenu"); if (m) m.hidden = true; });
@@ -259,8 +330,8 @@
     const c = $("#syncChip");
     if (!c || !SYNC) return;
     const s = syncState(SYNC);
-    c.className = `sync-chip glass ${s.cls}`;
-    c.querySelector(".txt").textContent = s.text;
+    c.className = `side-badge ${s.cls}`;
+    c.querySelector(".txt").textContent = s.cls === "running" || s.cls === "paused" || s.cls === "error" ? s.text : "";
   }
 
   // ---------------------------------------------------------- admin sign in
@@ -571,6 +642,15 @@
     };
     ["q", "genre", "sort", "seen"].forEach((id) => $("#" + id).addEventListener("input", draw));
     draw();
+  }
+
+  // ---------------------------------------------------------- my list
+  async function pageMyList() {
+    const r = await api("/api/mylist");
+    app.innerHTML = topbar("mylist") + `<main class="page"><h1 class="large-title">My List</h1>
+      ${r.items.length ? `<div class="grid">${r.items.map((t) => posterTile(t).replace('<div class="art">', `<div class="art">${t.new_count ? `<span class="new-dot">${t.new_count} New</span>` : ""}`)).join("")}</div>`
+        : `<div class="empty"><h2>Nothing in your list yet</h2><p>Use the + button on any film or show to keep it here.</p></div>`}</main>`;
+    wireTopbar();
   }
 
   // ---------------------------------------------------------- search
@@ -966,6 +1046,10 @@
           <button class="btn secondary small" id="editMe">${ic("pencil")} Edit</button></div>
       </section>
       <section class="card set-card">
+        <h2 class="set-title">Appearance</h2>
+        <div class="set-row"><span><b>Theme</b><span class="secondary">Automatic follows this device's light or dark setting</span></span>${themePicker("setTheme")}</div>
+      </section>
+      <section class="card set-card">
         <h2 class="set-title">Playback</h2>
         <div class="set-row"><span><b>Audio Language</b><span class="secondary">Picked automatically when a film has more than one</span></span>${sel("pAudioL", [["", "Original"], ...LANG_OPTS.map((l) => [l, l])], pr.audio_lang)}</div>
         <div class="set-row"><span><b>Subtitles</b><span class="secondary">Turned on automatically when the language is there</span></span>${sel("pSubL", [["", "Off"], ...LANG_OPTS.map((l) => [l, l])], pr.sub_lang)}</div>
@@ -981,6 +1065,7 @@
     </main>`;
     wireTopbar();
     $("#editMe").onclick = () => editProfile(p, () => route());
+    wireThemePicker($("#setTheme"));
     const saveP = async () => {
       const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
@@ -1775,6 +1860,7 @@
 
   async function route() {
     stopPoll();
+    document.body.classList.remove("with-side");
     clearInterval(HERO_T);
     closeSheet();
     const [, page, arg] = (location.hash || "#/").split("?")[0].split("/");
@@ -1793,6 +1879,7 @@
       else if (page === "title" && arg) await pageTitle(arg);
       else if (page === "discover" && arg) await pageDiscover(decodeURIComponent(arg), decodeURIComponent((location.hash.split("?")[0].split("/")[3] || "")));
       else if (page === "search") await pageSearch();
+      else if (page === "mylist") await pageMyList();
       else if (page === "settings") await pageSettings();
       else if (page === "sync" && isAdmin()) await pageSync();
       else if (page === "server" && isAdmin()) await pageServer();

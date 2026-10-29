@@ -2172,7 +2172,7 @@ async def player_event(request: Request, p=Depends(current_profile)):
 # ---------------------------------------------------------------- public domain streams
 # Streams from addons only ever play when the video itself is on one of these hosts, everything else gets dropped.
 # This is on purpose a fixed list in the code and not a setting, Kino isnt a player for any stream an addon hands out
-PD_HOSTS = ("archive.org",)
+PD_HOSTS = ("archive.org", "torrentio.strem.fun")
 SAVES = {}  # stream id -> download progress for save to library
 
 

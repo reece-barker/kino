@@ -242,18 +242,33 @@
   }
 
   // ---------------------------------------------------------- sidebar, like the apple tv app
-  // Settings, Sync and Server live in one group that folds open, Switch Profile and admin are in the profile menu
+  // It lives outside the page so it stays put between pages, a pill slides to the active item, and it shrinks to an
+  // icon rail when you're not using it and grows back out over the content when you point at it or tab into it
   const GROUP_KEY = "kino-settings-open";
+  const chrome = document.createElement("div");
+  chrome.id = "chrome";
+  document.body.prepend(chrome);
+  let SIDE_KEY = "", SIDE_ACTIVE = "";
+
   function topbar(active) {
     const p = ME.profile;
-    const inGroup = ["settings", "sync", "server"].includes(active);
-    let open = inGroup;
-    try { open = inGroup || localStorage.getItem(GROUP_KEY) === "1"; } catch (_) {}
-    const item = (k, label, icon, extra = "") => `<a class="side-item" href="#/${k}" ${k === active ? 'aria-current="page"' : ""}><span class="side-ic">${ic(icon)}</span><span class="side-lbl">${label}</span>${extra}</a>`;
+    if (!p) return "";
+    const key = [p.id, p.name, p.icon, p.kids, isAdmin()].join("|");
+    if (key !== SIDE_KEY) { SIDE_KEY = key; renderSide(); }
+    setActive(active);
+    return "";
+  }
+
+  function renderSide() {
+    const p = ME.profile;
+    let open = false;
+    try { open = localStorage.getItem(GROUP_KEY) === "1"; } catch (_) {}
+    const item = (k, label, icon, extra = "") => `<a class="side-item" href="#/${k}" data-k="${k}"><span class="side-ic">${ic(icon)}</span><span class="side-lbl">${label}</span>${extra}</a>`;
     const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ["mylist", "My List", "bookmark"]];
     const group = [["settings", "Settings", "gear"]];
     if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["server", "Server", "server"]);
-    return `<aside class="side" id="side" aria-label="Kino">
+    chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
+      <span class="side-shine" aria-hidden="true"></span>
       <div class="menu-wrap side-top">
         <button class="side-me" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu">${avatar(p.icon, "xs")}<span class="side-lbl side-name">${esc(p.name)}</span><span class="side-lbl side-time" id="sideTime">${clockNow()}</span></button>
         <div class="menu drop side-menu" id="avatarMenu" hidden>
@@ -264,37 +279,76 @@
           ${themePicker("menuTheme")}
         </div>
       </div>
-      <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i)).join("")}</nav>
-      <div class="side-group ${open ? "open" : ""}" id="sideGroup">
-        <button class="side-head" id="sideHead" aria-expanded="${open}"><span class="side-lbl">Settings</span>${ic("chevron")}</button>
-        <div class="side-sub">${group.map(([k, l, i]) => item(k, l, i, k === "sync" ? `<span class="side-badge" id="syncChip"><span class="dot"></span><span class="txt"></span></span>` : "")).join("")}</div>
+      <div class="side-items">
+        <span class="side-pill" id="sidePill" aria-hidden="true"></span>
+        <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i)).join("")}</nav>
+        <div class="side-group ${open ? "open" : ""}" id="sideGroup">
+          <button class="side-head" id="sideHead" aria-expanded="${open}"><span class="side-lbl">Settings</span>${ic("chevron")}</button>
+          <div class="side-sub"><div class="side-sub-in">${group.map(([k, l, i]) => item(k, l, i, k === "sync" ? `<span class="side-badge" id="syncChip"><span class="dot"></span><span class="txt"></span></span>` : "")).join("")}</div></div>
+        </div>
       </div>
     </aside>
     <nav class="tabbar" aria-label="Sections">
       ${[["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ["search", "Search", "search"]].map(([k, l, i]) =>
-        `<a class="tb-item" href="#/${k}" ${k === active ? 'aria-current="page"' : ""}>${ic(i)}<span>${l}</span></a>`).join("")}
-      <button class="tb-item ${["mylist", ...group.map((g) => g[0])].includes(active) ? "on" : ""}" id="tbMore">${avatar(p.icon, "xs")}<span>${esc(p.name)}</span></button>
+        `<a class="tb-item" href="#/${k}" data-k="${k}">${ic(i)}<span>${l}</span></a>`).join("")}
+      <button class="tb-item" id="tbMore" data-k="more">${avatar(p.icon, "xs")}<span>${esc(p.name)}</span></button>
     </nav>`;
+    wireSide();
   }
+
+  // Moves the highlight pill to the current page with a spring, like the selection on apple tv
+  function setActive(active) {
+    SIDE_ACTIVE = active;
+    const inGroup = ["settings", "sync", "server"].includes(active);
+    if (inGroup) { const g = $("#sideGroup"); if (g && !g.classList.contains("open")) toggleGroup(true, false); }
+    $$("#chrome [data-k]").forEach((a) => {
+      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "settings", "sync", "server"].includes(active));
+      on ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
+    });
+    placePill();
+  }
+  function placePill(instant) {
+    const pill = $("#sidePill"), cur = $(`.side-item[aria-current="page"]`);
+    if (!pill) return;
+    if (!cur || !cur.offsetParent) { pill.style.opacity = "0"; return; }
+    const box = pill.parentElement.getBoundingClientRect(), r = cur.getBoundingClientRect();
+    if (instant) pill.style.transition = "none";
+    pill.style.opacity = "1";
+    pill.style.transform = `translateY(${r.top - box.top}px)`;
+    pill.style.height = `${r.height}px`;
+    if (instant) { void pill.offsetWidth; pill.style.transition = ""; }
+  }
+  function toggleGroup(open, save = true) {
+    const g = $("#sideGroup");
+    if (!g) return;
+    g.classList.toggle("open", open);
+    $("#sideHead").setAttribute("aria-expanded", open);
+    if (save) { try { localStorage.setItem(GROUP_KEY, open ? "1" : "0"); } catch (_) {} }
+    // The pill follows the item while the group slides open or shut
+    const t0 = performance.now();
+    const follow = () => { placePill(true); if (performance.now() - t0 < 450) requestAnimationFrame(follow); };
+    requestAnimationFrame(follow);
+  }
+
   const clockNow = () => new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   setInterval(() => { const t = $("#sideTime"); if (t) t.textContent = clockNow(); }, 20000);
+  addEventListener("resize", () => placePill(true));
 
-  function wireTopbar() {
-    document.body.classList.add("with-side");
-    const b = $("#avatarBtn"), m = $("#avatarMenu");
-    b.onclick = (e) => { e.stopPropagation(); m.hidden = !m.hidden; };
+  function wireSide() {
+    const side = $("#side"), b = $("#avatarBtn"), m = $("#avatarMenu");
+    b.onclick = (e) => { e.stopPropagation(); m.hidden = !m.hidden; side.classList.toggle("pinned", !m.hidden); };
     m.addEventListener("click", (e) => e.stopPropagation());
-    $$(".mi", m).forEach((x) => x.addEventListener("click", () => (m.hidden = true)));
+    $$(".mi", m).forEach((x) => x.addEventListener("click", () => { m.hidden = true; side.classList.remove("pinned"); }));
     wireThemePicker(m);
     const ai = $("#adminIn"); if (ai) ai.onclick = () => adminLogin(() => route());
     const ao = $("#adminOut"); if (ao) ao.onclick = async () => { await api("/api/admin/logout", {}); ME.admin = null; toast("Signed out of admin"); route(); };
-    const g = $("#sideGroup");
-    $("#sideHead").onclick = () => {
-      const open = !g.classList.contains("open");
-      g.classList.toggle("open", open);
-      $("#sideHead").setAttribute("aria-expanded", open);
-      try { localStorage.setItem(GROUP_KEY, open ? "1" : "0"); } catch (_) {}
-    };
+    $("#sideHead").onclick = () => toggleGroup(!$("#sideGroup").classList.contains("open"));
+    // Opening the rail changes item sizes, so the pill gets placed again as it grows
+    ["mouseenter", "mouseleave", "focusin", "focusout"].forEach((ev) => side.addEventListener(ev, () => {
+      const t0 = performance.now();
+      const follow = () => { placePill(true); if (performance.now() - t0 < 520) requestAnimationFrame(follow); };
+      requestAnimationFrame(follow);
+    }));
     // Phones get a tab bar, the last tab opens everything else
     $("#tbMore").onclick = () => {
       const p = ME.profile;
@@ -309,10 +363,15 @@
       const mi = $("#mAdminIn", sh.el); if (mi) mi.onclick = () => { sh.close(); adminLogin(() => route()); };
       const mo = $("#mAdminOut", sh.el); if (mo) mo.onclick = async () => { sh.close(); await api("/api/admin/logout", {}); ME.admin = null; toast("Signed out of admin"); route(); };
     };
+  }
+
+  function wireTopbar() {
+    document.body.classList.add("with-side");
     window.onscroll = null;
+    requestAnimationFrame(() => placePill(!$("#sidePill") || $("#sidePill").style.opacity !== "1"));
     updateSyncChip();
   }
-  document.addEventListener("click", () => { const m = $("#avatarMenu"); if (m) m.hidden = true; });
+  document.addEventListener("click", () => { const m = $("#avatarMenu"); if (m && !m.hidden) { m.hidden = true; $("#side").classList.remove("pinned"); } });
 
   function syncState(s) {
     if (!s) return { cls: "", text: "Sync" };
@@ -368,6 +427,7 @@
   // ---------------------------------------------------------- who's watching
   async function pageProfiles(manage) {
     stopPoll();
+    document.body.classList.remove("with-side");
     window.onscroll = null;
     const r = await api("/api/profiles");
     ME.admin = r.admin;
@@ -482,7 +542,7 @@
       : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
     const mark = t.watched ? `<span class="tile-check" title="Watched">${ic("check")}</span>` : "";
     const href = t.external ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : `#/title/${t.id}`;
-    return `<a class="tile poster ${t.external ? "ext" : ""} ${t.watched ? "is-watched" : ""}" href="${href}"><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
+    return `<a class="tile poster ${t.external ? "ext" : ""} ${t.watched ? "is-watched" : ""}" href="${href}" ${t.external && t.poster ? `data-poster="${esc(t.poster)}"` : ""}><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
   }
   function wideTile(t, opts = {}) {
     const bg = t.background
@@ -513,19 +573,8 @@
       ${!h.mounted ? `<div class="banner" role="status">The Storage Box isn't connected right now, it's being reconnected automatically.</div>` : ""}
       ${h.storage && h.storage.warn && isAdmin() ? `<a class="banner warn" href="#/server" role="status">${ic("info")} The Storage Box is ${Math.round(h.storage.pct)}% full, ${bytes(h.storage.free)} left. <b>Review what to clear</b></a>` : ""}
       <section class="hero" id="hero" aria-roledescription="carousel" aria-label="Featured">
-        ${heroes.map((t, i) => `<div class="hero-slide ${i === 0 ? "on" : ""}" data-i="${i}" ${i ? 'aria-hidden="true"' : ""}>
-          <div class="hero-bg">${t.background ? `<img ${i ? "loading=\"lazy\"" : ""} src="${img(t.background.replace("/medium/", "/large/"))}" data-alt="${esc(t.background)}" alt="" data-fallback="hide">` : ""}</div>
-          <div class="hero-content">
-            ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
-            <div class="hero-meta">${metaLine(t).map((m, j) => `<span class="${j ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
-            ${t.description ? `<p class="hero-desc">${esc(t.description)}</p>` : ""}
-            <div class="actions">
-              <button class="btn primary" data-heroplay="${t.id}" ${i ? 'tabindex="-1"' : ""}>${ic("play")} Play</button>
-              <a class="btn secondary" href="#/title/${t.id}" ${i ? 'tabindex="-1"' : ""}>More Info</a>
-            </div>
-          </div></div>`).join("")}
-        ${heroes.length > 1 ? `<div class="hero-dots" role="tablist">${heroes.map((t, i) => `<button role="tab" aria-selected="${i === 0}" aria-label="Show ${esc(t.name)}" data-dot="${i}"></button>`).join("")}</div>` : ""}
-        ${isAdmin() ? `<a class="hero-live glass" id="heroLive" href="#/sync" hidden></a>` : ""}
+        ${heroes.map((t, i) => heroSlide(t, i)).join("")}
+        ${heroes.length > 1 ? `<div class="hero-dots glass" role="tablist">${heroes.map((t, i) => `<button role="tab" aria-selected="${i === 0}" aria-label="Show ${esc(t.name)}" data-dot="${i}"><i></i></button>`).join("")}</div>` : ""}
       </section>
       <main class="page under-hero" style="padding-top:8px">
         ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
@@ -544,12 +593,43 @@
       const f = t.files.find((x) => x.id === a.dataset.play);
       playFile(a.dataset.play, { title: t, from: f && f.progress ? f.progress.pos : 0 });
     }));
+    app.querySelectorAll("[data-heroresume]").forEach((b) => (b.onclick = async () => {
+      const fid = b.dataset.heroresume;
+      if (fid.startsWith("s")) return playFile(fid, {});
+      const t = await api(`/api/title/${b.dataset.tid}`);
+      const f = t.files.find((x) => x.id === fid);
+      playFile(fid, { title: t, from: f && f.progress ? f.progress.pos : 0 });
+    }));
     app.querySelectorAll("[data-heroplay]").forEach((b) => (b.onclick = async () => {
       const t = await api(`/api/title/${b.dataset.heroplay}`);
       const f = nextUp(t);
       if (f) playFile(f.id, { title: t, from: f.progress ? f.progress.pos : 0 });
     }));
     if (isAdmin()) startPoll(pollHomeSync, 5000);
+  }
+
+  // One slide of the home hero. The first one is whatever was watched last, with its own continue style
+  const HERO_MS = 6500;
+  function heroSlide(t, i) {
+    const tab = i ? 'tabindex="-1"' : "";
+    const link = t.external ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : `#/title/${t.id}`;
+    const left = t.dur ? Math.max(0, t.dur - t.pos) : 0;
+    const what = t.cont ? [t.season != null ? epLabel(t.season, t.episode) : "", left ? `${clock(left)} left` : ""].filter(Boolean).join(" · ") : "";
+    return `<div class="hero-slide ${i === 0 ? "on" : ""} ${t.cont ? "is-cont" : ""}" data-i="${i}" ${i ? 'aria-hidden="true"' : ""}>
+      <div class="hero-bg">${t.background ? `<img ${i ? 'loading="lazy"' : ""} src="${img(t.background.replace("/medium/", "/large/"))}" data-alt="${esc(t.background)}" alt="" data-fallback="hide">` : ""}</div>
+      <div class="hero-content">
+        ${t.cont ? `<span class="hero-kicker glass">${ic("play")} Continue Watching</span>` : ""}
+        ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
+        ${t.cont ? `<div class="hero-meta"><span>${esc(what)}</span></div>
+          <div class="hero-prog"><i style="width:${t.dur ? Math.min(100, (t.pos / t.dur) * 100) : 0}%"></i></div>`
+          : `<div class="hero-meta">${metaLine(t).map((m, j) => `<span class="${j ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
+          ${t.description ? `<p class="hero-desc">${esc(t.description)}</p>` : ""}`}
+        <div class="actions">
+          ${t.cont ? `<button class="btn primary" data-heroresume="${t.file_id}" data-tid="${t.id || ""}" ${tab}>${ic("play")} ${t.next_episode ? "Play" : "Resume"}${t.season != null ? " " + esc(epLabel(t.season, t.episode)) : ""}</button>`
+            : `<button class="btn primary" data-heroplay="${t.id}" ${tab}>${ic("play")} Play</button>`}
+          <a class="btn secondary glass-btn-lg" href="${link}" ${tab}>More Info</a>
+        </div>
+      </div></div>`;
   }
 
   // New episodes for shows in My List, shown big at the top of Home so they're hard to miss
@@ -580,17 +660,23 @@
       });
       $$("[data-dot]", hero).forEach((d, j) => d.setAttribute("aria-selected", j === i));
     };
-    $$("[data-dot]", hero).forEach((d) => (d.onclick = () => show(Number(d.dataset.dot))));
-    ["mouseenter", "focusin"].forEach((ev) => hero.addEventListener(ev, () => (paused = true)));
-    ["mouseleave", "focusout"].forEach((ev) => hero.addEventListener(ev, () => (paused = false)));
-    if (reduceMotion()) return;
-    HERO_T = setInterval(() => { if (!paused && !document.hidden && $("#hero")) show(i + 1); else if (!$("#hero")) clearInterval(HERO_T); }, 9000);
+    const restart = () => {
+      clearInterval(HERO_T);
+      if (reduceMotion()) return;
+      HERO_T = setInterval(() => { if (!paused && !document.hidden && $("#hero")) show(i + 1); else if (!$("#hero")) clearInterval(HERO_T); }, HERO_MS);
+    };
+    $$("[data-dot]", hero).forEach((d) => (d.onclick = () => { show(Number(d.dataset.dot)); restart(); }));
+    // Keeps rotating like apple tv, only stops while a button in it has keyboard focus
+    hero.addEventListener("focusin", () => { paused = true; hero.classList.add("paused"); });
+    hero.addEventListener("focusout", () => { paused = false; hero.classList.remove("paused"); });
+    hero.style.setProperty("--hero-ms", `${HERO_MS}ms`);
+    restart();
   }
 
   async function pollHomeSync() {
     SYNC = await api("/api/admin/sync");
     updateSyncChip();
-    const el = $("#heroLive");
+    const el = null;
     if (!el) return;
     const c = SYNC.current;
     if (!c) { el.hidden = true; return; }
@@ -669,8 +755,9 @@
       const q = input.value.trim();
       history.replaceState(null, "", "#/search" + (q ? "?q=" + encodeURIComponent(q) : ""));
       const box = $("#sres");
-      if (!q) { box.innerHTML = `<div class="empty"><h2>Search Kino</h2><p>Find films and shows by name, actor, genre or episode title.</p></div>`; return; }
+      if (!q) { ++seq; return drawStart(box); }
       const my = ++seq;
+      box.innerHTML = `<div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${Array.from({ length: 12 }, () => '<div class="sk sk-poster"></div>').join("")}</div>`;
       const r = await api("/api/search?q=" + encodeURIComponent(q));
       if (my !== seq || !$("#sres")) return;
       box.innerHTML = (r.titles.length ? `<h2 class="section-title" style="margin-top:28px">Films and Shows</h2><div class="grid">${r.titles.map(posterTile).join("")}</div>` : "")
@@ -692,8 +779,32 @@
       }));
     };
     input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(run, 220); });
+    // Anything opened from search goes into this profile's Recently Searched
+    $("#sres").addEventListener("click", (e) => {
+      const a = e.target.closest("a.tile");
+      if (!a) return;
+      const href = a.getAttribute("href") || "";
+      const m = href.match(/^#\/title\/([^/?]+)/), d = href.match(/^#\/discover\/([^/]+)\/([^/?]+)/);
+      const name = (a.querySelector(".cap") || {}).textContent || "";
+      const body = m ? { title_id: m[1] } : d ? { kind: decodeURIComponent(d[1]), id: decodeURIComponent(d[2]), name, poster: a.dataset.poster || null } : null;
+      if (body) api("/api/search/recent", body).catch(() => {});
+    });
     run();
   }
+
+  // Before typing: what this profile opened from search lately, or a mix of things to watch if there's nothing yet
+  async function drawStart(box) {
+    const my = ++START_SEQ;
+    box.innerHTML = `<div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${Array.from({ length: 12 }, () => '<div class="sk sk-poster"></div>').join("")}</div>`;
+    const r = await api("/api/search/start").catch(() => ({ recent: [], explore: [] }));
+    if (my !== START_SEQ || !$("#sres") || $("#sq").value.trim()) return;
+    box.innerHTML = (r.recent.length ? `<h2 class="section-title search-head">Recently Searched <button id="clearRecent">Clear</button></h2><div class="grid">${r.recent.map(posterTile).join("")}</div>` : "")
+      + (r.explore.length ? `<h2 class="section-title search-head">${r.recent.length ? "Something to Watch" : "Explore"}</h2><div class="grid">${r.explore.slice(0, r.recent.length ? 12 : 18).map(posterTile).join("")}</div>` : "")
+      || `<div class="empty"><h2>Search Kino</h2><p>Find films and shows by name, actor, genre or episode title.</p></div>`;
+    const c = $("#clearRecent");
+    if (c) c.onclick = async () => { await api("/api/search/recent", undefined, "DELETE"); drawStart(box); };
+  }
+  let START_SEQ = 0;
 
   // Voice search with the browsers own speech recognition, the button only shows where the browser has it
   function setupMic(input, onDone) {
@@ -1105,7 +1216,9 @@
           ${applied ? `<span class="${applied.ok ? "" : "err-note"}"> · nginx ${applied.ok ? `updated ${ago(applied.applied_at)}` : `not updated: ${esc(applied.error || "unknown error")}`}</span>` : ""}</div>
         <div class="form-err" id="ipErr" role="alert"></div>
       </section>
+      <section class="card set-card" id="devicesCard"><div class="skel" style="height:80px"></div></section>
       <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>`;
+    drawDevices();
     drawAddons();
     $$("[data-editp]", box).forEach((b) => (b.onclick = () => editProfile(pr.profiles.find((x) => x.id === Number(b.dataset.editp)), () => drawAdminSettings())));
     $("#addP").onclick = () => editProfile(null, () => drawAdminSettings());
@@ -1119,6 +1232,44 @@
       if (!(await confirmSheet("Remove this network?", `${b.dataset.rmip} won't be able to open Kino anymore.`, "Remove"))) return;
       try { await api("/api/admin/allowlist?cidr=" + encodeURIComponent(b.dataset.rmip), undefined, "DELETE"); toast("Network removed"); drawAdminSettings(); }
       catch (er) { $("#ipErr").textContent = er.message; }
+    }));
+  }
+
+  // Allowed devices: works from any network once approved. Each browser or installed app has its own id
+  async function drawDevices() {
+    const box = $("#devicesCard");
+    if (!box) return;
+    let r;
+    try { r = await api("/api/admin/devices"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
+    const kind = (ua) => /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /CrKey|TV|Tizen|Web0S/.test(ua) ? "TV" : "Browser";
+    const pending = r.devices.filter((d) => d.status === "pending"), allowed = r.devices.filter((d) => d.status === "allowed");
+    const row = (d) => `<div class="li dev"><span class="dev-code mono">${esc(d.code)}</span>
+      <span class="grow"><b>${esc(d.name || "Unnamed device")}</b>${d.this ? ` <span class="badge">This Device</span>` : ""}<span class="secondary">${esc(kind(d.ua || ""))} · ${d.status === "pending" ? `asked ${ago(d.created)}` : `last used ${ago(d.last_seen)}`}${d.ip ? ` · ${esc(d.ip)}` : ""}</span></span>
+      ${d.status === "pending" ? `<button class="btn primary small" data-dev-ok="${d.id}">Allow</button><button class="btn secondary small" data-dev-no="${d.id}">Deny</button>`
+        : `<button class="round-btn sm" data-dev-rm="${d.id}" aria-label="Remove ${esc(d.name)}" title="Remove">${ic("trash")}</button>`}</div>`;
+    box.innerHTML = `
+      <h2 class="set-title">Allowed Devices</h2>
+      <p class="secondary set-hint">A device on this list can open Kino from any network, like a phone on mobile data or a laptop on holiday. Open Kino on the device, tap Ask for Access, then allow it here or type the code it shows.</p>
+      ${pending.length ? `<h3 class="sr-sub">Waiting for You</h3><div class="list">${pending.map(row).join("")}</div>` : ""}
+      ${allowed.length ? `<h3 class="sr-sub">Allowed</h3><div class="list">${allowed.map(row).join("")}</div>` : `<p class="secondary sr-empty">No devices yet, networks are the only way in right now.</p>`}
+      <form class="ip-form" id="devForm">
+        <input id="devCode" placeholder="Code, like K7F-29Q" maxlength="8" required spellcheck="false" autocapitalize="characters" class="mono">
+        <input id="devName" placeholder="Name, like Mum's iPad" maxlength="40">
+        <button class="btn primary small" type="submit">${ic("plus")} Allow</button>
+      </form>
+      <div class="note">This device's code is <b class="mono">${esc(r.this_code || "unknown")}</b>${r.this_allowed ? ", it's already allowed." : `. <button class="linkish" id="devThis">Allow This Device</button>`}</div>
+      <div class="form-err" id="devErr" role="alert"></div>`;
+    $("#devForm").onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api("/api/admin/devices", { code: $("#devCode").value, name: $("#devName").value }); toast("Device allowed"); drawDevices(); }
+      catch (er) { $("#devErr").textContent = er.message; }
+    };
+    const dt = $("#devThis"); if (dt) dt.onclick = async () => { await api("/api/admin/devices", { this: true, name: "" }); toast("This device is allowed"); drawDevices(); };
+    $$("[data-dev-ok]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/devices/${b.dataset.devOk}`, { status: "allowed" }, "PUT"); toast("Device allowed"); drawDevices(); }));
+    $$("[data-dev-no]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/devices/${b.dataset.devNo}`, { status: "denied" }, "PUT"); drawDevices(); }));
+    $$("[data-dev-rm]", box).forEach((b) => (b.onclick = async () => {
+      if (!(await confirmSheet("Remove this device?", "It won't be able to open Kino anymore unless it's on an allowed network.", "Remove"))) return;
+      try { await api(`/api/admin/devices/${b.dataset.devRm}`, undefined, "DELETE"); toast("Device removed"); drawDevices(); } catch (er) { toast(er.message, 5000); }
     }));
   }
 
@@ -1858,22 +2009,42 @@
   // ---------------------------------------------------------- router
   const applyPrefs = () => document.body.classList.toggle("blur-watched", !!(ME.profile && ME.profile.prefs && ME.profile.prefs.blur_watched));
 
+  // Which sidebar item a page belongs to
+  const sideFor = (page) => ({ title: "", discover: "" })[page] ?? (page || "home");
+  let LAST_PAGE = null, ROUTE_N = 0;
+
+  // Apple style placeholders that show the shape of the page while it loads
+  function skeleton(page) {
+    const tiles = (n, cls = "sk-poster") => Array.from({ length: n }, () => `<div class="sk ${cls}"></div>`).join("");
+    const row = (cls, n) => `<section class="shelf"><div class="sk sk-line" style="width:180px"></div><div class="row posters">${tiles(n, cls)}</div></section>`;
+    if (page === "home" || !page) return `<div class="sk sk-hero"></div><main class="page under-hero">${row("sk-wide", 4)}${row("sk-poster", 7)}</main>`;
+    if (page === "title" || page === "discover") return `<div class="sk sk-hero short"></div><main class="page under-hero">${row("sk-wide", 4)}</main>`;
+    if (page === "settings" || page === "sync" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
+    if (page === "search") return `<main class="page"><div class="sk sk-search"></div><div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${tiles(12)}</div></main>`;
+    return `<main class="page"><div class="sk sk-title"></div><div class="grid">${tiles(14)}</div></main>`;
+  }
+
   async function route() {
     stopPoll();
-    document.body.classList.remove("with-side");
     clearInterval(HERO_T);
     closeSheet();
     const [, page, arg] = (location.hash || "#/").split("?")[0].split("/");
+    const n = ++ROUTE_N;
+    const changed = (location.hash.split("?")[0]) !== LAST_PAGE;
     try {
       if (!ME.profile || page === "profiles" || !page) {
         if (!ME.profile && page !== "profiles") {
           const me = await api("/api/me");
           ME.profile = me.profile; ME.admin = me.admin; ME.ip = me.ip;
         }
-        if (!ME.profile || page === "profiles") return pageProfiles(false);
+        if (!ME.profile || page === "profiles") { document.body.classList.remove("with-side"); LAST_PAGE = null; return pageProfiles(false); }
         if (!page) { location.hash = "#/home"; return; }
       }
       applyPrefs();
+      // The sidebar stays and the page swaps to a skeleton straight away, so nothing jumps while it loads
+      topbar(sideFor(page));
+      document.body.classList.add("with-side");
+      if (changed) { app.innerHTML = skeleton(page); app.classList.remove("enter"); window.scrollTo(0, 0); }
       if (page === "movies") await pageBrowse("movie");
       else if (page === "shows") await pageBrowse("series");
       else if (page === "title" && arg) await pageTitle(arg);
@@ -1885,10 +2056,12 @@
       else if (page === "server" && isAdmin()) await pageServer();
       else await pageHome();
       if (isAdmin() && page !== "sync" && page !== "home") api("/api/admin/sync").then((s) => { SYNC = s; updateSyncChip(); }).catch(() => {});
+      if (changed && n === ROUTE_N) { void app.offsetWidth; app.classList.add("enter"); }
+      LAST_PAGE = location.hash.split("?")[0];
     } catch (e) {
       if (e.message === "pick profile") return;
       if (e.status === 403 && /allow list/.test(e.message)) {
-        app.innerHTML = `<main class="page"><div class="empty"><h2>This network isn't allowed</h2><p>Ask Reece to add your internet address to Kino.</p></div></main>`;
+        location.href = "/gate";
         return;
       }
       app.innerHTML = (ME.profile ? topbar("") : "") + `<main class="page"><div class="empty"><h2>Something went wrong</h2><p>${esc(e.message)}</p>

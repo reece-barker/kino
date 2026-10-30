@@ -17,6 +17,7 @@ import hmac
 import html
 import io
 import ipaddress
+import collections
 import itertools
 import json
 import logging
@@ -28,6 +29,7 @@ import secrets
 import shutil
 import socket
 import struct
+import tempfile
 import base64
 import datetime
 import gzip
@@ -971,6 +973,16 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+SERVER_ERRORS = collections.deque(maxlen=40)
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    # Anything that wasnt handled used to come back as a bare "Internal Server Error", so the app could only say
+    # "Request failed (500)". Now it says what went wrong, and the admin sees it on the Server page
+    log.exception("error on %s", request.url.path)
+    SERVER_ERRORS.appendleft({"at": time.time(), "path": request.url.path, "error": f"{type(exc).__name__}: {str(exc)[:300]}"})
+    return JSONResponse({"detail": f"Something went wrong on the server ({type(exc).__name__}: {str(exc)[:160]})"}, status_code=500)
 
 CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
        "script-src 'self'; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; "
@@ -4785,6 +4797,172 @@ async def stats(admin=Depends(require_admin)):
     }
 
 
+# ---- stress test: how the server copes with lots of people at once
+# Runs pretend viewers on the server itself: some converting a film to HLS exactly like the player does (at real
+# time speed), the rest reading a film off the Storage Box at a normal streaming rate like direct play. Every second
+# it notes the CPU, memory and Storage Box reading. At the end each viewer either kept up or it didnt, which is what
+# decides if playback would stutter. It cant test the internet connection to your viewers, thats outside the server
+STRESS = {"state": "idle"}
+STRESS_RATE = 1_000_000  # bytes a second a direct viewer reads, about 8 Mbps, a good 1080p film
+
+
+async def stress_run(n, secs, conv_pct):
+    files = [f for f in LIB["files"].values() if (f.get("size") or 0) > 50 * 1024**2]
+    if not files:
+        STRESS.update(state="failed", error="There aren't any films in the library to test with")
+        return
+    random.shuffle(files)
+    conv = round(n * conv_pct / 100)
+    st = STRESS
+    st.update(state="running", started=time.time(), viewers=n, seconds=secs, converting=conv, direct=n - conv, samples=[], error=None, result=None)
+    procs, readers, dirs = [], [], []
+    stop = asyncio.Event()
+
+    async def converter(i, f):
+        try:
+            pr = await get_probe(f)
+        except Exception:
+            pr = {}
+        dur = pr.get("duration") or 0
+        start = random.uniform(0, max(0, dur * 0.6)) if dur > 120 else 0
+        v = (pr.get("video") or {}).get("codec")
+        vargs = ["-c:v", "copy"] if v in ("h264", "hevc", "av1", "vp9", None) else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p"]
+        out = Path(tempfile.mkdtemp(prefix="kino-stress-"))
+        dirs.append(out)
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-nostats", "-progress", "pipe:1"]
+        if FF_INFO["burst"]:
+            args += ["-readrate", "1", "-readrate_initial_burst", "20"]
+        args += ["-ss", f"{start:.1f}", "-i", f["path"], "-map", "0:v:0", "-map", "0:a:0?", *vargs, "-c:a", "aac", "-ac", "2", "-b:a", "192k",
+                 "-af", "aresample=async=1000", "-sn", "-dn", "-f", "hls", "-hls_time", "6", "-hls_segment_type", "fmp4",
+                 "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", str(out / "s%05d.m4s"), str(out / "i.m3u8")]
+        proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        procs.append(proc)
+        rec = {"kind": "convert", "file": f["name"][:60], "media": 0.0, "began": time.time(), "converted": vargs[1] != "copy"}
+        readers.append(rec)
+        try:
+            while not stop.is_set():
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                k, _, val = line.decode(errors="ignore").strip().partition("=")
+                if k == "out_time_us" and val.isdigit():
+                    rec["media"] = int(val) / 1e6
+        except Exception:
+            pass
+
+    async def direct(i, f):
+        rec = {"kind": "direct", "file": f["name"][:60], "bytes": 0, "began": time.time()}
+        readers.append(rec)
+        try:
+            fh = await asyncio.to_thread(open, f["path"], "rb")
+        except OSError:
+            rec["error"] = True
+            return
+        try:
+            size = f["size"]
+            await asyncio.to_thread(fh.seek, int(random.uniform(0, size * 0.6)))
+            t0 = time.time()
+            while not stop.is_set():
+                chunk = await asyncio.to_thread(fh.read, 256 * 1024)
+                if not chunk:
+                    await asyncio.to_thread(fh.seek, 0)
+                    continue
+                rec["bytes"] += len(chunk)
+                # Reads like a player does: as fast as it can until it's ahead, then at the film's rate
+                ahead = rec["bytes"] / STRESS_RATE - (time.time() - t0)
+                if ahead > 5:
+                    await asyncio.sleep(min(1, ahead - 5))
+        finally:
+            fh.close()
+
+    tasks = [asyncio.create_task(converter(i, files[i % len(files)])) for i in range(conv)]
+    tasks += [asyncio.create_task(direct(i, files[(conv + i) % len(files)])) for i in range(n - conv)]
+    psutil.cpu_percent(None)
+    d0 = psutil.disk_io_counters()
+    n0 = psutil.net_io_counters()
+    last = time.time()
+    try:
+        for sec in range(secs):
+            if st.get("cancel"):
+                break
+            await asyncio.sleep(1)
+            now = time.time()
+            d1, n1 = psutil.disk_io_counters(), psutil.net_io_counters()
+            box_read = sum(r.get("bytes", 0) for r in readers)
+            vm = psutil.virtual_memory()
+            st["samples"].append({"t": sec + 1, "cpu": psutil.cpu_percent(None), "mem": vm.total - vm.available, "mem_pct": vm.percent,
+                                  "net_in": (n1.bytes_recv - n0.bytes_recv) / (now - last), "disk": ((d1.read_bytes - d0.read_bytes) if d1 and d0 else 0) / (now - last),
+                                  "direct_read": box_read})
+            d0, n0, last = d1, n1, now
+    finally:
+        stop.set()
+        for p_ in procs:
+            try:
+                p_.kill()
+            except ProcessLookupError:
+                pass
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for d in dirs:
+            shutil.rmtree(d, ignore_errors=True)
+    # Who kept up: converters need about 1x real time once past the first burst, direct readers need there rate
+    elapsed = max(1, time.time() - st["started"])
+    conv_r = [r for r in readers if r["kind"] == "convert"]
+    dir_r = [r for r in readers if r["kind"] == "direct"]
+    speeds = [r["media"] / max(1, time.time() - r["began"]) for r in conv_r]
+    rates = [r["bytes"] / max(1, time.time() - r["began"]) for r in dir_r]
+    conv_ok = sum(1 for x in speeds if x >= 0.95)
+    dir_ok = sum(1 for x in rates if x >= STRESS_RATE * 0.95)
+    sm = st["samples"] or [{"cpu": 0, "mem": 0, "mem_pct": 0}]
+    cpu_peak, cpu_avg = max(x["cpu"] for x in sm), sum(x["cpu"] for x in sm) / len(sm)
+    ok = conv_ok == len(conv_r) and dir_ok == len(dir_r) and cpu_peak < 95
+    problems = []
+    if conv_ok < len(conv_r):
+        problems.append(f"{len(conv_r) - conv_ok} of {len(conv_r)} converted streams couldn't keep up with real time")
+    if dir_ok < len(dir_r):
+        problems.append(f"{len(dir_r) - dir_ok} of {len(dir_r)} direct viewers couldn't get a film's worth of data from the Storage Box")
+    if cpu_peak >= 95:
+        problems.append("the CPU was maxed out")
+    st.update(state="done", result={
+        "ok": ok, "problems": problems, "elapsed": elapsed, "cpu_peak": cpu_peak, "cpu_avg": cpu_avg,
+        "mem_peak": max(x["mem"] for x in sm), "mem_pct_peak": max(x["mem_pct"] for x in sm),
+        "convert": {"n": len(conv_r), "ok": conv_ok, "slowest": min(speeds) if speeds else None, "avg": sum(speeds) / len(speeds) if speeds else None,
+                    "reencoding": sum(1 for r in conv_r if r["converted"])},
+        "direct": {"n": len(dir_r), "ok": dir_ok, "slowest_mbps": min(rates) * 8 / 1e6 if rates else None,
+                   "total_mbps": sum(rates) * 8 / 1e6 if rates else None},
+        "upload_needed_mbps": n * 8,
+    })
+
+
+@app.post("/api/admin/stress")
+async def stress_start(request: Request, admin=Depends(require_admin)):
+    if STRESS.get("state") == "running":
+        raise HTTPException(409, "A stress test is already running")
+    b = await request.json()
+    n = max(1, min(40, int(b.get("viewers") or 20)))
+    secs = max(15, min(300, int(b.get("seconds") or 60)))
+    pct = max(0, min(100, int(b.get("converted") if b.get("converted") is not None else 50)))
+    STRESS.clear()
+    STRESS.update(state="starting")
+    asyncio.create_task(stress_run(n, secs, pct))
+    return {"ok": True}
+
+
+@app.post("/api/admin/stress/stop")
+async def stress_stop(admin=Depends(require_admin)):
+    STRESS["cancel"] = True
+    return {"ok": True}
+
+
+@app.get("/api/admin/stress")
+async def stress_status(admin=Depends(require_admin)):
+    return {**{k: v for k, v in STRESS.items() if k != "cancel"}, "now": time.time()}
+
+
+@app.get("/api/admin/errors")
+async def server_errors(admin=Depends(require_admin)):
+    return {"items": list(SERVER_ERRORS)}
+
+
 # ---- app shell, install files
 
 @app.get("/healthz")
@@ -4976,6 +5154,16 @@ def epg_channels(raw):
     return out
 
 
+async def guide_parse(*args):
+    """Runs guide_parse.py in its own low priority process and reads back the JSON it prints"""
+    proc = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("guide_parse.py")), *args,
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, err = await asyncio.wait_for(proc.communicate(), 900)
+    if proc.returncode != 0:
+        raise RuntimeError(f"reading the guide failed: {err.decode(errors='ignore')[-200:]}")
+    return json.loads(out)
+
+
 def parse_epg(raw, want):
     """Whats on from an XMLTV guide, only for channels Kino has and only from 2 hours ago to 36 hours ahead"""
     import xml.etree.ElementTree as ET
@@ -5006,28 +5194,37 @@ async def load_guide(url, local, chans):
     """Downloads a guide, matches it to the playlist's channels (by guide id, then by name) and stores whats on.
     Returns how many channels got a guide"""
     raw, _ = await live_get(url, local=local, max_bytes=300 * 1024**2, timeout=240)
-    if raw[:2] == b"\x1f\x8b":
-        raw = await asyncio.to_thread(gzip.decompress, raw)
-    gch = await asyncio.to_thread(epg_channels, raw)
-    by_name = {}
-    for gid, names in gch.items():
-        for n in names:
-            by_name.setdefault(guide_name(n), gid)
-    matched = {}
-    for c in chans:
-        gid = c["tvg"] if c["tvg"] in gch else by_name.get(guide_name(c["name"]))
-        if not gid:
-            # Regional versions (BBC One London, BBC One Wales) fall back to the main channel's guide
-            words = re.sub(r"\s+(hd|sd|fhd)$", "", c["name"], flags=re.I).split()
-            while not gid and len(words) > 2 and words[-1].lower().strip("&") in UK_REGIONS:
-                words.pop()
-                gid = by_name.get(guide_name(" ".join(words)))
-        if gid:
-            matched[c["id"]] = gid
-    if not matched:
-        return 0
-    want = set(matched.values())
-    progs = await asyncio.to_thread(parse_epg, raw, want)
+    # Big guides (the US one is about 300 MB unpacked) are read in a seperate low priority process, in a thread they
+    # took the whole server's attention for minutes and everything else went slow
+    tmp = DATA_DIR / f"guide-{secrets.token_hex(4)}.xml"
+    wfile = tmp.with_suffix(".want")
+    try:
+        await asyncio.to_thread(tmp.write_bytes, raw)
+        del raw
+        gch = await guide_parse("channels", str(tmp))
+        by_name = {}
+        for gid, names in gch.items():
+            for n in names:
+                by_name.setdefault(guide_name(n), gid)
+        matched = {}
+        for c in chans:
+            gid = c["tvg"] if c["tvg"] in gch else by_name.get(guide_name(c["name"]))
+            if not gid:
+                # Regional versions (BBC One London, BBC One Wales) fall back to the main channel's guide
+                words = re.sub(r"\s+(hd|sd|fhd)$", "", c["name"], flags=re.I).split()
+                while not gid and len(words) > 2 and words[-1].lower().strip("&") in UK_REGIONS:
+                    words.pop()
+                    gid = by_name.get(guide_name(" ".join(words)))
+            if gid:
+                matched[c["id"]] = gid
+        if not matched:
+            return 0
+        want = set(matched.values())
+        wfile.write_text(json.dumps(list(want)))
+        progs = [tuple(x) for x in await guide_parse("progs", str(tmp), str(wfile))]
+    finally:
+        tmp.unlink(missing_ok=True)
+        wfile.unlink(missing_ok=True)
     for i in range(0, len(want), 500):
         part = list(want)[i:i + 500]
         db().q("DELETE FROM epg WHERE tvg IN (%s)" % ",".join("?" * len(part)), part)

@@ -320,7 +320,7 @@
       </div>
     </aside>
     <nav class="tabbar" aria-label="Sections">
-      ${[["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ["search", "Search", "search"]].map(([k, l, i]) =>
+      ${[["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ...(F.live ? [["live", "Live", "live"]] : []), ["search", "Search", "search"]].map(([k, l, i]) =>
         `<a class="tb-item" href="#/${k}" data-k="${k}">${ic(i)}<span>${l}</span></a>`).join("")}
       <button class="tb-item" id="tbMore" data-k="more">${avatar(p.icon, "xs")}<span>${esc(p.name)}</span></button>
     </nav>`;
@@ -2602,12 +2602,64 @@
 
   async function pageServer() {
     app.innerHTML = topbar("server") + `<main class="page"><h1 class="large-title">Server</h1><div id="srvBody"><div class="card skel" style="height:220px"></div></div>
-      <div id="backups"></div><div id="appLog"></div><div id="storageReview"></div></main>`;
+      <div id="stress"></div><div id="srvErrors"></div><div id="backups"></div><div id="appLog"></div><div id="storageReview"></div></main>`;
     wireTopbar();
     startPoll(drawServer, 3000);
+    drawStress();
+    drawSrvErrors();
     drawBackups();
     drawAppLog();
     drawStorageReview();
+  }
+
+  // Stress test: pretend viewers on the server to see if it copes before handing out access
+  async function drawStress() {
+    const box = $("#stress");
+    if (!box) return;
+    const r = await api("/api/admin/stress").catch(() => null);
+    if (!r || !$("#stress")) return;
+    const running = r.state === "running" || r.state === "starting";
+    const res = r.result;
+    const last = (r.samples || []).slice(-1)[0];
+    const pct = running && r.seconds ? Math.min(100, ((r.samples || []).length / r.seconds) * 100) : 0;
+    const f1 = (x) => (x == null ? "-" : x.toFixed(2));
+    box.innerHTML = `<section class="card backups"><h2 class="set-title">Stress Test</h2>
+      <p class="secondary set-hint">Runs pretend viewers on the server for a while: some converting a film exactly like the player does, the rest reading a film off the Storage Box at a normal streaming rate like direct play. Each one either keeps up with real time or it doesn't, that's what decides if playback would stutter. Real people watching at the same time might notice it. It can't test your internet upload, for that you need about 8 Mbps per person.</p>
+      ${running ? `<div class="state-line running"><span class="dot"></span>Running ${r.viewers} pretend viewers (${r.converting} converting, ${r.direct} direct)…</div>
+          <div class="progress thin" style="margin:12px 0"><i style="width:${pct}%"></i></div>
+          ${last ? `<div class="note">CPU ${Math.round(last.cpu)}% · memory ${bytes(last.mem)} · Storage Box ${rate(last.disk)}</div>` : ""}
+          <div class="actions"><button class="btn secondary small" id="stStop">Stop</button></div>`
+        : `<div class="stress-form">
+          <label><span>People</span><input type="number" id="stN" min="1" max="40" value="${r.viewers || 20}"></label>
+          <label><span>Converting</span><select class="plain" id="stC">${[0, 25, 50, 75, 100].map((x) => `<option value="${x}" ${x === 50 ? "selected" : ""}>${x}%</option>`).join("")}</select></label>
+          <label><span>For</span><select class="plain" id="stS">${[30, 60, 120, 300].map((x) => `<option value="${x}" ${x === 60 ? "selected" : ""}>${x < 60 ? x + " seconds" : x / 60 + " minute" + (x > 60 ? "s" : "")}</option>`).join("")}</select></label>
+          <button class="btn primary small" id="stGo">Run Test</button></div>`}
+      ${res ? `<div class="stress-res ${res.ok ? "good" : "bad"}"><b>${res.ok ? `${r.viewers} people at once looks fine` : "It struggled: " + esc(res.problems.join(", "))}</b>
+          <div class="list">
+            ${res.convert.n ? `<div class="li"><span class="grow">Converted streams</span><span class="r">${res.convert.ok} of ${res.convert.n} kept up, slowest ${f1(res.convert.slowest)}× real time${res.convert.reencoding ? `, ${res.convert.reencoding} fully re-encoding` : ""}</span></div>` : ""}
+            ${res.direct.n ? `<div class="li"><span class="grow">Direct play from the Storage Box</span><span class="r">${res.direct.ok} of ${res.direct.n} kept up, ${f1(res.direct.total_mbps)} Mbps in total</span></div>` : ""}
+            <div class="li"><span class="grow">CPU</span><span class="r">peak ${Math.round(res.cpu_peak)}%, average ${Math.round(res.cpu_avg)}%</span></div>
+            <div class="li"><span class="grow">Memory</span><span class="r">peak ${bytes(res.mem_peak)} (${Math.round(res.mem_pct_peak)}%)</span></div>
+            <div class="li"><span class="grow">Internet upload needed</span><span class="r">about ${res.upload_needed_mbps} Mbps for ${r.viewers} people in 1080p</span></div>
+          </div></div>` : r.state === "failed" ? `<div class="err-note">${esc(r.error || "The test failed")}</div>` : ""}
+    </section>`;
+    const go = $("#stGo");
+    if (go) go.onclick = async () => {
+      try { await api("/api/admin/stress", { viewers: Number($("#stN").value), converted: Number($("#stC").value), seconds: Number($("#stS").value) }); setTimeout(drawStress, 800); }
+      catch (e) { toast(e.message, 5000); }
+    };
+    const sp = $("#stStop"); if (sp) sp.onclick = async () => { await api("/api/admin/stress/stop", {}).catch(() => {}); };
+    if (running) setTimeout(() => { if ($("#stress") === box) drawStress(); }, 2000);
+  }
+
+  // Errors on the server that weren't handled, so a "Request failed" on someone's phone can be looked up
+  async function drawSrvErrors() {
+    const r = await api("/api/admin/errors").catch(() => null);
+    const box = $("#srvErrors");
+    if (!r || !box || !r.items.length) return;
+    box.innerHTML = `<section class="card backups"><h2 class="set-title">Server Errors</h2>
+      <p class="secondary set-hint">Things that went wrong on the server since it last started. Cleared when Kino restarts.</p>
+      <div class="list">${r.items.slice(0, 15).map((x) => `<div class="li"><span class="grow"><b>${esc(x.path)}</b><br><span class="secondary">${esc(x.error)}</span></span><span class="r">${esc(when(x.at))}</span></div>`).join("")}</div></section>`;
   }
 
   // What the tv apps reported, mainly the page crashing or being closed by android for memory

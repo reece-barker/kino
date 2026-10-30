@@ -1570,3 +1570,82 @@ body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none
   .live-filters .live-sel { flex: 1; }
   .live-sel select { min-width: 0; width: 100%; }
 }
+
+/* ---- profile folders, joint profiles and picture icons */
+.av-img { background: var(--bg-3); }
+.av-img img, .av-half.av-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.av-logo img { width: 60%; height: 60%; object-fit: contain; filter: brightness(0) invert(1); }
+.av-logo.light img { filter: brightness(0); opacity: 0.85; }
+.av.av-duo { position: relative; background: none; box-shadow: none; overflow: visible; }
+.av-duo .av-half { position: absolute; width: 70%; height: 70%; border-radius: inherit; display: grid; place-items: center; overflow: hidden; background: linear-gradient(145deg, var(--a, #333), var(--b, #111)); }
+.av-duo .av-half:first-child { left: 0; top: 0; }
+.av-duo .av-half:last-child { right: 0; bottom: 0; box-shadow: 0 0 0 max(2px, 0.07em) var(--page-bg, #000); }
+.av-duo .av-half svg { width: 74%; height: 74%; }
+.av-duo .av-half.av-logo img { width: 60%; height: 60%; }
+.av.lg.av-duo .av-half:last-child { box-shadow: 0 0 0 4px var(--page-bg, #000); }
+.sheet .av-duo .av-half:last-child, .more-head .av-duo .av-half:last-child { box-shadow: 0 0 0 3px var(--bg-2); }
+/* the focus ring goes round each half instead of the empty box */
+.who-tile:hover .av.av-duo, .who-tile:focus-visible .av.av-duo { box-shadow: none; }
+.who-tile:hover .av-duo .av-half, .who-tile:focus-visible .av-duo .av-half { box-shadow: 0 0 0 4px var(--label); }
+body.tv .who-tile:hover:not(:focus-visible) .av-duo .av-half:first-child { box-shadow: none; }
+body.tv .who-tile:hover:not(:focus-visible) .av-duo .av-half:last-child { box-shadow: 0 0 0 4px var(--page-bg, #000); }
+
+/* folders sit next to each other and wrap, each with its name above it */
+.who-groups { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: clamp(16px, 3.5vh, 36px) clamp(28px, 5vw, 80px); max-width: min(1400px, 96vw); }
+.who-group { display: flex; flex-direction: column; align-items: center; max-width: 100%; }
+.who-group .who-grid { max-width: 100%; }
+.who-extra { margin-top: clamp(16px, 3.5vh, 36px); }
+.av.av-duo { display: inline-block; vertical-align: top; }
+.who-folder { font-size: clamp(13px, 1.9vh, 15px); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--label-2); margin: 0 0 clamp(10px, 2vh, 18px); }
+.who-tile.joint .who-name { max-width: 190px; }
+
+.jp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; margin: 14px 0; }
+.jp-pick { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 6px; border-radius: 16px; background: var(--fill); color: var(--label-2); font-size: 14px; font-weight: 500; }
+.jp-pick span:not(.av):not(.av-half):not(.jp-lock) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jp-pick[aria-pressed="true"] { background: var(--label); color: var(--page-bg); }
+.jp-pick:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--label); }
+.jp-pick[aria-pressed="true"]:focus-visible { box-shadow: 0 0 0 3px var(--bg-2), 0 0 0 6px var(--label); }
+.jp-lock { position: absolute; top: 8px; right: 8px; font-size: 12px; opacity: 0.7; }
+.jp-preview { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 14px; }
+.jp-preview .field { margin: 0; min-width: 160px; }
+.jp-preview .lbl { display: block; font-size: 13px; color: var(--label-2); margin: 0 0 6px 2px; }
+.jp-warn { background: var(--fill); border-radius: 14px; padding: 12px 16px; font-size: 14px; color: var(--label-2); }
+.jp-warn b { display: flex; align-items: center; gap: 8px; color: var(--label); }
+.jp-warn ul { margin: 8px 0 0; padding-left: 18px; }
+.jp-warn li + li { margin-top: 4px; }
+
+.edit-fields { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.edit-fields .field { margin: 0; }
+.sheet-sub .linkish { font-size: 13px; margin-left: 8px; }
+.ib-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.ib-tabs button { padding: 7px 14px; border-radius: 999px; font-size: 14px; font-weight: 600; background: var(--fill); color: var(--label-2); }
+.ib-tabs button[aria-selected="true"] { background: var(--label); color: var(--page-bg); }
+.ib-tabs button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--bg-2), 0 0 0 5px var(--label); }
+.ib-q { margin: 0 0 10px; }
+/* the icons scroll inside the sheet, with room so the selected ring isnt cut off */
+.ib-grid { max-height: min(300px, 34vh); overflow-y: auto; padding: 8px; margin: -8px; scroll-padding: 8px; }
+.ib-sk { display: block; aspect-ratio: 1; border-radius: 22%; }
+.ib-empty { grid-column: 1 / -1; margin: 10px 2px; }
+@media (max-width: 600px) {
+  .jp-grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); }
+  .jp-preview .field { min-width: 0; flex: 1 1 100%; }
+  .ib-grid { max-height: 38vh; }
+}
+@media (max-width: 600px) { .who-folder[aria-hidden] { display: none; } }
+@media (max-width: 600px) {
+  .ib-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -4px 10px; padding: 0 4px; }
+  .ib-tabs::-webkit-scrollbar { display: none; }
+  .ib-tabs button { flex: none; padding: 7px 12px; font-size: 13.5px; }
+}
+/* short screens like tvs, the joint and icon sheets get tighter so the buttons stay in view */
+@media (max-height: 600px) {
+  .ib-grid { max-height: 30vh; }
+  .jp-grid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px; margin: 10px 0; }
+  .jp-pick { padding: 8px 4px; gap: 4px; font-size: 13px; }
+  .jp-pick .av.md { width: 44px; height: 44px; }
+  .jp-preview { margin-bottom: 10px; }
+  .jp-preview .av.md { width: 48px; height: 48px; }
+  .jp-warn { font-size: 12.5px; padding: 9px 14px; }
+  .jp-warn ul { margin-top: 4px; }
+  .jp-warn li + li { margin-top: 1px; }
+}

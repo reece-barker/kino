@@ -193,6 +193,10 @@ def migrate():
         d.q("ALTER TABLE profiles ADD COLUMN pin TEXT")        # scrypt hash of the 4 digit code, nobody can read it back
     if "pending" not in cols:
         d.q("ALTER TABLE profiles ADD COLUMN pending INTEGER DEFAULT 0")  # asked for by someone, waiting for the admin
+    ecols = [r["name"] for r in d.q("PRAGMA table_info(embed_sources)")]
+    for c in ("items", "title_key", "image_key"):
+        if c not in ecols:
+            d.q(f"ALTER TABLE embed_sources ADD COLUMN {c} TEXT")  # where the list is in the JSON and which fields to use
     if "device" not in [r["name"] for r in d.q("PRAGMA table_info(sessions)")]:
         # Admin sign ins are tied to the device they were made on now, old ones without it get signed out
         d.q("ALTER TABLE sessions ADD COLUMN device TEXT")
@@ -2231,7 +2235,13 @@ async def search(q: str, p=Depends(current_profile)):
     chans = db().q("SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1 AND (c.ok IS NULL OR c.ok = 1) AND c.name LIKE ? "
                    + ("AND c.grp = 'Kids' " if p.get("kids") else "") + "ORDER BY c.rank, c.name LIMIT 30", (f"%{q}%",))
     guide = now_next({c["tvg"] for c in chans if c["tvg"]})
-    return {"titles": [s for _, s in scored[:60]], "episodes": eps[:20], "people": ppl[:12], "channels": [chan_out(c, guide) for c in chans]}
+    embeds = []
+    if not p.get("kids"):
+        names = {r["id"]: r["name"] for r in db().q("SELECT id, name FROM embed_sources WHERE enabled = 1")}
+        for sid, (_, items) in list(EMBED_CACHE.items()):
+            if sid in names:
+                embeds += [{**x, "source": names[sid]} for x in items if q in norm(x["title"])][:10]
+    return {"titles": [s for _, s in scored[:60]], "episodes": eps[:20], "people": ppl[:12], "channels": [chan_out(c, guide) for c in chans], "embeds": embeds[:20]}
 
 
 # ---- voice search for browsers that cant do it themselves (firefox, brave, safari on some macs)
@@ -5105,12 +5115,24 @@ async def check_channels(limit=800):
 
 async def live_worker():
     await asyncio.sleep(20)
+    try:
+        # Playlists added before the free guides existed get them now instead of in 12 hours
+        for row in db().q("SELECT * FROM iptv_lists l WHERE enabled = 1 AND NOT EXISTS (SELECT 1 FROM channels c JOIN epg e ON e.tvg = c.tvg WHERE c.list_id = l.id)"):
+            await refresh_list(row)
+    except Exception as e:
+        log.info("live tv guide catch up: %s", e)
     while True:
         try:
             for row in db().q("SELECT * FROM iptv_lists WHERE enabled = 1 AND (refreshed IS NULL OR refreshed < ?)", (time.time() - 12 * 3600,)):
                 await refresh_list(row)
             db().q("DELETE FROM epg WHERE stop < ?", (time.time() - 7200,))
             await check_channels()
+            # Embed lists get read now and then so search can find whats in them
+            for src in db().q("SELECT * FROM embed_sources WHERE enabled = 1"):
+                try:
+                    await embed_list(src, fresh=True)
+                except Exception:
+                    pass
         except Exception as e:
             log.info("live tv worker: %s", e)
         await asyncio.sleep(1800)
@@ -5182,7 +5204,8 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
     if q:
         where.append("c.name LIKE ?"); args.append(f"%{q.strip()[:40]}%")
     w = " AND ".join(where)
-    rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {w} ORDER BY c.rank, c.ok DESC, c.name LIMIT 120 OFFSET ?", [*args, max(0, skip)])
+    rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {w} "
+                  "ORDER BY (c.id IN (SELECT cid FROM live_fav WHERE profile_id = ?)) DESC, c.rank, c.ok DESC, c.name LIMIT 120 OFFSET ?", [*args, p["id"], max(0, skip)])
     guide = now_next({r["tvg"] for r in rows if r["tvg"]})
     favs = {r["cid"] for r in db().q("SELECT cid FROM live_fav WHERE profile_id = ?", (p["id"],))}
     out = {"channels": [{**chan_out(r, guide), "fav": r["id"] in favs} for r in rows], "next": skip + len(rows) if len(rows) == 120 else None}
@@ -5436,6 +5459,42 @@ async def live_proxy(tok: str, request: Request, p=Depends(current_profile)):
     return StreamingResponse(body(), status_code=r.status_code, headers=out, media_type=ct or "video/mp2t")
 
 
+LIVE_THUMB_GATE = asyncio.Semaphore(3)
+
+
+@app.get("/api/live/{cid}/thumb.jpg")
+async def live_thumb(cid: str, p=Depends(current_profile)):
+    """A small picture of whats on a channel right now, for the favourites. One frame grabbed by ffmpeg, kept 90 seconds"""
+    if not re.fullmatch(r"[ct][\w-]{1,60}", cid):
+        raise HTTPException(404, "Unknown channel")
+    d = DATA_DIR / "livethumbs"
+    d.mkdir(exist_ok=True)
+    f = d / f"{cid}.jpg"
+    if f.exists() and time.time() - f.stat().st_mtime < 90:
+        return FileResponse(f, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=60"})
+    async with LIVE_THUMB_GATE:
+        if not (f.exists() and time.time() - f.stat().st_mtime < 90):
+            url, headers, local = await live_source(cid)
+            if not local:
+                await check_host(urlparse(url).hostname)
+            args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-rw_timeout", "8000000"]
+            if headers:
+                args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+            args += ["-i", url, "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "6", str(f) + ".tmp.jpg"]
+            try:
+                proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await asyncio.wait_for(proc.wait(), 15)
+                Path(str(f) + ".tmp.jpg").replace(f)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                if not f.exists():
+                    raise HTTPException(404, "No picture from that channel right now")
+    return FileResponse(f, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=60"})
+
+
 @app.post("/api/live/fav/{cid}")
 async def live_fav_add(cid: str, p=Depends(current_profile)):
     db().q("INSERT OR REPLACE INTO live_fav VALUES (?,?,?)", (p["id"], cid[:40], time.time()))
@@ -5643,29 +5702,68 @@ EMBED_CAT = ("sport", "league", "category", "group", "genre", "type")
 EMBED_PLAYER = ("playerUrl", "player_url", "embedUrl", "embed_url", "embed", "iframe", "url", "link")
 
 
+def jpath(x, path):
+    """data.events.0.title style lookups into JSON, a missing step gives None"""
+    for k in [k for k in str(path or "").strip().strip(".").split(".") if k]:
+        if isinstance(x, list):
+            x = x[int(k)] if k.lstrip("-").isdigit() and -len(x) <= int(k) < len(x) else None
+        elif isinstance(x, dict):
+            x = x.get(k)
+        else:
+            return None
+    return x
+
+
+def fill_template(tmpl, it, base, quote_values=True):
+    """Puts an item's fields into a link: {id}, {channels.0.channel_id}, {playerUrl}, {base} is the list's site"""
+    def one(m):
+        key = m.group(1)
+        if key == "base":
+            u = urlparse(base)
+            return f"{u.scheme}://{u.netloc}"
+        v = jpath(it, key)
+        if v is None:
+            raise KeyError(key)
+        v = str(v)
+        # A whole link or a path dropped in as is, a plain value (an id, a name) gets made safe for a link
+        return v if (not quote_values or v.startswith(("http://", "https://", "/")) or m.start() == 0) else quote(v, safe="")
+    try:
+        return re.sub(r"\{([\w.-]+)\}", one, tmpl)
+    except KeyError:
+        return None
+
+
 def embed_items(j, src):
     """Finds the playable things in whatever shape the service's JSON is: a list, {events: [...]}, {data: [...]},
-    or a schedule of days and categories with events inside"""
+    or a schedule of days and categories with events inside. The admin can also say exactly where the list is
+    (items, like data.events), which field is the title and picture, and build the player link from any field"""
     base, tmpl, out = src["url"], src["player"] or "", []
+    tkey, ikey = src.get("title_key") or "", src.get("image_key") or ""
+    if src.get("items"):
+        got = jpath(j, src["items"])
+        j = got if isinstance(got, list) else []
 
     def absolute(u):
         u = str(u or "").strip()
         return urljoin(base, u) if u else None
 
     def item(it, cat):
-        title = next((str(it[k]) for k in EMBED_TITLE if it.get(k)), "")
+        title = str(jpath(it, tkey) or "") if tkey else next((str(it[k]) for k in EMBED_TITLE if it.get(k)), "")
         if not title:
             return None
         chans = [c for c in it.get("channels") or [] if isinstance(c, dict)]
         cid = str(it.get("id") or it.get("channel_id") or (chans[0].get("channel_id") or chans[0].get("id") if chans else "") or it.get("slug") or "")
-        player = next((it[k] for k in EMBED_PLAYER if isinstance(it.get(k), str) and it.get(k)), None)
-        if player:
-            player = absolute(player)
-        elif tmpl and cid:
-            player = tmpl.replace("{id}", quote(cid, safe="")).replace("{slug}", quote(str(it.get("slug") or cid), safe="")).replace("{title}", quote(title, safe=""))
-        if not player or urlparse(player).scheme != "https":
+        if tmpl:
+            # The admin's own link, any field of the item can go in it
+            ctx = {**it, "id": it.get("id") if it.get("id") is not None else cid, "slug": it.get("slug") or cid, "title": title}
+            player = fill_template(tmpl, ctx, base)
+        else:
+            player = next((it[k] for k in EMBED_PLAYER if isinstance(it.get(k), str) and it.get(k)), None)
+        player = absolute(player) if player else None
+        if not player or urlparse(player).scheme not in ("https", "http"):
             return None
-        img_ = next((it[k] for k in EMBED_IMG if isinstance(it.get(k), str) and it.get(k)), None) or (chans[0].get("logo_url") if chans else None)
+        img_ = (jpath(it, ikey) if ikey else None) or next((it[k] for k in EMBED_IMG if isinstance(it.get(k), str) and it.get(k)), None) or (chans[0].get("logo_url") if chans else None)
+        img_ = img_ if isinstance(img_, str) else None
         status = str(it.get("status") or "")
         when = " ".join(str(it[k]) for k in ("date", "time") if it.get(k))
         return {"id": "e" + hashlib.sha1(player.encode()).hexdigest()[:14], "title": unesc(title)[:120], "image": https_url(absolute(img_)) if img_ else None,
@@ -5688,7 +5786,14 @@ def embed_items(j, src):
             for k, v in x.items():
                 if isinstance(v, (list, dict)):
                     walk(v, cat if k in ("events", "channels", "data", "items", "results", "list") else k, depth + 1)
-    walk(j)
+    if src.get("items") and isinstance(j, list):
+        for it in j:
+            if isinstance(it, dict):
+                got = item(it, None)
+                if got:
+                    out.append(got)
+    else:
+        walk(j)
     seen, uniq = set(), []
     for x in out:
         if x["id"] not in seen:
@@ -5703,7 +5808,12 @@ async def embed_list(src, fresh=False):
     hit = EMBED_CACHE.get(src["id"])
     if hit and not fresh and time.time() - hit[0] < 90:
         return hit[1]
-    raw, _ = await live_get(src["url"], max_bytes=20 * 1024**2, timeout=30)
+    try:
+        raw, _ = await live_get(src["url"], max_bytes=20 * 1024**2, timeout=30)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Couldn't read that link: {type(e).__name__} {str(e)[:120]}")
     try:
         j = json.loads(raw)
     except Exception:
@@ -5736,18 +5846,82 @@ async def live_embed(eid: int, p=Depends(current_profile)):
     return {"name": r[0]["name"], "items": items[:300]}
 
 
+def clean_link(u):
+    # Pasted links sometimes carry invisible characters or a capital H, those come off
+    return re.sub(r"[\s\u200b-\u200d\ufeff]+", "", str(u or "")).strip()
+
+
+def embed_form(b):
+    url = clean_link(b.get("url"))
+    if url.lower().startswith(("https://", "http://")):
+        url = url[:url.index("://")].lower() + url[url.index("://"):]
+    if not url.startswith(("https://", "http://")):
+        raise HTTPException(400, "The list link has to start with https://")
+    return {"id": 0, "url": url, "player": clean_link(b.get("player")).replace("%7B", "{").replace("%7D", "}"),
+            "items": str(b.get("items") or "").strip()[:120], "title_key": str(b.get("title_key") or "").strip()[:80],
+            "image_key": str(b.get("image_key") or "").strip()[:80]}
+
+
+@app.post("/api/admin/embeds/test")
+async def embed_test(request: Request, admin=Depends(require_admin)):
+    """Reads the list with these settings and shows what came out, without saving anything. Also shows the start of
+    the JSON and the fields of the first item, so its easy to see what to put in the boxes"""
+    src = embed_form(await request.json())
+    try:
+        raw, _ = await live_get(src["url"], max_bytes=20 * 1024**2, timeout=30)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Couldn't read that link: {type(e).__name__} {str(e)[:120]}")
+    try:
+        j = json.loads(raw)
+    except Exception:
+        raise HTTPException(400, "That link didn't send JSON")
+    items = embed_items(j, src)
+    arr = jpath(j, src["items"]) if src["items"] else None
+    first = arr[0] if isinstance(arr, list) and arr else None
+    if first is None:
+        def find(x, d=0):
+            if d > 5:
+                return None
+            if isinstance(x, list):
+                for it in x:
+                    if isinstance(it, dict):
+                        return it
+                    f = find(it, d + 1)
+                    if f:
+                        return f
+            elif isinstance(x, dict):
+                for v in x.values():
+                    if isinstance(v, (list, dict)):
+                        f = find(v, d + 1)
+                        if f:
+                            return f
+            return None
+        first = find(j)
+    def keys(x, pre="", d=0):
+        out = []
+        if isinstance(x, dict) and d < 3:
+            for k, v in list(x.items())[:30]:
+                out += keys(v, f"{pre}{k}.", d + 1) if isinstance(v, (dict, list)) else [f"{pre}{k}"]
+        elif isinstance(x, list) and x and d < 3:
+            out += keys(x[0], f"{pre}0.", d + 1)
+        return out
+    top = list(j.keys())[:20] if isinstance(j, dict) else ["(a list)"]
+    return {"count": len(items), "items": [{"title": x["title"], "player": x["player"], "image": x["image"]} for x in items[:5]],
+            "top": top, "fields": keys(first)[:40] if first else []}
+
+
 @app.post("/api/admin/embeds")
 async def embed_add(request: Request, admin=Depends(require_admin)):
     b = await request.json()
-    url, player = str(b.get("url") or "").strip(), str(b.get("player") or "").strip()
-    if not url.startswith("https://") or (player and not player.startswith("https://")):
-        raise HTTPException(400, "Links have to start with https://")
-    name = str(b.get("name") or "").strip()[:60] or urlparse(url).hostname
-    src = {"id": 0, "url": url, "player": player}
+    src = embed_form(b)
+    name = str(b.get("name") or "").strip()[:60] or urlparse(src["url"]).hostname
     items = await embed_list(src, fresh=True)
     if not items:
-        raise HTTPException(400, "Kino read that list but found nothing it could play. If the items only have an id, add the player link with {id} in it")
-    db().q("INSERT INTO embed_sources (name, url, player, enabled, added) VALUES (?,?,?,1,?)", (name, url, player or None, time.time()))
+        raise HTTPException(400, "Kino read that list but found nothing it could play. Press Test to see what's in it and fill in where the list is and the player link")
+    db().q("INSERT INTO embed_sources (name, url, player, enabled, added, items, title_key, image_key) VALUES (?,?,?,1,?,?,?,?)",
+           (name, src["url"], src["player"] or None, time.time(), src["items"] or None, src["title_key"] or None, src["image_key"] or None))
     EMBED_CACHE.pop(0, None)
     return {"ok": True, "count": len(items), "sample": [x["title"] for x in items[:3]]}
 
@@ -5770,8 +5944,11 @@ async def embed_remove(eid: int, admin=Depends(require_admin)):
 @app.get("/api/admin/live")
 async def live_admin(admin=Depends(require_admin)):
     rows = db().q("SELECT * FROM iptv_lists ORDER BY id")
-    stats = {r["list_id"]: dict(r) for r in db().q("SELECT list_id, COUNT(*) n, SUM(ok = 1) good, SUM(ok = 0) bad FROM channels GROUP BY list_id")}
-    return {"lists": [{**dict(r), "good": (stats.get(r["id"]) or {}).get("good") or 0, "bad": (stats.get(r["id"]) or {}).get("bad") or 0} for r in rows],
+    stats = {r["list_id"]: dict(r) for r in db().q("SELECT list_id, COUNT(*) n, SUM(ok = 1) good, SUM(ok = 0) bad, "
+                                                   "SUM(EXISTS (SELECT 1 FROM epg e WHERE e.tvg = channels.tvg)) guided FROM channels GROUP BY list_id")}
+    return {"lists": [{**dict(r), "good": (stats.get(r["id"]) or {}).get("good") or 0, "bad": (stats.get(r["id"]) or {}).get("bad") or 0,
+                       "guided": (stats.get(r["id"]) or {}).get("guided") or 0} for r in rows],
+            "guides": [{"name": f"Free guide: {n}", "url": u} for n, u in (("UK", AUTO_GUIDES["uk"]), ("USA", AUTO_GUIDES["us"]), ("Canada", AUTO_GUIDES["ca"]), ("Australia", AUTO_GUIDES["au"]))],
             "embeds": [dict(r) for r in db().q("SELECT * FROM embed_sources ORDER BY id")],
             "guide_rows": db().q("SELECT COUNT(*) n FROM epg")[0]["n"], "checking": LIVE["checking"]}
 

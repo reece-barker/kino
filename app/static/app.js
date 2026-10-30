@@ -2520,18 +2520,19 @@
     if (!box) return;
     const mine = al.your_ip;
     const applied = al.applied;
+    // Profiles, networks and devices fold away (closed to start with), a redraw keeps the ones that were open
+    const wasOpen = new Set($$("details.set-fold[open]", box).map((d) => d.id));
+    const fold = (id, title, badge, body) => `<details class="card set-card set-fold" id="${id}" ${wasOpen.has(id) ? "open" : ""}><summary><h2 class="set-title">${title}</h2>
+      <span class="badge fold-badge" ${badge ? "" : "hidden"}>${badge || ""}</span><span class="fold-chev" aria-hidden="true">${ic("chevron")}</span></summary><div class="fold-body">${body}</div></details>`;
     box.innerHTML = `
-      <section class="card set-card">
-        <h2 class="set-title">Profiles</h2>
+      ${fold("profCard", "Profiles", pr.pending && pr.pending.length ? `${pr.pending.length} asked` : "", `
         ${pr.pending && pr.pending.length ? `<h3 class="sr-sub">Asked For</h3><div class="list">${pr.pending.map((p) => `<div class="li">${pav(p, "xs")}<span class="grow">${esc(p.name)}</span>
           <button class="btn primary small" data-papprove="${p.id}">Approve</button><button class="btn secondary small" data-pdeny="${p.id}">Deny</button></div>`).join("")}</div><h3 class="sr-sub">Profiles</h3>` : ""}
         <div class="list">${pr.profiles.map((p) => `<div class="li">${pav(p, "xs")}<span class="grow">${esc(p.name)}${p.folder ? ` <span class="secondary">${esc(p.folder)}</span>` : ""}${p.locked ? ` <span class="badge">${ic("lock")} Locked</span>` : ""}</span>
           ${p.locked && !p.members ? `<button class="btn secondary small" data-unlock="${p.id}" title="Takes the code off, you never see what it was">Remove Lock</button>` : ""}
           <button class="btn secondary small" data-editp="${p.id}">${ic("pencil")} Edit</button></div>`).join("")}</div>
-        <div class="actions end"><button class="btn secondary small" id="addP">${ic("plus")} Add Profile</button></div>
-      </section>
-      <section class="card set-card">
-        <h2 class="set-title">Allowed Networks</h2>
+        <div class="actions end"><button class="btn secondary small" id="addP">${ic("plus")} Add Profile</button></div>`)}
+      ${fold("netCard", "Allowed Networks", "", `
         <p class="secondary set-hint">Only these internet addresses can open Kino. Add the home IP of each family member. Changes apply within a few seconds.</p>
         <div class="list">${al.entries.map((e) => `<div class="li"><span class="grow"><b>${esc(e.label)}</b> <span class="secondary mono">${esc(e.cidr)}</span></span>
           <span class="r">${e.added ? ago(e.added) : ""}</span><button class="round-btn sm" data-rmip="${esc(e.cidr)}" aria-label="Remove ${esc(e.label)}" title="Remove">${ic("trash")}</button></div>`).join("")}</div>
@@ -2542,12 +2543,11 @@
         </form>
         <div class="note">Your current address is <b class="mono">${esc(mine)}</b>. <button class="linkish" id="fillMine">Use This Address</button>
           ${applied ? `<span class="${applied.ok ? "" : "err-note"}"> · nginx ${applied.ok ? `updated ${ago(applied.applied_at)}` : `not updated: ${esc(applied.error || "unknown error")}`}</span>` : ""}</div>
-        <div class="form-err" id="ipErr" role="alert"></div>
-      </section>
-      <section class="card set-card" id="devicesCard"><div class="skel" style="height:80px"></div></section>
-      <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>
+        <div class="form-err" id="ipErr" role="alert"></div>`)}
+      ${fold("devicesCard", "Allowed Devices", "", `<div id="devicesBody"><div class="skel" style="height:80px"></div></div>`)}
       <section class="card set-card" id="liveCard"><div class="skel" style="height:80px"></div></section>
-      <section class="card set-card" id="embedCard"></section>`;
+      <section class="card set-card" id="embedCard"></section>
+      <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>`;
     drawDevices();
     drawAddons();
     drawLiveAdmin();
@@ -2574,7 +2574,7 @@
 
   // Allowed devices: works from any network once approved. Each browser or installed app has its own id
   async function drawDevices() {
-    const box = $("#devicesCard");
+    const box = $("#devicesBody");
     if (!box) return;
     let r;
     try { r = await api("/api/admin/devices"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
@@ -2584,8 +2584,9 @@
       <span class="grow"><b>${esc(d.name || "Unnamed device")}</b>${d.this ? ` <span class="badge">This Device</span>` : ""}<span class="secondary">${esc(kind(d.ua || ""))} · ${d.status === "pending" ? `asked ${ago(d.created)}` : `last used ${ago(d.last_seen)}`}${d.ip ? ` · ${esc(d.ip)}` : ""}</span></span>
       ${d.status === "pending" ? `<button class="btn primary small" data-dev-ok="${d.id}">Allow</button><button class="btn secondary small" data-dev-no="${d.id}">Deny</button>`
         : `<button class="round-btn sm" data-dev-rm="${d.id}" aria-label="Remove ${esc(d.name)}" title="Remove">${ic("trash")}</button>`}</div>`;
+    const badge = $("#devicesCard .fold-badge");
+    if (badge) { badge.textContent = pending.length ? `${pending.length} waiting` : ""; badge.hidden = !pending.length; }
     box.innerHTML = `
-      <h2 class="set-title">Allowed Devices</h2>
       <p class="secondary set-hint">A device on this list can open Kino from any network, like a phone on mobile data or a laptop on holiday. Open Kino on the device, tap Ask for Access, then allow it here or type the code it shows.</p>
       ${pending.length ? `<h3 class="sr-sub">Waiting for You</h3><div class="list">${pending.map(row).join("")}</div>` : ""}
       ${allowed.length ? `<h3 class="sr-sub">Allowed</h3><div class="list">${allowed.map(row).join("")}</div>` : `<p class="secondary sr-empty">No devices yet, networks are the only way in right now.</p>`}
@@ -2632,7 +2633,7 @@
       <form class="live-form" id="liveForm">
         <input id="lvName" placeholder="Name, like UK Freeview" autocomplete="off">
         <input id="lvUrl" placeholder="Playlist link (.m3u)" required spellcheck="false" autocapitalize="none" inputmode="url">
-        <input id="lvEpg" placeholder="Guide link (XMLTV), leave empty for the free UK, US, Canada and Australia guides" spellcheck="false" autocapitalize="none" inputmode="url" list="lvGuides">
+        <input id="lvEpg" placeholder="Guide link (XMLTV), leave empty for the free country guides" spellcheck="false" autocapitalize="none" inputmode="url" list="lvGuides">
         <datalist id="lvGuides">${(r.guides || []).map((g) => `<option value="${esc(g.url)}">${esc(g.name)}</option>`).join("")}</datalist>
         <label class="set-row" style="padding:4px 0"><span><b>On My Network</b><span class="secondary">For a TV server at home, lets Kino reach local addresses for this playlist</span></span><input type="checkbox" class="switch" id="lvLocal"></label>
         <div class="actions end"><button class="btn primary small" type="submit" id="lvGo">${ic("plus")} Add Playlist</button></div>

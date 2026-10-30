@@ -196,15 +196,27 @@
 
   // ---------------------------------------------------------- sheets, the in app popups (no browser alerts)
   let sheetClose = null;
-  function sheet(html, { wide = false, onClose } = {}) {
-    closeSheet();
+  // stack opens on top of a sheet thats already open (a tv dropdown inside Fix Match) instead of closing it
+  function sheet(html, { wide = false, onClose, stack = false } = {}) {
+    const under = stack ? sheetClose : null;
+    if (!stack) closeSheet();
     const wrap = document.createElement("div");
     wrap.className = "sheet-wrap";
     wrap.innerHTML = `<div class="sheet ${wide ? "wide" : ""}" role="dialog" aria-modal="true">${html}</div>`;
     document.body.appendChild(wrap);
     const prev = document.activeElement;
-    const close = () => { wrap.remove(); sheetClose = null; document.removeEventListener("keydown", onKey); if (prev && prev.focus) prev.focus(); onClose && onClose(); };
-    const onKey = (e) => { if (e.key === "Escape") close(); };
+    const close = () => {
+      wrap.remove(); sheetClose = under; document.removeEventListener("keydown", onKey);
+      if (prev && prev.focus) {
+        prev.focus();
+        // Opened from a menu thats shut now, the button that opened the menu gets it instead
+        const mw = document.activeElement !== prev && prev.closest && prev.closest(".menu-wrap");
+        if (mw) { const b = $("button", mw); if (b) b.focus(); }
+      }
+      onClose && onClose();
+    };
+    // Only the top one closes on escape or back
+    const onKey = (e) => { if (e.key === "Escape" && $$(".sheet-wrap").pop() === wrap) close(); };
     document.addEventListener("keydown", onKey);
     wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) close(); });
     $$("[data-close]", wrap).forEach((b) => (b.onclick = close));
@@ -1051,7 +1063,7 @@
         growRows(box);
         enhanceRows(box);
         $$(".srow", box).forEach((sec) => { if (keep[sec.dataset.srow]) $(".row", sec).scrollLeft = keep[sec.dataset.srow]; });
-        if (k && document.activeElement === document.body) { const s2 = typeof k === "string" ? $(k, box) : $$(k.tag, box).find((x) => x.textContent.trim() === k.text); if (s2) s2.focus({ preventScroll: true }); }
+        refocus(k);
       };
       draw();
       api("/api/search/addons?q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; ext = x.external; extDone = true; draw(); })
@@ -1346,7 +1358,14 @@
     if (am) {
       // The hero gets lifted above the episodes while the menu is open, otherwise the season row paints over it
       const menu = $("#adminMenu"), hero = $(".detail-hero");
-      const setM = (on) => { menu.hidden = !on; hero.classList.toggle("menu-open", on); am.setAttribute("aria-expanded", on); };
+      const setM = (on) => {
+        menu.hidden = !on; hero.classList.toggle("menu-open", on); am.setAttribute("aria-expanded", on);
+        // With the big banner the button sits near the bottom of a tv screen, so the menu opens upwards when theres no room under it
+        menu.classList.remove("flip");
+        if (on && menu.getBoundingClientRect().bottom > innerHeight - 8) menu.classList.add("flip");
+        // On a tv the remote goes straight into the menu, wherever it opened
+        if (on && TV) setTimeout(() => { const f = $(".mi", menu); if (f) f.focus({ preventScroll: true }); }, 30);
+      };
       am.onclick = (e) => { e.stopPropagation(); setM(menu.hidden); };
       const off = (e) => {
         if (!document.body.contains(menu)) { document.removeEventListener("click", off); document.removeEventListener("keydown", esc2); return; }
@@ -2183,18 +2202,41 @@
   }
 
   // ---------------------------------------------------------- polling
-  // Finds the same control again after a redraw, by id, data attribute or text
+  // Finds the same control again after a redraw. It used to look for the first thing on the page with the same text,
+  // so with the same film in two rows a background refresh (admins get one every few seconds on Home) threw the
+  // remote over to the other row without scrolling to it. Now it only steps in when focus actualy got lost, and
+  // looks in the same row first
   function focusKey(el) {
     if (!el || el === document.body || !app.contains(el)) return null;
-    if (el.id) return `#${CSS.escape(el.id)}`;
-    const d = Object.keys(el.dataset)[0];
-    if (d) return `[data-${d.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase())}="${CSS.escape(el.dataset[d])}"]`;
-    return { text: el.textContent.trim(), tag: el.tagName };
+    const k = { el, tag: el.tagName, text: el.textContent.trim() };
+    if (el.id) k.sel = `#${CSS.escape(el.id)}`;
+    else {
+      const d = Object.keys(el.dataset).find((x) => x !== "poster");
+      if (d) k.sel = `[data-${d.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase())}="${CSS.escape(el.dataset[d])}"]`;
+    }
+    const sec = el.closest("section[aria-label]");
+    if (sec) {
+      k.sec = sec.getAttribute("aria-label");
+      const same = $$(k.tag, sec);
+      k.idx = same.indexOf(el);
+    }
+    return k;
   }
   function refocus(k) {
     if (!k) return;
-    const el = typeof k === "string" ? $(k, app) : $$(k.tag, app).find((x) => x.textContent.trim() === k.text);
-    if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+    const a = document.activeElement;
+    // Still on something real (the same thing, or wherever the remote went while this was loading), leave it be
+    if (a && a !== document.body && a.isConnected) return;
+    if (k.el.isConnected) { k.el.focus({ preventScroll: true }); return; }
+    const scope = (k.sec && $$("section[aria-label]", app).find((x) => x.getAttribute("aria-label") === k.sec)) || app;
+    let el = k.sel ? $(k.sel, scope) : null;
+    if (!el && scope !== app && k.idx >= 0) { const c = $$(k.tag, scope)[k.idx]; if (c && c.textContent.trim() === k.text) el = c; }
+    if (!el) el = $$(k.tag, scope).find((x) => x.textContent.trim() === k.text);
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    // A redrawn row starts scrolled back to the start, so the card gets brought back into view
+    const row = el.closest(".row");
+    if (row) { const er = el.getBoundingClientRect(), rr = row.getBoundingClientRect(); if (er.left < rr.left || er.right > rr.right) row.scrollLeft += er.left - rr.left - (rr.width - er.width) / 2; }
   }
   function startPoll(fn, ms) {
     stopPoll();
@@ -2395,7 +2437,7 @@
     setTimeout(() => {
       try {
         const r = window.KinoAndroid.takeResult && window.KinoAndroid.takeResult();
-        if (r) window.kinoNativeDone(JSON.parse(r));
+        if (r) { RELOADED = true; window.kinoNativeDone(JSON.parse(r)); }
       } catch (_) {}
       try {
         const c = window.KinoAndroid.lastCrash && window.KinoAndroid.lastCrash();
@@ -2412,6 +2454,7 @@
   window.kinoTrim = () => { RECYCLE_TIGHT = true; recycle(); setTimeout(() => (RECYCLE_TIGHT = false), 60000); };
 
   let PLAY_N = 0;
+  let RELOADED = false;  // the app reloaded this page after the player, so theres no back history to go by
   async function playFile(fid, opts = {}) {
     if (!opts.web && useNative()) return nativePlay(fid, opts);
     // Each press gets a number, anything still loading from an earlier press stops when it sees a newer one
@@ -2986,7 +3029,7 @@
     if (playerOpen && (!cur || !pl.el.contains(cur) || cur === pl.v) && d[0]) return;  // left and right seek
     // An open dropdown keeps the remote inside it until it's closed, otherwise down could land on the page behind it
     const openMenu = cur && cur.closest && cur.closest(".menu:not([hidden])");
-    const scope = sheetClose ? $(".sheet-wrap") : openMenu || (playerOpen ? pl.el : document);
+    const scope = sheetClose ? $$(".sheet-wrap").pop() : openMenu || (playerOpen ? pl.el : document);
     if (playerOpen) wakeUi();
     const items = $$('a[href], button, input, select, summary, [tabindex]:not([tabindex="-1"])', scope).filter((el) => {
       // Things inside a closed section can't take focus, only the section's own toggle can
@@ -3090,7 +3133,15 @@
     const am = $("#avatarMenu");
     if (am && !am.hidden) { am.hidden = true; $("#side").classList.remove("pinned"); $("#avatarBtn").focus(); return true; }
     const page = (location.hash || "#/home").split("?")[0].split("/")[1] || "home";
-    if (page === "title" || page === "discover" || page === "person") { history.length > 1 ? history.back() : (location.hash = "#/home"); return true; }
+    if (page === "title" || page === "discover" || page === "person") {
+      let from = null;
+      try { from = sessionStorage.getItem("kino-from"); } catch (_) {}
+      const fresh = RELOADED || history.length <= 1;
+      RELOADED = false;
+      if (fresh) location.hash = from && from !== location.hash.split("?")[0] ? from : "#/home";
+      else history.back();
+      return true;
+    }
     if (page !== "home" && page !== "profiles") { location.hash = "#/home"; return true; }
     if (TV && document.activeElement && !document.activeElement.closest("#chrome") && $("#side")) {
       // On a tv, back on Home jumps to the sidebar like apple tv, and from there it leaves
@@ -3235,7 +3286,7 @@
         e.preventDefault();
         const cur = sel.selectedIndex;
         const s = sheet(`<h2 class="pick-title">${esc(title)}</h2><div class="pick-list" role="listbox" aria-label="${esc(title)}">${[...sel.options].map((o, i) =>
-          `<button class="pick-opt ${i === cur ? "on" : ""}" role="option" aria-selected="${i === cur}" data-i="${i}"><span class="pick-ck">${i === cur ? ic("check") : ""}</span><span>${esc(o.text)}</span></button>`).join("")}</div>`);
+          `<button class="pick-opt ${i === cur ? "on" : ""}" role="option" aria-selected="${i === cur}" data-i="${i}"><span class="pick-ck">${i === cur ? ic("check") : ""}</span><span>${esc(o.text)}</span></button>`).join("")}</div>`, { stack: !!btn.closest(".sheet-wrap") });
         s.el.classList.add("picker");
         $$(".pick-opt", s.el).forEach((b) => (b.onclick = () => {
           const i = Number(b.dataset.i);
@@ -3297,6 +3348,9 @@
     const [, page, arg] = (location.hash || "#/").split("?")[0].split("/");
     const n = ++ROUTE_N;
     const changed = (location.hash.split("?")[0]) !== LAST_PAGE;
+    // Remembers where a title page was opened from. The app reloads the page after the player on low memory tvs,
+    // which wipes the back history, and back then went to Home instead of where you were
+    if (changed && LAST_PAGE && ["title", "discover", "person"].includes(page)) { try { sessionStorage.setItem("kino-from", LAST_PAGE); } catch (_) {} }
     try {
       if (!ME.profile || page === "profiles" || !page) {
         if (!ME.profile && page !== "profiles") {

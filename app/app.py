@@ -77,7 +77,7 @@ IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.spa
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
 AVATAR_COUNT = 18  # Has to match the AVATARS list in app.js
-DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False}
+DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("kino")
@@ -1307,7 +1307,7 @@ async def profile_update(request: Request, p=Depends(current_profile)):
             prefs[k] = str(v or "")[:30]
         elif k == "sub_size" and v in ("s", "m", "l"):
             prefs[k] = v
-        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats"):
+        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source"):
             prefs[k] = bool(v)
         elif k == "still_watching":
             # Minutes without touching anything before the player asks if anyones still there, 0 is off
@@ -2064,6 +2064,10 @@ def shelf_title(c, a, several):
         return f"{addon} {n.replace('-', ' ').replace('_', ' ').title()}" if len(n) <= 18 else addon
     if n == n.lower():
         n = n.title()
+    if video_type(c.get("type")):
+        # Youtubio calls its rows Discover and Watch Later, YouTube Watch Later says where it's from
+        t = c["type"]
+        return n if t == "channel" or t.lower() in n.lower() else f"{t} {n}"
     if re.search(r"movie|film|show|series|tv|anime", n, re.I):
         return n
     word = {"movie": "Movies", "series": "Shows", "anime": "Anime", "tv": "Channels"}.get(c.get("type"), "")
@@ -2086,7 +2090,7 @@ def addon_shelves(summ, kids=False):
             items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
         if len(items) >= 3:
             per_addon.setdefault(a["id"], []).append({"id": f"addon-{a['id']}-{c['type']}-{c['id']}", "title": (title := shelf_title(c, a, count[a["id"]] > 1)),
-                                                       "style": "poster", "items": items,
+                                                       "style": "wide" if video_type(c.get("type")) else "poster", "items": items,
                                                        "source": None if (a["m"].get("name") or "") in title else a["m"].get("name")})
     # Takes turns between addons so one with loads of catalogs doesnt push the others off home
     out, lists = [], list(per_addon.values())
@@ -2234,15 +2238,19 @@ async def person(name: str, p=Depends(current_profile)):
 
 
 @app.get("/api/search/addons")
-async def search_addons(q: str, p=Depends(current_profile)):
-    # Kept separate from the library search so the library results show straight away and addons fill in after
+async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
+    # Kept separate from the library search so the library results show straight away and addons fill in after.
+    # videos=1 is youtubio and the like, asked for seperatly so a slow yt-dlp search dosent hold up the films
     q = q.strip()[:60]
     external = []
+    if videos and not any(video_type(c.get("type")) and (any(e.get("name") == "search" for e in c.get("extra") or []) or "search" in (c.get("extraSupported") or []))
+                          for a in addon_rows() for c in a["m"].get("catalogs") or []):
+        return {"external": [], "none": True}
     if q and addon_rows():
         summ, _, _ = all_summaries(p["id"])
         have = lib_by_meta_id(summ)
         try:
-            hits = await asyncio.wait_for(addon_search(None, q), timeout=9)
+            hits = await asyncio.wait_for(addon_search(None, q, videos=bool(videos)), timeout=27 if videos else 9)
         except asyncio.TimeoutError:
             hits = []
         seen, rank = {}, {}
@@ -2267,6 +2275,9 @@ async def search_addons(q: str, p=Depends(current_profile)):
             item["score"] = round(sc, 2)
             seen[mid] = item
         external = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
+        if videos:
+            # The addon already sorted these how youtube does, thats better than Kino's name matching
+            external = list(seen.values())
         await rank_by_popularity(external[:12])
         external.sort(key=lambda x: x["score"], reverse=True)
     return {"external": external[:120]}
@@ -2537,9 +2548,12 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     a = int(body.get("audio") or 0)
     if fid.startswith("s"):
         r = stream_row(fid)
-        if not r["url"].startswith("torbox:"):
+        if r["url"].startswith("torbox:"):
+            url, pr = await tb_probe(r)
+        elif is_hls(r["url"]):
+            url, pr = await hls_probe(r)
+        else:
             raise HTTPException(400, "That stream plays directly")
-        url, pr = await tb_probe(r)
         f = {"id": fid, "path": url}
     else:
         f = file_or_404(fid)
@@ -3009,9 +3023,44 @@ def https_url(u):
     return "https://" + u[7:] if u.startswith("http://") else u or None
 
 
+# Movie and series get Kino's normal pages, anime gets folded into those and tv is live channels. Any other type an
+# addon makes up (youtubio calls its stuff YouTube, stremio has channel) is shown as videos with there own pages
+NOT_VIDEO = ("movie", "series", "anime", "tv")
+
+
+def video_type(t):
+    return isinstance(t, str) and t not in NOT_VIDEO and bool(re.fullmatch(r"[\w .-]{1,40}", t))
+
+
+def addon_types(a):
+    m = a["m"]
+    out = {t for t in m.get("types") or [] if isinstance(t, str)}
+    out.update(c.get("type") for c in m.get("catalogs") or [] if isinstance(c, dict))
+    for r in m.get("resources") or []:
+        if isinstance(r, dict):
+            out.update(t for t in r.get("types") or [] if isinstance(t, str))
+    return out
+
+
+def kind_ok(kind):
+    """movie, series, or a video type one of the installed addons actualy uses"""
+    return kind in ("movie", "series") or (video_type(kind) and any(kind in addon_types(a) for a in addon_rows()))
+
+
 def ext_preview(m, kind):
     """A catalog item from an addon, shaped like a library tile but marked as not in the library"""
     i = str(m.get("id", ""))
+    t = m.get("type")
+    vt = t if video_type(t) else kind if t not in ("movie", "series") and video_type(kind) else None
+    if vt:
+        # Youtube style stuff, the picture is a thumbnail so it doubles as the background and theres no imdb anything
+        thumb = https_url(m.get("poster"))
+        return {"id": None, "ext": f"{vt}/{i}", "external": True, "kind": "video", "atype": vt,
+                "shape": m.get("posterShape") if m.get("posterShape") in ("square", "poster") else "landscape",
+                "name": unesc(m.get("name") or ""), "poster": thumb, "background": https_url(m.get("background")) or thumb, "logo": https_url(m.get("logo")),
+                "releaseInfo": m.get("releaseInfo") or m.get("year"), "genres": unesc(m.get("genres") or m.get("genre") or [])[:6],
+                "rating": None, "description": unesc(m.get("description")), "imdb": i, "count": 0, "added": 0,
+                "watched": False, "watched_count": 0, "my_rating": 0, "last_activity": 0, "matched": True}
     # Catalogs can have their own types like anime, the items inside still say if theyre a movie or a show
     kind = m.get("type") if m.get("type") in ("movie", "series") else kind if kind in ("movie", "series") else "series"
     return {"id": None, "ext": f"{kind}/{i}", "external": True, "kind": "series" if kind == "series" else "movie",
@@ -3031,7 +3080,7 @@ def home_catalogs():
     for a in addon_rows():
         for c in a["m"].get("catalogs") or []:
             needs = list(c.get("extraRequired") or []) + [e.get("name") for e in c.get("extra") or [] if e.get("isRequired")]
-            if needs or f"{c.get('type')}/{c.get('id')}" in a["hidden"] or c.get("type") not in ("movie", "series", "anime"):
+            if needs or f"{c.get('type')}/{c.get('id')}" in a["hidden"] or (c.get("type") not in ("movie", "series", "anime") and not video_type(c.get("type"))):
                 continue
             # Your own torbox list already plays through TorBox first, so its addon catalog dosent get a shelf too
             if "torbox" in f"{a['m'].get('id', '')} {a['m'].get('name', '')} {c.get('name', '')}".lower():
@@ -3122,17 +3171,20 @@ async def addon_meta(kind, mid, skip_cinemeta=False):
     return None
 
 
-async def addon_search(kind, q, limit_per=60):
-    """Searches every installed catalog that supports search, used by search and fix match"""
+async def addon_search(kind, q, limit_per=60, videos=False):
+    """Searches every installed catalog that supports search, used by search and fix match. Video catalogs (youtubio)
+    are searched on there own with videos=True, they run yt-dlp and can take a lot longer than a normal addon"""
     tasks = []
     for a in addon_rows():
         for c in a["m"].get("catalogs") or []:
             has_search = any(e.get("name") == "search" for e in c.get("extra") or []) or "search" in (c.get("extraSupported") or [])
-            if has_search and (not kind or c.get("type") == kind or c.get("type") not in ("movie", "series")):
+            if not has_search or video_type(c.get("type")) != videos:
+                continue
+            if videos or not kind or c.get("type") == kind or c.get("type") not in ("movie", "series"):
                 tasks.append((a, c))
     async def one(a, c):
         try:
-            j = await fetch_json(catalog_url(a, c, {"search": q}), ttl=600, timeout=8)
+            j = await fetch_json(catalog_url(a, c, {"search": q}), ttl=600, timeout=25 if videos else 8)
             return [(a, c, m) for m in (j.get("metas") or [])[:limit_per]]
         except Exception:
             return []
@@ -3249,10 +3301,72 @@ async def addons_remove(aid: int, admin=Depends(require_admin)):
     return {"ok": True}
 
 
+VIDEO_INLINE = {}  # (type, video id) -> (when, addon, streams) that came inside a video's details
+
+
+async def video_meta(kind, mid):
+    """Details for a youtube style video or channel straight from its addon. Only kept half an hour, not days like
+    films, cause youtubio puts links in them that run out"""
+    for a in addon_rows():
+        if not supports(a["m"], "meta", kind, mid):
+            continue
+        try:
+            j = await addon_call(a, "meta", kind, mid, ttl=1800, timeout=40)
+        except Exception as e:
+            log.info("meta from %s failed: %s", a["m"].get("name"), e)
+            continue
+        m = j.get("meta") if isinstance(j, dict) else None
+        if isinstance(m, dict) and (m.get("name") or m.get("videos")):
+            return a, m
+    return None, None
+
+
+async def external_video(kind, mid, name, p):
+    a, m = await video_meta(kind, mid)
+    if not m:
+        m = listed_meta(mid, name, kind)
+        if not m:
+            raise HTTPException(404, "The addon didn't send any details for that, it might be down")
+    if len(VIDEO_INLINE) > 3000:
+        VIDEO_INLINE.clear()
+    vids = []
+    for v in m.get("videos") or []:
+        if not isinstance(v, dict) or not v.get("id"):
+            continue
+        inl = v.get("streams")
+        if isinstance(inl, list) and a:
+            # Youtubio's first entry on a channel is "Channel Options" which only has outside links, so it's left off
+            if not any(isinstance(s, dict) and s.get("url") for s in inl):
+                continue
+            VIDEO_INLINE[(kind, str(v["id"]))] = (time.time(), a, inl)
+        vids.append({"id": str(v["id"]), "name": unesc(v.get("title") or v.get("name") or ""), "thumbnail": https_url(v.get("thumbnail")),
+                     "overview": unesc(v.get("overview") or v.get("description") or ""), "released": v.get("released")})
+    single = str((m.get("behaviorHints") or {}).get("defaultVideoId") or "") or None
+    if single and not any(v["id"] == single for v in vids):
+        single = None
+    if not single and not vids:
+        single = mid  # Nothing listed, the id itself is the video
+    ids = [v["id"] for v in vids] or [mid]
+    prog = {}
+    for r in db().q("SELECT s.video_id, w.pos, w.dur, w.watched, w.updated FROM streams s JOIN watch w ON w.file_id = s.id "
+                    "WHERE w.profile_id = ? AND s.video_id IN (%s) ORDER BY w.updated" % ",".join("?" * len(ids)), [p["id"], *ids]):
+        prog[r["video_id"]] = dict(r)
+    for v in vids:
+        v["progress"] = prog.get(v["id"])
+    links = [l for l in m.get("links") or [] if isinstance(l, dict)]
+    item = ext_preview({**m, "id": mid, "type": kind, "genres": m.get("genres") or [l.get("name") for l in links if l.get("category") == "Genres"][:4]}, kind)
+    channel = next((l.get("name") for l in links if l.get("category") in ("Directors", "Channel")), None)
+    return {**item, "in_list": in_list(p["id"], mid), "list_key": mid, "videos": [] if single and len(vids) <= 1 else vids,
+            "single": single, "channel": channel, "runtime": m.get("runtime") if m.get("runtime") not in ("0 min", "") else None,
+            "cast": [], "director": None, "season_list": [], "seasons": 0, "episodes": len(vids)}
+
+
 @app.get("/api/external/{kind}/{mid:path}")
 async def external_title(kind: str, mid: str, stay: int = 0, name: str = "", p=Depends(current_profile)):
-    if kind not in ("movie", "series"):
+    if not kind_ok(kind):
         raise HTTPException(404, "Unknown type")
+    if video_type(kind):
+        return await external_video(kind, mid, name, p)
     for t in ([] if stay else LIB["titles"].values()):
         m = meta_for(t)
         if m and m.get("id") == mid:
@@ -3369,6 +3483,12 @@ def pd_url_ok(url):
     #return u.scheme == "https" and any(host == h or host.endswith("." + h) for h in PD_HOSTS)
     return True
 
+def on_pd_list(url):
+    # The http to https upgrade is only for hosts known to have both, a self hosted addon on plain http has no https
+    host = (urlparse(str(url or "")).hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in PD_HOSTS)
+
+
 def stream_row(sid):
     rows = db().q("SELECT * FROM streams WHERE id = ?", (sid,))
     if not rows:
@@ -3378,9 +3498,14 @@ def stream_row(sid):
 
 @app.get("/api/streams/{kind}/{vid:path}")
 async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_profile)):
-    if kind not in ("movie", "series"):
+    if not kind_ok(kind):
         raise HTTPException(404, "Unknown type")
     rows = [a for a in addon_rows() if supports(a["m"], "stream", kind, vid)]
+    # Youtubio already put the streams in the details it sent, theres no need to run yt-dlp a second time
+    inline = VIDEO_INLINE.get((kind, vid))
+    inline = inline if inline and time.time() - inline[0] < 1800 else None
+    if inline:
+        rows = []
     meta = await meta_lookup(kind, show_of(vid)) or {}
     if p.get("kids") and not kids_ok(meta.get("genres"), show_of(vid)):
         raise HTTPException(404, "That title isn't available on this profile")
@@ -3413,7 +3538,8 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
         facts = stream_facts({"behaviorHints": {"videoSize": f["size"]}}, "https://x/" + quote(f["name"]), f["name"])
         out.append({"id": sid, **facts, "plays": True, "torbox": True, "addon": "TorBox",
                     "progress": dict(w[0]) if w else None, "_url": url})
-    for a, streams, err in await asyncio.gather(*(one(a) for a in rows)):
+    got = [(inline[1], inline[2], None)] if inline else await asyncio.gather(*(one(a) for a in rows))
+    for a, streams, err in got:
         rep_ = {"addon": a["m"].get("name"), "found": len(streams), "kept": 0, "other": [], "error": err}
         report.append(rep_)
         for st in streams[:40]:
@@ -3421,7 +3547,7 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
                 continue
             url = st.get("url")
             # archive.org works on https too, so old http links get upgraded instead of dropped
-            if isinstance(url, str) and url.startswith("http://") and pd_url_ok("https://" + url[7:]):
+            if isinstance(url, str) and url.startswith("http://") and on_pd_list("https://" + url[7:]):
                 url = "https://" + url[7:]
             # Torrents, youtube ids, outside links and anything not on a public domain host are left out
             if st.get("infoHash") or st.get("ytId") or st.get("externalUrl") or not pd_url_ok(url):
@@ -3455,6 +3581,9 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
     for x in out:
         x["health"] = ("good", "untried", "failed")[rank(x)]
     out.sort(key=lambda x: (not x.get("torbox"), rank(x), not x["plays"], -x["height"], -(x["bytes"] or 0)))
+    if video_type(kind):
+        # Youtubio lists every quality twice (its own sponsor cutting player and the plain one), the top few is plenty
+        out = out[:12]
     for x in out:
         x.pop("_url", None)
     res = {"streams": out, "dropped": dropped, "checked": len(rows)}
@@ -3480,7 +3609,9 @@ def stream_facts(st, url, label):
         height = 2160
     elif re.search(r"512kb", text, re.I):
         height = 360  # archive.orgs small derivative copies
-    fmt, plays = FORMATS.get(Path(urlparse(url).path).suffix.lower(), ("Video", True))
+    elif (wh := re.search(r"\b\d{3,4}x(\d{3,4})\b", text)):
+        height = int(wh.group(1))  # yt-dlp says 1920x1080
+    fmt, plays = ("HLS", True) if is_hls(url) else FORMATS.get(Path(urlparse(url).path).suffix.lower(), ("Video", True))
     size = (st.get("behaviorHints") or {}).get("videoSize")
     if not size:
         sm = re.search(r"(\d+(?:[.,]\d+)?)\s*(GB|MB)", label, re.I)
@@ -3491,6 +3622,12 @@ def stream_facts(st, url, label):
     q = "4K" if height >= 2160 else f"{height}p" if height else "SD"
     return {"label": name[:120], "quality": q, "height": height, "format": fmt, "plays": plays,
             "bytes": int(size) if isinstance(size, (int, float)) else None, "file": Path(urlparse(url).path).name[:120]}
+
+
+def is_hls(url):
+    # A playlist of little segments instead of one file, youtube's come as manifest.googlevideo.com/.../hls_playlist/
+    u = str(url or "").lower()
+    return "m3u8" in u or "/hls_playlist/" in u
 
 
 def show_of(vid):
@@ -3533,15 +3670,15 @@ async def stream_file_info(sid, p, request):
               "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
               "title_id": None, "intro": None, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"],
               "prefs": p["prefs"], "is_admin": bool(admin_user(request)), "art": art_for_id(show_of(r["video_id"]), r["poster"])}
-    if r["url"].startswith("torbox:"):
-        _, pr = await tb_probe(r)
+    if r["url"].startswith("torbox:") or is_hls(r["url"]):
+        _, pr = await (tb_probe(r) if r["url"].startswith("torbox:") else hls_probe(r))
         a = next((x for x in pr["audio"] if x.get("default")), pr["audio"][0] if pr["audio"] else None)
         return {"id": sid, "stream": True, "name": r["name"], "src": None, "direct": False, "video": pr.get("video") or {},
                 "audio": [{"n": x["n"], "lang": lang_name(x["lang"]) if x.get("lang") else "",
                            "label": " ".join(str(y) for y in (x.get("title") or lang_name(x.get("lang")), x.get("codec", "").upper(), f"{x.get('channels')}ch") if y)}
                           for x in pr["audio"]],
                 "default_audio": a["n"] if a else 0, "subs": [], "badges": badges(pr), "duration": pr.get("duration"),
-                "download": f"/api/rstream/{sid}?dl=1", **common}
+                "download": None if is_hls(r["url"]) else f"/api/rstream/{sid}?dl=1", **common}
     ext = Path(urlparse(r["url"]).path).suffix.lower()
     return {"id": sid, "stream": True, "name": r["name"], "src": f"/api/rstream/{sid}", "direct": True,
             "video": {"codec": None}, "audio": [], "default_audio": 0, "subs": [], "badges": [],
@@ -3557,7 +3694,8 @@ def art_for_id(mid, poster=None):
     mid = str(mid or "")
     if mid.startswith("tt"):
         return {"background": f"https://images.metahub.space/background/medium/{mid}/img", "logo": f"https://images.metahub.space/logo/medium/{mid}/img", "poster": poster}
-    return {"background": None, "logo": None, "poster": poster}
+    # Youtube thumbnails are already wide, so the poster works as the background too
+    return {"background": poster if poster and "ytimg" in poster else None, "logo": None, "poster": poster}
 
 
 async def tb_open(url, headers):
@@ -3587,7 +3725,7 @@ async def pd_open(url, headers):
     try:
         for _ in range(5):
             # Some hosts redirect to plain http, if the https version is on the list that gets used instead
-            if url.startswith("http://") and pd_url_ok("https://" + url[7:]):
+            if url.startswith("http://") and on_pd_list("https://" + url[7:]):
                 url = "https://" + url[7:]
             if not pd_url_ok(url):
                 host = urlparse(url).hostname or "an unknown address"
@@ -3620,7 +3758,10 @@ async def stream_proxy(r, request, dl=0):
     ctype = up.headers.get("content-type", "")
     if up.status_code not in (200, 206) or not (ctype.startswith("video/") or ctype in ("application/octet-stream", "application/ogg")):
         await up.aclose(); await client.aclose()
-        raise HTTPException(502, "archive.org didn't send a video, try another source")
+        host = urlparse(r["url"]).hostname or "The source"
+        # googlevideo links from yt-dlp only work from the machine that made them, a 403 from there usually means that
+        hint = " Youtube links only work from the server that runs the addon." if up.status_code == 403 and "googlevideo" in host else ""
+        raise HTTPException(502, f"{host} didn't send a video (it answered {up.status_code}), try another source.{hint}")
     out = {k: up.headers[k] for k in ("content-length", "content-range", "accept-ranges", "last-modified") if k in up.headers}
     out["Cache-Control"] = "private, no-store"
     if dl:
@@ -3723,7 +3864,7 @@ async def mylist_add(request: Request, p=Depends(current_profile)):
         key, kind, tid, name, poster = list_key_for(t, m), t["kind"], t["id"], m.get("name") or t["guess_name"], m.get("poster")
     else:
         kind, mid = b.get("kind"), str(b.get("id") or "")[:80]
-        if kind not in ("movie", "series") or not mid:
+        if not kind_ok(kind) or not mid:
             raise HTTPException(400, "Unknown title")
         m = await meta_lookup(kind, mid) or {}
         key, tid, name, poster = mid, None, m.get("name") or mid, m.get("poster")
@@ -4036,7 +4177,7 @@ async def search_recent_add(request: Request, p=Depends(current_profile)):
         row = (list_key_for(t, m), t["kind"], t["id"], m.get("name") or t["guess_name"], m.get("poster"))
     else:
         kind, mid = b.get("kind"), str(b.get("id") or "")[:80]
-        if kind not in ("movie", "series") or not mid:
+        if not kind_ok(kind) or not mid:
             raise HTTPException(400, "Unknown title")
         row = (mid, kind, None, str(b.get("name") or mid)[:120], b.get("poster"))
     db().q("INSERT OR REPLACE INTO search_recent VALUES (?,?,?,?,?,?,?)", (p["id"], *row, time.time()))
@@ -4168,6 +4309,24 @@ async def tb_link(kind, item, file):
 def tb_parts(url):
     _, kind, item, file = url.split(":", 3)
     return kind, item, file
+
+
+async def hls_probe(r):
+    """A playlist stream (youtube) cant be handed to a browser as one file, so it goes through the server's player like
+    a torbox copy. Probed by stream id not link, the link changes every time youtubio is asked"""
+    url = r["url"]
+    await check_host(urlparse(url).hostname)
+    rows = db().q("SELECT data FROM probe WHERE path = ?", ("hls:" + r["id"],))
+    if rows:
+        return url, json.loads(rows[0]["data"])
+    try:
+        data = await asyncio.to_thread(run_probe, url)
+    except Exception as e:
+        raise HTTPException(502, f"Couldn't open that stream: {e}")
+    if not data.get("video"):
+        raise HTTPException(502, "That stream didn't have any video in it, the link might have run out")
+    db().q("INSERT OR REPLACE INTO probe VALUES (?,?,?,?)", ("hls:" + r["id"], 0, 0, json.dumps(data)))
+    return url, data
 
 
 async def tb_probe(r):

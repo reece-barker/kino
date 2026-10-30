@@ -782,6 +782,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                 tLeft.setText("-" + clock(Math.max(0, d - shown)));
                 checkIntro(p);
                 checkUpNext(p, d);
+                checkFake(d);
                 int mins = info.optInt("stillMins", 0);
                 if (mins > 0 && card == null && eng.playing() && System.currentTimeMillis() - lastInput > mins * 60000L) askStill();
             }
@@ -1052,6 +1053,37 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     }
 
     // Are you still watching, pauses and asks after the profile's set time with nobody touching the remote
+    // A 30 second clip in place of a whole film or episode, torbox sends one of those (a green screen) when a download
+    // didnt really happen. Asks to try the next source, or just does it if the profile turned that on in Settings
+    private boolean fakeAsked;
+
+    private void checkFake(double d) {
+        if (fakeAsked || loading || !info.optBoolean("checkFake")) return;
+        double len = Math.max(d, info.optDouble("duration", 0));
+        if (len < 27 || len > 33) return;
+        fakeAsked = true;
+        boolean more = sourceCanMoveOn();
+        if (more && info.optBoolean("autoNextSource")) { fakeSource(); return; }
+        eng.pause();
+        LinearLayout c = dialog("This copy is only 30 seconds long", "It's probably a placeholder, the download didn't really finish on TorBox."
+                + (more ? "" : " There aren't any other sources to try right now."));
+        TextView next = pill("Next Source", true), keep = pill(more ? "Keep Watching" : "OK", !more);
+        next.setOnClickListener(v -> { closeDialog(); fakeSource(); });
+        keep.setOnClickListener(v -> { closeDialog(); eng.play(); });
+        if (more) buttons(c, next, keep);
+        else buttons(c, keep);
+    }
+
+    private void fakeSource() {
+        if (leaving) return;
+        leaving = true;
+        try {
+            JSONObject r = new JSONObject().put("fid", fid).put("pos", 0).put("dur", dur()).put("sourceFailed", true).put("fake", true).put("error", "30 second placeholder");
+            setResult(RESULT_OK, new Intent().putExtra("result", r.toString()));
+        } catch (Exception ignored) { }
+        finish();
+    }
+
     private void askStill() {
         eng.pause();
         LinearLayout c = dialog("Are you still watching?", info.optString("title") + (info.optString("sub").isEmpty() ? "" : "\n" + info.optString("sub")));

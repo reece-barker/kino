@@ -63,7 +63,7 @@ class MediaEngine implements Engine, SurfaceHolder.Callback {
         release();
         prepared = false;
         first = false;
-        start = startMs;
+        start = Math.max(0, startMs);
         mp = new MediaPlayer();
         mp.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build());
         try {

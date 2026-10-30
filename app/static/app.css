@@ -1375,3 +1375,23 @@ html.lite img { image-rendering: auto; }
   .hist-body .hist-name { font-size: 16px; }
   .history { padding-bottom: 120px; }
 }
+
+/* ---- v13 tv layout */
+/* The compact sidebar on short screens is narrower too, so the icons sit in the middle with no extra space on the right */
+@media (max-height: 640px) and (min-width: 761px) {
+  :root, body.with-side { --rail: 64px; }
+  .side:not(.open):not(.pinned) .side-item { padding: 0 8px; }
+  .side:not(.open):not(.pinned) .side-me { padding: 0 9px; }
+}
+/* Short screens (tvs): logos and text in the hero are kept smaller so nothing gets cut off at the top */
+@media (max-height: 640px) {
+  .hero-logo { max-height: min(20vh, 110px); max-width: min(340px, 50vw); margin-bottom: 10px; }
+  .hero-name { font-size: clamp(28px, 6vh, 44px); }
+  .hero-desc { -webkit-line-clamp: 2; font-size: 15px; margin-bottom: 16px; }
+  .hero-content { bottom: 74px; }
+  .hero ~ .page.under-hero { margin-top: -44px; }
+  .detail-hero { min-height: min(92vh, 560px); }
+  .detail-hero .hero-content { padding-top: 48px; padding-bottom: 28px; }
+  body.with-side .detail-hero .hero-content { padding-top: 48px; }
+  .detail-hero .hero-desc { -webkit-line-clamp: 3; }
+}

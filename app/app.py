@@ -962,7 +962,7 @@ async def guard(request: Request, call_next):
     # Every change request needs this header, other websites cant add it so they cant trick your browser into doing stuff
     if request.method in ("POST", "PUT", "DELETE") and request.headers.get("x-kino") != "1":
         return JSONResponse({"detail": "Missing request header"}, status_code=403)
-    if path.startswith("/api/") and not path.startswith(("/api/dl/", "/api/gate")) and not access_ok(request):
+    if path.startswith("/api/") and not path.startswith(("/api/dl/", "/api/gate", "/api/x/")) and not access_ok(request):
         log.warning("kino blocked ip=%s path=%s", client_ip(request), path)
         return JSONResponse({"detail": "This network or device isn't on the allow list"}, status_code=403)
     resp = await call_next(request)
@@ -3241,7 +3241,10 @@ async def pd_open(url, headers):
 
 @app.get("/api/rstream/{sid}")
 async def rstream(sid: str, request: Request, dl: int = 0, p=Depends(current_profile)):
-    r = stream_row(sid)
+    return await stream_proxy(stream_row(sid), request, dl)
+
+
+async def stream_proxy(r, request, dl=0):
     hdr = {"Range": request.headers["range"]} if request.headers.get("range") else {}
     if r["url"].startswith("torbox:"):
         client, up = await tb_open(await tb_link(*tb_parts(r["url"])), hdr)
@@ -3465,7 +3468,79 @@ async def storage_review(admin=Depends(require_admin)):
 # a device the admin approved gets through, everything else lands on /gate where it can ask for access
 @app.get("/api/gate")
 async def gate(request: Request):
+    # nginx asks this before every request. Links made for an outside player (vlc) carry there own signature instead of
+    # a cookie, nginx passes the address that was asked for so they can be let through too
+    orig = request.headers.get("x-original-uri", "")
+    if orig.startswith("/api/x/") and ext_link_ok(orig, client_ip(request)):
+        return Response(status_code=204)
     return Response(status_code=204 if access_ok(request) else 403)
+
+
+# ---- problems the apps report (the tv app's page crashing or being killed for memory), shown on the Server page
+CLIENT_LOG = deque(maxlen=60)
+
+
+@app.post("/api/clientlog")
+async def clientlog(request: Request):
+    try:
+        b = await request.json()
+    except Exception:
+        b = {}
+    me = cookie_profile(request)
+    entry = {"at": time.time(), "kind": str(b.get("kind", ""))[:40], "page": str(b.get("page", ""))[:200],
+             "detail": str(b.get("detail", ""))[:400], "device": str(b.get("device", ""))[:80], "profile": me["name"] if me else None,
+             "ua": request.headers.get("user-agent", "")[:160]}
+    CLIENT_LOG.append(entry)
+    log.warning("kino app %s page=%s device=%s %s", entry["kind"], entry["page"], entry["device"], entry["detail"])
+    return {"ok": True}
+
+
+@app.get("/api/admin/clientlog")
+async def clientlog_get(admin=Depends(require_admin)):
+    return {"items": list(reversed(CLIENT_LOG))}
+
+
+# ---- links for outside players (vlc, mx player and so on)
+# They cant send kino's cookies, so they get a link that's signed, runs out after 6 hours and only works from the
+# address that asked for it
+
+def ext_link(fid, ip, name):
+    exp = int(time.time()) + 6 * 3600
+    safe = re.sub(r"[^\w .()-]", "", name or "video").strip()[:80] or "video"
+    return f"/api/x/{fid}/{quote(safe)}?exp={exp}&ip={quote(ip)}&sig={sign('ext', fid, exp, ip)}"
+
+
+def ext_link_ok(url, ip):
+    u = urlparse(url)
+    parts = u.path.split("/")
+    if len(parts) < 4:
+        return False
+    q = dict(x.split("=", 1) for x in u.query.split("&") if "=" in x)
+    from urllib.parse import unquote
+    fid, exp, lip, sig = parts[3], q.get("exp", "0"), unquote(q.get("ip", "")), q.get("sig", "")
+    if not exp.isdigit() or int(exp) < time.time() or lip != ip:
+        return False
+    return hmac.compare_digest(sig, sign("ext", fid, int(exp), lip))
+
+
+@app.post("/api/extlink/{fid}")
+async def extlink(fid: str, request: Request, p=Depends(current_profile)):
+    if fid.startswith("s"):
+        r = stream_row(fid)
+        name = r["name"] + (Path(urlparse(r["url"]).path).suffix if not r["url"].startswith("torbox:") else ".mkv")
+    else:
+        f = file_or_404(fid)
+        name = f["name"]
+    return {"url": ext_link(fid, client_ip(request), name)}
+
+
+@app.get("/api/x/{fid}/{name}")
+async def ext_play(fid: str, name: str, request: Request):
+    if not ext_link_ok(str(request.url.path) + "?" + request.url.query, client_ip(request)):
+        raise HTTPException(403, "This link ran out or was made for another device, open it from Kino again")
+    if fid.startswith("s"):
+        return await stream_proxy(stream_row(fid), request)
+    return range_response(file_or_404(fid)["path"], request)
 
 
 GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">

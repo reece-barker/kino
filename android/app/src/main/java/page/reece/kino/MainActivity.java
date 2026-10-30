@@ -50,6 +50,24 @@ public class MainActivity extends Activity {
     private static final int VOICE_REQUEST = 7;
 
     private static final int PLAYER_REQUEST = 43;
+    private volatile long playerOpened;
+    private String parkedUrl;
+    private volatile String pendingResult, lastCrash;
+    private boolean clearHistoryNext;
+
+    private boolean lowMemory() {
+        android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+        am.getMemoryInfo(mi);
+        return am.isLowRamDevice() || mi.totalMem < 2_200_000_000L;
+    }
+
+    // Android says memory is getting tight, the page drops pictures it isnt showing right away
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (web != null && level >= TRIM_MEMORY_RUNNING_LOW) js("window.kinoTrim && window.kinoTrim(" + level + ")");
+    }
     private static final String HOME = BuildConfig.KINO_URL;
 
     private FrameLayout root;
@@ -154,6 +172,8 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 CookieManager.getInstance().flush();
+                // The blank page from while the player was open shouldnt be something back can go to
+                if (clearHistoryNext && url != null && !url.startsWith("about:")) { clearHistoryNext = false; view.clearHistory(); }
             }
 
             // The page crashed, or android killed it to free memory (old fire tv sticks do this on big pages). Without
@@ -162,6 +182,15 @@ public class MainActivity extends Activity {
             @android.annotation.TargetApi(26)
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 String url = view.getUrl();
+                // Kept so the page can tell the server what happened once its back, to find which pages are too heavy
+                try {
+                    android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+                    android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+                    am.getMemoryInfo(mi);
+                    lastCrash = new JSONObject().put("url", url).put("crashed", detail.didCrash())
+                            .put("free_mb", mi.availMem / 1048576).put("total_mb", mi.totalMem / 1048576)
+                            .put("device", Build.MANUFACTURER + " " + Build.MODEL).put("android", Build.VERSION.RELEASE).toString();
+                } catch (Exception ignored) { }
                 recreateWeb(url != null && isKino(Uri.parse(url)) ? url : HOME);
                 Toast.makeText(MainActivity.this, detail.didCrash() ? "Kino had a problem and reloaded" : "Kino reloaded to free up memory", Toast.LENGTH_SHORT).show();
                 return true;
@@ -391,6 +420,14 @@ public class MainActivity extends Activity {
         if (request == PLAYER_REQUEST) {
             // Tells the page where the player got to, so it can refresh progress or start the next episode
             String r = data != null ? data.getStringExtra("result") : null;
+            if (parkedUrl != null) {
+                // The page was let go while playing, it opens again and picks the result up itself
+                pendingResult = r;
+                clearHistoryNext = true;
+                web.loadUrl(parkedUrl);
+                parkedUrl = null;
+                return;
+            }
             js("window.kinoNativeDone && window.kinoNativeDone(" + (r != null ? r : "null") + ")");
             return;
         }
@@ -459,9 +496,35 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void playNative(String json) {
             runOnUiThread(() -> {
+                // Pressing play twice quickly would open two players
+                if (System.currentTimeMillis() - playerOpened < 2500) return;
+                playerOpened = System.currentTimeMillis();
                 Intent i = new Intent(MainActivity.this, PlayerActivity.class).putExtra(PlayerActivity.EXTRA, json);
                 startActivityForResult(i, PLAYER_REQUEST);
+                // On low memory tvs the page behind the player is let go while the video plays, it's the biggest
+                // thing in memory and android kills it (or the player) when both are there. It comes back after
+                if (lowMemory()) web.postDelayed(() -> {
+                    if (!isFinishing() && parkedUrl == null) {
+                        parkedUrl = web.getUrl();
+                        web.loadUrl("about:blank");
+                    }
+                }, 1500);
             });
+        }
+
+        @JavascriptInterface
+        public String lastCrash() {
+            String c = lastCrash;
+            lastCrash = null;
+            return c;
+        }
+
+        // The page asks for the player's result after it was reloaded, see playNative
+        @JavascriptInterface
+        public String takeResult() {
+            String r = pendingResult;
+            pendingResult = null;
+            return r;
         }
 
         @JavascriptInterface

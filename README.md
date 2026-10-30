@@ -22,7 +22,9 @@ Netflix style family library for the storage box, with the torbox sync, server s
 
 `android/` is a small native app (about 1 MB) for phones, tablets, Android TV and Fire TV. It's the same Kino in a full screen webview, plus the things a browser can't do:
 
-- Videos play in ExoPlayer (the player Stremio uses on Android TV), straight to the device's hardware decoder. It falls back to the server's converted stream for sound or Dolby Vision the device can't play, and the web player is still there under Settings > App Player
+- Videos play in Kino's own player screen (same look as the web player: logo, timeline, round buttons, subtitle, audio and speed menus, skip intro, up next, loading screen). Underneath it's ExoPlayer, the player Stremio uses on Android TV, straight to the device's hardware decoder. It falls back to the server's converted stream for sound or Dolby Vision the device can't play
+- The Player menu in the player switches to Android's own player (a backup that decodes differently), or opens the video in VLC or any other video app with a signed link that only works from that device for 6 hours. Kino remembers the player you picked on each device, and saves where VLC got to when you come back
+- On low memory TVs the page behind the player is let go while a video plays and comes back after, and the app reports pages that crashed or were closed for memory to Server > App Problems
 - It updates itself: when it opens it checks `/app/version`, and if there's a newer one it offers to download it and opens Android's installer. The first time, Android asks to allow Kino to install apps
 
 - Full screen video, picture in picture when you leave the app mid film (phones and tablets), and the screen stays on while playing

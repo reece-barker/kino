@@ -793,8 +793,16 @@
     if (n < 2) return;
     let i = 0, paused = false;
     const hero = $("#hero");
+    // On tvs only the slide showing (and the one fading out) keep there big picture, five full width pictures
+    // stacked up for the crossfade was a lot of memory for a fire tv
+    const pics = (j) => $$(".hero-slide", hero)[j] ? $$(".hero-bg img, .hero-bg source", $$(".hero-slide", hero)[j]) : [];
+    const park = (j) => pics(j).forEach((el) => { const a = el.tagName === "SOURCE" ? "srcset" : "src"; if (el.getAttribute(a) && !el.dataset.hsrc) { el.dataset.hsrc = el.getAttribute(a); el.setAttribute(a, el.tagName === "SOURCE" ? "" : BLANK); } });
+    const wake = (j) => pics(j).forEach((el) => { const a = el.tagName === "SOURCE" ? "srcset" : "src"; if (el.dataset.hsrc) { el.setAttribute(a, el.dataset.hsrc); delete el.dataset.hsrc; } });
+    if (LITE) for (let j = 1; j < n; j++) park(j);
     const show = (k) => {
+      const prev = i;
       i = (k + n) % n;
+      if (LITE) { wake(i); setTimeout(() => { for (let j = 0; j < n; j++) if (j !== i) park(j); }, 1600); }
       $$(".hero-slide", hero).forEach((s, j) => {
         s.classList.toggle("on", j === i);
         s.setAttribute("aria-hidden", j !== i);
@@ -1919,11 +1927,22 @@
 
   async function pageServer() {
     app.innerHTML = topbar("server") + `<main class="page"><h1 class="large-title">Server</h1><div id="srvBody"><div class="card skel" style="height:220px"></div></div>
-      <div id="backups"></div><div id="storageReview"></div></main>`;
+      <div id="backups"></div><div id="appLog"></div><div id="storageReview"></div></main>`;
     wireTopbar();
     startPoll(drawServer, 3000);
     drawBackups();
+    drawAppLog();
     drawStorageReview();
+  }
+
+  // What the tv apps reported, mainly the page crashing or being closed by android for memory
+  async function drawAppLog() {
+    const r = await api("/api/admin/clientlog").catch(() => null);
+    const box = $("#appLog");
+    if (!r || !box || !r.items.length) return;
+    box.innerHTML = `<section class="card backups"><h2 class="set-title">App Problems</h2>
+      <p class="secondary set-hint">When the Kino app on a TV or phone has to reload a page it reports it here, so it's clear which pages are too heavy for which devices. Cleared when Kino restarts.</p>
+      <div class="list">${r.items.slice(0, 15).map((x) => `<div class="li"><span class="grow"><b>${esc(x.kind)}</b> on ${esc(x.page || "?")}<br><span class="secondary">${esc([x.device, x.profile, x.detail].filter(Boolean).join(" · "))}</span></span><span class="r">${esc(when(x.at))}</span></div>`).join("")}</div></section>`;
   }
 
   // Nightly copies of the database on the Storage Box
@@ -2153,9 +2172,14 @@
   const useNative = () => { if (!nativeOk()) return false; try { return localStorage.getItem(NATIVE_KEY) !== "0"; } catch (_) { return true; } };
   let NATIVE = null;
 
+  let NATIVE_BUSY = 0;
   async function nativePlay(fid, opts) {
+    // A second press while the first is still getting ready is ignored, it used to open two players
+    if (Date.now() - NATIVE_BUSY < 6000) return;
+    NATIVE_BUSY = Date.now();
+    toast("Starting…", 2500);
     let info;
-    try { info = await api(`/api/file/${fid}`); } catch (e) { toast(e.message, 5000); return; }
+    try { info = await api(`/api/file/${fid}`); } catch (e) { NATIVE_BUSY = 0; toast(e.message, 5000); return; }
     const prefs = info.prefs || {};
     const t = opts.title;
     const f = t && t.files && t.files.find((x) => x.id === fid);
@@ -2171,7 +2195,13 @@
       : t && t.kind === "series" && f ? `${epLabel(f.season, f.episode)}${f.ep_name ? "  " + nice(f.ep_name) : ""}` : "";
     NATIVE = { fid, info, opts };
     pl.title = t || null;
+    const n = info.next;
+    const art = { background: (t && t.background) || (info.art && info.art.background) || null, logo: (t && t.logo) || (info.art && info.art.logo) || null };
+    setTimeout(() => (NATIVE_BUSY = 0), 3000);
     window.KinoAndroid.playNative(JSON.stringify({
+      art, video: info.video || {}, credits: info.credits || 0, autoplay: prefs.autoplay !== false, loadStats: prefs.load_stats !== false,
+      subSize: prefs.sub_size || "m", titleId: info.title_id || (t && t.id) || null,
+      next: n ? { id: n.id || null, video_id: n.video_id || null, name: n.name ? nice(n.name) : null, season: n.season ?? null, episode: n.episode ?? null, thumbnail: n.thumbnail || null } : null,
       base: location.origin, ua: navigator.userAgent, fid, url, title: (t && t.name) || info.show || info.name, sub,
       start: opts.from != null ? opts.from : info.resume || 0, duration: info.duration || 0,
       audioN, audioChosen: audioN !== info.default_audio, audioLang: langCode(prefs.audio_lang), subLang: langCode(prefs.sub_lang), subs,
@@ -2182,20 +2212,48 @@
   // English to en and so on, exoplayer matches tracks by these codes
   const langCode = (l) => { if (!l) return ""; const c = LANG_CODES[l] || LANG_CODES[String(l).split(" ")[0]]; return c ? c[0] : String(l).length <= 3 ? String(l).toLowerCase() : ""; };
   window.kinoNativeDone = (r) => {
-    const cur = NATIVE; NATIVE = null;
-    if (!r || !cur) return;
-    if (r.error) {
-      toast(`${r.error}. Trying the web player instead.`, 6000);
-      return playFile(cur.fid, { ...cur.opts, from: r.pos || cur.opts.from, web: true });
-    }
-    const n = cur.info.next, auto = !cur.info.prefs || cur.info.prefs.autoplay !== false;
-    if (r.ended && n && auto) return playNext(n);
+    const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
+    if (!r) return;
+    // The player only hands back an error when someone picked Web Player in its error box
+    if (r.error) return playFile(r.fid, { ...(cur ? cur.opts : {}), from: r.pos, web: true });
+    const n = cur ? cur.info.next : r.next, auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : r.autoplay !== false;
+    if (r.ended && n && auto) return nextFrom(n, cur ? cur.opts.title : null, r.titleId);
     // Redraws the page so resume bars and watched ticks are right
     if (ME.profile) setTimeout(route, 300);
   };
+  // The next episode, also when the page was reloaded while the player was open and only the ids are left
+  async function nextFrom(n, title, titleId) {
+    if (n.video_id) return playEpisode(n.video_id, n);
+    const t = title || (titleId ? await api(`/api/title/${titleId}`).catch(() => null) : null);
+    playFile(n.id, { title: t, from: 0 });
+  }
+  if (ANDROID) {
+    // After the page comes back (a low memory tv lets it go while the player is open) it picks up the player's result,
+    // and tells the server if the page crashed last time so heavy pages can be found
+    setTimeout(() => {
+      try {
+        const r = window.KinoAndroid.takeResult && window.KinoAndroid.takeResult();
+        if (r) window.kinoNativeDone(JSON.parse(r));
+      } catch (_) {}
+      try {
+        const c = window.KinoAndroid.lastCrash && window.KinoAndroid.lastCrash();
+        if (c) {
+          const j = JSON.parse(c);
+          fetch("/api/clientlog", { method: "POST", headers: { "X-Kino": "1", "Content-Type": "application/json" }, credentials: "same-origin",
+            body: JSON.stringify({ kind: j.crashed ? "page crashed" : "page killed for memory", page: (j.url || "").replace(location.origin, ""), device: j.device,
+              detail: `${j.free_mb} MB free of ${j.total_mb} MB, Android ${j.android}` }) }).catch(() => {});
+        }
+      } catch (_) {}
+    }, 1200);
+  }
+  // Android saying memory is low: every picture not on screen right now is let go
+  window.kinoTrim = () => { RECYCLE_TIGHT = true; recycle(); setTimeout(() => (RECYCLE_TIGHT = false), 60000); };
 
+  let PLAY_N = 0;
   async function playFile(fid, opts = {}) {
     if (!opts.web && useNative()) return nativePlay(fid, opts);
+    // Each press gets a number, anything still loading from an earlier press stops when it sees a newer one
+    const my = ++PLAY_N;
     closePlayer(true);
     clearInterval(HERO_T);
     pl.el.hidden = false;
@@ -2209,7 +2267,8 @@
     $("#skipIntro").hidden = true;
     $("#subsLayer").innerHTML = "";
     let info;
-    try { info = await api(`/api/file/${fid}`); } catch (e) { loadHide(); showMsg("Can't play this file", e.message); return; }
+    try { info = await api(`/api/file/${fid}`); } catch (e) { if (my !== PLAY_N) return; loadHide(); showMsg("Can't play this file", e.message); return; }
+    if (my !== PLAY_N || pl.el.hidden) return;
     loadArt(info.art, (opts.title && opts.title.name) || info.show || info.name);
     if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
     pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false;
@@ -2230,8 +2289,21 @@
       pl.v.src = info.src;
       const from = opts.from != null ? opts.from : info.resume || 0;
       pl.v.addEventListener("loadedmetadata", () => { if (from && from < pl.v.duration - 10) pl.v.currentTime = from; }, { once: true });
-      pl.v.addEventListener("error", async () => {
-        if (pl.info !== info) return;
+      let retried = false;
+      pl.v.addEventListener("error", async function onErr() {
+        if (pl.info !== info || my !== PLAY_N) return;
+        const code = pl.v.error && pl.v.error.code;
+        if (code === 1) { pl.v.addEventListener("error", onErr, { once: true }); return; }   // aborted on purpose, not a real problem
+        // Online sources often stall on the first try, one more go before saying it won't play
+        if (!retried && code === 2) {
+          retried = true;
+          const at = pl.v.currentTime || (opts.from || 0);
+          pl.v.addEventListener("error", onErr, { once: true });
+          pl.v.src = info.src;
+          pl.v.addEventListener("loadedmetadata", () => { if (at) pl.v.currentTime = at; }, { once: true });
+          pl.v.play().catch(() => {});
+          return;
+        }
         // Asks the server what went wrong, so a blocked redirect says where it was going instead of a vague message
         let why = "The source may be slow, or this browser can't play its format. Try another source or save it to the Library.";
         try { const r = await fetch(info.src, { headers: { Range: "bytes=0-0" }, credentials: "same-origin" }); if (!r.ok) { const j = await r.json().catch(() => null); if (j && j.detail) why = j.detail; } } catch (_) {}
@@ -2306,6 +2378,7 @@
   }
 
   async function startHls(t) {
+    const my = PLAY_N;
     if (!LOAD.on) spinner(true);
     $("#pMsg").hidden = true;
     if (pl.hls) { pl.hls.destroy(); pl.hls = null; }
@@ -2317,11 +2390,12 @@
     try {
       r = await api(`/api/play/${pl.info.id}`, { t, audio: pl.audio, hevc: codecOk("hevc") });
     } catch (e) {
+      if (my !== PLAY_N || !pl.info) return;
       loadHide();
       showMsg("Playback couldn't start", e.message, `<a class="btn secondary small" href="${esc(pl.info.download)}&save=1">${ic("download")} Download instead</a>`);
       return;
     }
-    if (pl.el.hidden) { api(`/api/play/${r.sid}/stop`, {}).catch(() => {}); return; }
+    if (pl.el.hidden || my !== PLAY_N) { api(`/api/play/${r.sid}/stop`, {}).catch(() => {}); return; }
     pl.mode = "hls"; pl.sid = r.sid; pl.offset = r.offset;
     loadStep("Buffering");
     // Safari plays the stream itself which keeps AirPlay working, everyone else uses hls.js
@@ -2771,7 +2845,11 @@
     }
     if (best) {
       best.focus({ preventScroll: true });
-      best.scrollIntoView({ block: d[1] ? "center" : "nearest", inline: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
+      // Anything in the big picture at the top of a page scrolls the page right back up, so the logo and art stay in
+      // view instead of the button being put in the middle of the screen
+      const top = !playerOpen && !sheetClose && best.closest(".detail-hero, .hero");
+      if (top && d[1]) window.scrollTo({ top: 0, behavior: reduceMotion() ? "auto" : "smooth" });
+      else best.scrollIntoView({ block: d[1] ? "center" : "nearest", inline: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
     }
   }
   if (TV) {
@@ -2853,9 +2931,10 @@
   // back when you get close again, so only what's around the screen is ever held. Computers and phones skip this
   const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
   let RECYCLE_T = null;
+  let RECYCLE_TIGHT = false;
   function recycle() {
-    if (!LITE) return;
-    const vw = innerWidth, vh = innerHeight;
+    if (!LITE && !RECYCLE_TIGHT) return;
+    const vw = innerWidth * (RECYCLE_TIGHT ? 0.2 : 1), vh = innerHeight * (RECYCLE_TIGHT ? 0.2 : 1);
     for (const im of app.getElementsByTagName("img")) {
       const r = im.getBoundingClientRect();
       const far = r.bottom < -vh * 1.2 || r.top > vh * 2.2 || r.right < -vw * 0.8 || r.left > vw * 1.8;

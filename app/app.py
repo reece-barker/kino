@@ -2100,14 +2100,17 @@ def addon_shelves(summ, kids=False):
             per_addon.setdefault(a["id"], []).append({"id": f"addon-{a['id']}-{c['type']}-{c['id']}", "title": (title := shelf_title(c, a, count[a["id"]] > 1)),
                                                        "style": "wide" if video_type(c.get("type")) else "poster", "items": items,
                                                        "source": None if (a["m"].get("name") or "") in title else a["m"].get("name")})
-    # Takes turns between addons so one with loads of catalogs doesnt push the others off home
-    out, lists = [], list(per_addon.values())
+    # Takes turns between addons so one with loads of catalogs doesnt push the others off home. Youtube style rows
+    # (your own playlists, watch later) dont count towards the 8, they used to lose there turns to cinemeta and kitsu
+    vids = [sh for l in per_addon.values() for sh in l if sh["style"] == "wide"]
+    out, lists = [], [[sh for sh in l if sh["style"] != "wide"] for l in per_addon.values()]
+    lists = [l for l in lists if l]
     while lists and len(out) < 8:
         for l in lists:
             if l and len(out) < 8:
                 out.append(l.pop(0))
         lists = [l for l in lists if l]
-    return out
+    return out + vids[:8]
 
 
 def name_score(q, name):

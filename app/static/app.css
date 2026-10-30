@@ -1658,3 +1658,15 @@ body.tv .who-tile:hover:not(:focus-visible) .fold-ic { box-shadow: inset 0 0 0 1
 .fold-rename { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
 .fold-rename .field { margin: 0; }
 @media (max-height: 600px) { .sheet .fold-grid .av.lg { width: 68px; height: 68px; } .fold-title { margin-bottom: 8px; } }
+
+/* folder tile: only the folder itself lights up, not each little icon in it */
+.who-tile.folder:hover .fold-cell .av, .who-tile.folder:focus-visible .fold-cell .av { box-shadow: none; }
+/* in a folder (or any sheet) on tv the ring goes round the icon only, not the icon and its name */
+body.tv .sheet .who-tile:focus, body.tv .sheet .who-tile:focus-visible { outline: none; box-shadow: none; transform: none; }
+body.tv .sheet .who-tile:focus .who-av { transform: scale(1.06); }
+body.tv .sheet .who-tile:focus .av { box-shadow: 0 0 0 4px var(--label); border-radius: 22%; }
+body.tv .sheet .who-tile:focus .av-duo .av-half:first-child { box-shadow: none; }
+body.tv .sheet .who-tile:focus .av-duo .av-half:last-child { box-shadow: 0 0 0 3px var(--bg-2); }
+/* sources on tv: the focused one doesnt grow or get an outside ring anymore, the list clips those. It gets an inside ring like the other lists */
+body.tv .sheet .src:focus, body.tv .sheet .src:focus-visible { outline: none; transform: none; z-index: auto; box-shadow: inset 0 0 0 3px var(--label); background: var(--bg-4); }
+body.tv .src:hover:not(:focus-visible) { transform: none; box-shadow: none; }

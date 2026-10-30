@@ -1066,3 +1066,177 @@ body.tv .player .icon-btn:focus-visible { background: rgba(255, 255, 255, 0.92);
 body.tv .scrub:focus-visible .scrub-track { height: 8px; }
 /* picture in picture on android: just the video */
 body.pip .player-ui, body.pip .skip-intro, body.pip .up-next, body.pip .subs-layer { display: none !important; }
+
+/* ================================================================ v8 fixes */
+/* the fade at the bottom of heroes runs a couple of pixels past the edge, rounding left a thin line of picture showing */
+.hero::after, .hero-slide::after, .detail-hero::after { inset: 0 0 -2px 0; }
+.hero-bg picture { display: contents; }
+.hero-bg img.tall { object-position: center top; }
+@media (max-width: 760px) and (orientation: portrait) {
+  .hero-bg.has-tall img { object-position: center top; }
+  .detail-hero { min-height: 92vh; }
+}
+
+/* collapsed rail: only the icon lights up, the full width chip is for when its open */
+.side:not(.open):not(.pinned) .side-pill { opacity: 0 !important; }
+.side:not(.open):not(.pinned) .side-item:hover { background: none; }
+.side:not(.open):not(.pinned) .side-item:hover .side-ic { background: var(--fill-2); }
+.side:not(.open):not(.pinned) .side-item[aria-current="page"] .side-ic { background: var(--side-on-bg); color: var(--side-on-fg); box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25); }
+.side:not(.open):not(.pinned) .side-item[aria-current="page"] { color: var(--label); }
+.side-ic { transition: background 0.3s ease, color 0.3s ease, box-shadow 0.3s ease; }
+
+/* continue watching: take something out */
+.tile-x { position: absolute; z-index: 4; top: 8px; right: 8px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+  background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 15px; opacity: 0; transition: opacity 0.2s ease, background 0.2s; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.tile:hover .tile-x, .tile:focus-within .tile-x, .tile-x:focus-visible { opacity: 1; }
+.tile-x:hover { background: rgba(0, 0, 0, 0.8); }
+@media (hover: none) { .tile-x { opacity: 1; } }
+
+/* back button on title pages for phones */
+.page-back { display: none; position: fixed; z-index: 45; top: calc(12px + env(safe-area-inset-top)); left: calc(12px + env(safe-area-inset-left));
+  width: 40px; height: 40px; border-radius: 50%; place-items: center; font-size: 22px; color: #fff; background: rgba(0, 0, 0, 0.45); }
+@media (max-width: 760px) { .page-back { display: grid; } }
+
+/* the player keeps clear of notches, rounded corners and the home bar */
+.player-top { padding-top: max(22px, env(safe-area-inset-top)); padding-left: max(var(--gutter), env(safe-area-inset-left)); padding-right: max(var(--gutter), env(safe-area-inset-right)); }
+.player-bottom { padding-bottom: max(18px, env(safe-area-inset-bottom)); padding-left: max(var(--gutter), env(safe-area-inset-left)); padding-right: max(var(--gutter), env(safe-area-inset-right)); }
+.skip-intro, .up-next { margin-bottom: env(safe-area-inset-bottom); }
+.sheet-wrap { padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+
+/* profile picker: lock badge and the code pad */
+.who-lock { position: absolute; right: -6px; bottom: -6px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--bg-3); color: var(--label); font-size: 14px; box-shadow: 0 0 0 3px var(--page-bg); }
+.pin { text-align: center; }
+.pin-ic { width: 48px; height: 48px; margin: 0 auto 10px; border-radius: 50%; display: grid; place-items: center; background: var(--fill); font-size: 22px; }
+.pin h2 { margin: 0 0 6px; }
+.pin-dots { display: flex; justify-content: center; gap: 16px; margin: 22px 0 6px; }
+.pin-dots i { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--label-2); transition: background 0.15s, transform 0.2s var(--bounce); }
+.pin-dots i.on { background: var(--label); box-shadow: none; transform: scale(1.1); }
+.pin-dots.shake { animation: shake 0.4s; }
+@keyframes shake { 20%, 60% { transform: translateX(-10px); } 40%, 80% { transform: translateX(10px); } }
+.pin-err { min-height: 20px; font-size: 14px; color: var(--red); margin-bottom: 8px; }
+.pin-keys { display: grid; grid-template-columns: repeat(3, 72px); gap: 14px 22px; justify-content: center; margin-bottom: 18px; }
+.pin-key { width: 72px; height: 72px; border-radius: 50%; background: var(--fill-2); font-size: 28px; font-weight: 500; display: grid; place-items: center; transition: background 0.15s, transform 0.2s var(--spring); }
+.pin-key:active { background: var(--label-3); transform: scale(0.94); }
+.pin-key.del { background: none; font-size: 26px; }
+
+/* ---- tv: things that grow when focused have room to, and nothing inside the sidebar grows past its edge */
+body.tv .row { padding-top: 28px; padding-bottom: 36px; margin-top: -28px; margin-bottom: -36px; }
+body.tv .side .side-me:focus-visible, body.tv .side .mi:focus-visible, body.tv .side .theme-pick button:focus-visible { transform: none; box-shadow: inset 0 0 0 2px var(--label); background: var(--hover); }
+body.tv .side-head:focus-visible { color: var(--label); background: var(--hover); box-shadow: inset 0 0 0 2px var(--label); }
+body.tv .side:not(.open) .side-item:focus-visible .side-ic { box-shadow: 0 0 0 3px #fff; }
+body.tv .tile-x { opacity: 1; }
+
+/* ---- lite mode for tvs and low memory devices: same look, much less work for the graphics chip */
+html.lite *, html.lite *::before, html.lite *::after { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+html.lite .side, html.lite .tabbar { background: var(--bg-2); }
+html.lite .glass, html.lite .menu, html.lite .hero-dots { background: rgba(28, 28, 30, 0.94); }
+html.lite .sheet-wrap { background: rgba(0, 0, 0, 0.78); }
+html.lite .hero-slide.on .hero-bg img { animation: none; }
+html.lite .sk::after { animation: none; display: none; }
+html.lite .side-shine { display: none; }
+html.lite .tile .art { box-shadow: none; transition: transform 0.25s ease; }
+html.lite body.blur-watched .tile.is-watched .art img { filter: none; opacity: 0.35; transform: none; }
+html.lite .shelf { content-visibility: auto; contain-intrinsic-size: auto 340px; }
+html.lite #app.enter .shelf, html.lite #app.enter .grid > *, html.lite #app.enter .card { animation: none; }
+html.lite .hero-slide.on .hero-content > * { animation-duration: 0.4s; }
+
+/* ---- v9 fixes */
+/* Sidebar sits in the middle of the screen and stays centred while it grows or folds away */
+@media (min-width: 761px) {
+  .side { top: 50%; transform: translateY(-50%); transition: width 0.5s var(--spring), box-shadow 0.4s ease, background-color 0.35s ease, max-height 0.5s var(--spring); }
+}
+
+/* Dropdowns are solid with a real shadow so they never melt into whats behind them */
+.menu.drop { background: var(--menu-solid, var(--bg-2)); box-shadow: 0 0 0 0.5px var(--glass-edge, rgba(255, 255, 255, 0.12)), 0 24px 60px rgba(0, 0, 0, 0.55), 0 6px 18px rgba(0, 0, 0, 0.35); }
+:root { --menu-solid: #2c2c2e; }
+:root[data-theme="light"] { --menu-solid: #ffffff; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --menu-solid: #ffffff; } }
+.detail-hero.menu-open { overflow: visible; z-index: 6; }
+.detail-hero.menu-open .menu { z-index: 7; }
+
+/* Arrows on side scrolling rows for mouse users */
+.row-wrap { position: relative; display: flow-root; }
+.row-arrow {
+  position: absolute; top: 40%; z-index: 4; width: 46px; height: 46px; margin-top: -23px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--menu-solid); color: var(--label); font-size: 26px; box-shadow: 0 0 0 0.5px var(--glass-edge, rgba(255, 255, 255, 0.12)), 0 10px 26px rgba(0, 0, 0, 0.45);
+  opacity: 0; transform: scale(0.85); transition: opacity 0.2s ease, transform 0.3s var(--spring); pointer-events: none;
+}
+.row-arrow.l { left: calc(-1 * var(--gutter) + 10px); }
+.row-arrow.r { right: calc(-1 * var(--gutter) + 10px); }
+.row-wrap:hover .row-arrow:not(.off) { opacity: 1; transform: none; pointer-events: auto; }
+.row-arrow:hover { background: var(--label); color: var(--page-bg); }
+.row-arrow:active { transform: scale(0.92); }
+.row-arrow .i { width: 1em; height: 1em; }
+
+/* View All turns a search row into a grid */
+.row.grid { grid-auto-flow: row; overflow: visible; scroll-snap-type: none; margin: 0; padding: 0; gap: 28px 18px; }
+.row.posters.grid { grid-template-columns: repeat(auto-fill, minmax(clamp(132px, 13.5vw, 190px), 1fr)); grid-auto-columns: auto; }
+.row.wide.grid { grid-template-columns: repeat(auto-fill, minmax(clamp(250px, 24vw, 360px), 1fr)); grid-auto-columns: auto; }
+.srow { margin-top: 30px; }
+.srow .section-title .from { font-size: 15px; font-weight: 500; color: var(--label-3); }
+.see-all { font-size: 15px; font-weight: 600; color: var(--blue) !important; padding: 4px 2px; }
+.s-more { display: flex; align-items: center; gap: 10px; margin-top: 30px; color: var(--label-2); font-size: 15px; }
+.spin.small { width: 18px; height: 18px; border-width: 2px; border-color: var(--fill-2); border-top-color: var(--label-2); }
+
+/* Cast and crew */
+.tile.person .art { aspect-ratio: 1; border-radius: 50%; display: grid; place-items: center; background: var(--bg-3); }
+.tile.person .art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.35; filter: blur(1px) saturate(0.7); }
+.tile.person .person-ic { position: relative; font-size: 44%; color: var(--label); display: grid; place-items: center; width: 100%; height: 100%; }
+.tile.person .person-ic .i { width: 42%; height: 42%; }
+.tile.person .cap, .tile.person .sub { text-align: center; }
+.person-head { display: flex; align-items: center; gap: 18px; margin-bottom: 28px; }
+.person-big { width: 76px; height: 76px; border-radius: 50%; background: var(--bg-3); display: grid; place-items: center; font-size: 36px; color: var(--label-2); flex: none; }
+.plain-link { color: inherit; text-decoration: none; border-bottom: 1px solid var(--sep); }
+.plain-link:hover { border-color: currentColor; }
+.cast a { cursor: pointer; }
+
+/* Who in the family liked it */
+.tile-love { position: absolute; left: 8px; top: 8px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 15px; background: rgba(0, 0, 0, 0.55); color: #fff; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.tile-love.loved { background: #ff375f; }
+
+/* Profile picker fits the window instead of always being a bit taller than it */
+.who { min-height: 100vh; min-height: 100dvh; box-sizing: border-box; padding: clamp(56px, 8vh, 80px) 24px clamp(32px, 6vh, 64px); }
+.who-title { margin-bottom: clamp(24px, 4.5vh, 40px); }
+.who-actions { margin-top: clamp(24px, 5vh, 48px); }
+
+/* Loading screen in the player */
+.player-load { position: absolute; inset: 0; z-index: 3; display: grid; place-items: center; background: #000; opacity: 0; transition: opacity 0.4s ease; pointer-events: none; }
+.player-load.on { opacity: 1; }
+.pl-bg { position: absolute; inset: 0; overflow: hidden; }
+.pl-bg img { width: 100%; height: 100%; object-fit: cover; opacity: 0.32; filter: blur(14px) saturate(1.1); transform: scale(1.08); }
+.pl-bg::after { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.75) 75%); }
+.pl-mid { position: relative; display: flex; flex-direction: column; align-items: center; gap: 22px; width: min(560px, 86vw); text-align: center; }
+.pl-logo { display: grid; place-items: center; min-height: 80px; animation: plPulse 1.8s ease-in-out infinite; }
+.pl-logo img { max-width: min(440px, 70vw); max-height: 150px; object-fit: contain; filter: drop-shadow(0 6px 24px rgba(0, 0, 0, 0.6)); }
+.pl-name { font-size: clamp(30px, 4.5vw, 54px); font-weight: 800; letter-spacing: -0.02em; color: #fff; line-height: 1.05; }
+@keyframes plPulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+.pl-bar { width: min(240px, 50vw); height: 3px; border-radius: 3px; background: rgba(255, 255, 255, 0.16); overflow: hidden; }
+.pl-bar i { display: block; width: 35%; height: 100%; border-radius: inherit; background: #fff; animation: plSlide 1.3s ease-in-out infinite; }
+@keyframes plSlide { 0% { transform: translateX(-110%); } 100% { transform: translateX(300%); } }
+.pl-stats { display: flex; flex-direction: column; gap: 6px; min-height: 92px; font-size: 14px; color: rgba(255, 255, 255, 0.55); font-variant-numeric: tabular-nums; }
+.pl-stats > div { display: flex; gap: 10px; justify-content: center; align-items: baseline; animation: plLine 0.35s var(--ease) both; }
+.pl-stats > div.now { color: #fff; }
+.pl-stats b { font-weight: 500; color: rgba(255, 255, 255, 0.45); min-width: 44px; text-align: left; }
+.pl-note { color: rgba(255, 255, 255, 0.45); }
+.pl-note::before { content: "·"; margin-right: 10px; }
+@keyframes plLine { from { opacity: 0; transform: translateY(6px); } }
+.player-load.no-stats .pl-stats { display: none; }
+@media (prefers-reduced-motion: reduce) { .pl-logo, .pl-bar i { animation: none; } .pl-logo { opacity: 1; } }
+
+/* Are you still watching */
+.still { position: absolute; z-index: 8; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100vw - 32px)); padding: 26px 26px 22px; border-radius: 26px; text-align: center; background: rgba(30, 30, 32, 0.92); color: #fff; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6); }
+.still h3 { margin: 0 0 6px; font-size: 22px; }
+.still p { margin: 0 0 20px; color: rgba(255, 255, 255, 0.6); }
+.still .actions { justify-content: center; }
+html.lite .still { background: #1c1c1e; }
+html.lite .pl-bg img { filter: none; }
+
+/* Genre chips on Movies and TV Shows */
+.chips { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: -4px calc(-1 * var(--gutter)) 26px; padding: 4px var(--gutter); }
+.chips::-webkit-scrollbar { display: none; }
+.chip { flex: none; height: 36px; padding: 0 15px; border-radius: 999px; font-size: 15px; font-weight: 500; background: var(--fill-2); color: var(--label); white-space: nowrap; transition: background 0.2s ease, color 0.2s ease, transform 0.25s var(--spring); }
+.chip span { color: var(--label-3); font-size: 13px; margin-left: 2px; }
+.chip:hover { background: var(--hover); }
+.chip.on { background: var(--label); color: var(--page-bg); }
+.chip.on span { color: inherit; opacity: 0.6; }
+body.tv .chip:focus-visible { transform: scale(1.08); box-shadow: 0 0 0 3px var(--label); }

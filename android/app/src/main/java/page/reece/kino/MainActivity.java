@@ -32,6 +32,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.RenderProcessGoneDetail;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
@@ -134,6 +135,7 @@ public class MainActivity extends Activity {
         cookies.setAcceptThirdPartyCookies(web, false);
 
         web.addJavascriptInterface(new Bridge(), "KinoAndroid");
+        if (Build.VERSION.SDK_INT >= 26) web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true);
         web.setFocusable(true);
         web.setFocusableInTouchMode(true);
 
@@ -150,6 +152,17 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 CookieManager.getInstance().flush();
+            }
+
+            // The page crashed, or android killed it to free memory (old fire tv sticks do this on big pages). Without
+            // this the whole app closes, now it swaps in a fresh webview and opens the same page again
+            @Override
+            @android.annotation.TargetApi(26)
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                String url = view.getUrl();
+                recreateWeb(url != null && isKino(Uri.parse(url)) ? url : HOME);
+                Toast.makeText(MainActivity.this, detail.didCrash() ? "Kino had a problem and reloaded" : "Kino reloaded to free up memory", Toast.LENGTH_SHORT).show();
+                return true;
             }
 
             @Override
@@ -184,6 +197,20 @@ public class MainActivity extends Activity {
         });
 
         web.setDownloadListener((url, userAgent, disposition, mime, length) -> download(url, userAgent, disposition, mime));
+    }
+
+    private void recreateWeb(String url) {
+        WebView old = web;
+        ViewGroup.LayoutParams lp = old.getLayoutParams();
+        root.removeView(old);
+        old.destroy();
+        if (fullView != null) { root.removeView(fullView); fullView = null; fullCallback = null; }
+        web = new WebView(this);
+        web.setBackgroundColor(Color.BLACK);
+        root.addView(web, 0, lp);
+        setupWebView();
+        web.loadUrl(url);
+        web.requestFocus();
     }
 
     private void showOffline() {

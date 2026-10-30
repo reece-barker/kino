@@ -26,7 +26,7 @@
     down: "M22 14h-4V3h4zM16 3H6.8c-.9 0-1.6.6-1.9 1.4L2.3 11.6c-.3 1 .4 2.1 1.5 2.1H10l-.9 4.5c-.2.9.2 1.8 1 2.2l.9.6 5-6V3z",
     love: "M1 11h3v9H1zm5 9h7.4c.8 0 1.4-.5 1.7-1.2l2-5.6c.3-.9-.4-1.9-1.4-1.9H12l.7-3.6c.1-.7-.2-1.4-.8-1.7L11 5.6 6 11v9zm8.6-14.7L19 1l.6.4c.6.4.9 1.1.8 1.7L19.8 6H23c1 0 1.7 1 1.4 1.9l-1.7 4.8-2-2 .6-1.6H16.6z",
     pencil: "M4 17.2V20h2.8l8.3-8.3-2.8-2.8L4 17.2zM19.7 7a1 1 0 000-1.4l-1.3-1.3a1 1 0 00-1.4 0L15.9 5.4l2.8 2.8L19.7 7z",
-    gear: "M19.4 13a7.5 7.5 0 000-2l2.1-1.6-2-3.4-2.5 1a7 7 0 00-1.7-1L15 3.4h-4l-.4 2.6a7 7 0 00-1.7 1l-2.5-1-2 3.4L6.6 11a7.5 7.5 0 000 2l-2.1 1.6 2 3.4 2.5-1a7 7 0 001.7 1l.4 2.6h4l.4-2.6a7 7 0 001.7-1l2.5 1 2-3.4zM12 15.5a3.5 3.5 0 110-7 3.5 3.5 0 010 7z",
+    gear: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96a7 7 0 00-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84a.47.47 0 00-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 00-.59.22L2.74 8.87a.47.47 0 00.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 00-.12-.61zM12 15.6a3.6 3.6 0 110-7.2 3.6 3.6 0 010 7.2z",
     trash: "M9 3h6l1 2h4v2H4V5h4zm-3 6h12l-1 12H7z",
     wand: "M3 19.6L13.6 9l1.4 1.4L4.4 21zM15 3l.9 2.1L18 6l-2.1.9L15 9l-.9-2.1L12 6l2.1-.9zm5 6l.6 1.4L22 11l-1.4.6L20 13l-.6-1.4L18 11l1.4-.6z",
     airplay: "M5 4h14a2 2 0 012 2v9a2 2 0 01-2 2h-2.2l-1.6-2H19V6H5v9h3.8l-1.6 2H5a2 2 0 01-2-2V6a2 2 0 012-2zm7 9l6 7H6z",
@@ -50,7 +50,11 @@
     moon: "M14.5 2.5A9.5 9.5 0 1021.5 15 8 8 0 0114.5 2.5z",
     auto: "M12 2a10 10 0 100 20 10 10 0 000-20zm0 2v16a8 8 0 010-16z",
     people: "M9 11a4 4 0 110-8 4 4 0 010 8zm8 0a3 3 0 110-6 3 3 0 010 6zM2 20c0-3.3 3.1-6 7-6s7 2.7 7 6v1H2zm15.5-5.9c2.6.4 4.5 2.4 4.5 4.9v1h-4v-1c0-1.9-.2-3.4-.5-4.9z",
+    back: "M15.4 4.6L8 12l7.4 7.4 1.4-1.4-6-6 6-6z",
     info: "M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-6h2zm0-8h-2V7h2z",
+    person: "M12 12a4.5 4.5 0 100-9 4.5 4.5 0 000 9zm0 2c-4.4 0-8 2.5-8 5.5V21h16v-1.5c0-3-3.6-5.5-8-5.5z",
+    chevronR: "M9.2 6.6L13.8 11.2 9.2 15.8 10.6 17.2l6-6-6-6z",
+    chevronL: "M14.8 6.6L10.2 11.2l4.6 4.6-1.4 1.4-6-6 6-6z",
     puzzle: "M20.5 11H19V7a2 2 0 00-2-2h-4V3.5a2.5 2.5 0 00-5 0V5H4a2 2 0 00-2 2v3.8h1.5a2.7 2.7 0 010 5.4H2V20a2 2 0 002 2h3.8v-1.5a2.7 2.7 0 015.4 0V22H17a2 2 0 002-2v-4h1.5a2.5 2.5 0 000-5z",
   };
   const ic = (n) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${P[n]}"/></svg>`;
@@ -86,6 +90,9 @@
   // Set when running inside the kino android app, and on android tv / fire tv
   const ANDROID = /KinoAndroid/.test(navigator.userAgent) && !!window.KinoAndroid;
   const TV = /KinoTV/.test(navigator.userAgent) || /[?&]tv=1/.test(location.search);
+  // TVs and low memory devices get a lighter version: smaller pictures, no glass blur, fewer effects. Everything else is untouched
+  const LITE = TV || (navigator.deviceMemory && navigator.deviceMemory <= 2);
+  if (LITE) document.documentElement.classList.add("lite");
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const app = $("#app");
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -118,7 +125,7 @@
     if (!ts || typeof ts !== "number") return "Not scheduled";
     const d = new Date(ts * 1000), now = new Date();
     if (isNaN(d)) return "Not scheduled";
-    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     const day = Math.round((new Date(d.toDateString()) - new Date(now.toDateString())) / 86400000);
     if (day === 0) return `Today at ${time}`;
     if (day === 1) return `Tomorrow at ${time}`;
@@ -224,7 +231,7 @@
   // ---------------------------------------------------------- shell
   // ---------------------------------------------------------- appearance, follows the device unless the person picks one
   const THEME_KEY = "kino-theme";
-  const getTheme = () => { try { return localStorage.getItem(THEME_KEY) || "auto"; } catch (_) { return "auto"; } };
+  const getTheme = () => { try { return localStorage.getItem(THEME_KEY) || "dark"; } catch (_) { return "dark"; } };
   function applyTheme(t = getTheme()) {
     if (t === "auto") document.documentElement.removeAttribute("data-theme");
     else document.documentElement.setAttribute("data-theme", t);
@@ -335,8 +342,10 @@
     requestAnimationFrame(follow);
   }
 
-  const clockNow = () => new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  setInterval(() => { const t = $("#sideTime"); if (t) t.textContent = clockNow(); }, 20000);
+  // 24 hour clock in whatever time zone this device is set to
+  const clockNow = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  // Ticks over right on the minute instead of up to 20 seconds late
+  (function tickClock() { const t = $("#sideTime"); if (t) t.textContent = clockNow(); setTimeout(tickClock, 60000 - (Date.now() % 60000) + 50); })();
   addEventListener("resize", () => placePill(true));
 
   function setOpen(open) {
@@ -458,26 +467,87 @@
       <h1 class="who-title">${manage ? "Manage Profiles" : "Who's Watching?"}</h1>
       <div class="who-grid ${manage ? "managing" : ""}">
         ${r.profiles.map((p) => `<button class="who-tile" data-pid="${p.id}" aria-label="${manage ? "Edit" : "Watch as"} ${esc(p.name)}">
-          <span class="who-av">${avatar(p.icon, "lg")}${manage ? `<span class="who-edit">${ic("pencil")}</span>` : ""}${p.kids ? `<span class="who-kids">Kids</span>` : ""}</span>
+          <span class="who-av">${avatar(p.icon, "lg")}${manage ? `<span class="who-edit">${ic("pencil")}</span>` : ""}${p.kids ? `<span class="who-kids">Kids</span>` : ""}${p.locked && !manage ? `<span class="who-lock">${ic("lock")}</span>` : ""}</span>
           <span class="who-name">${esc(p.name)}</span></button>`).join("")}
-        ${!!ME.admin ? `<button class="who-tile add" id="addProfile" aria-label="Add a profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Add Profile</span></button>` : ""}
+        ${!!ME.admin ? `<button class="who-tile add" id="addProfile" aria-label="Add a profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Add Profile</span></button>`
+          : manage ? "" : `<button class="who-tile add" id="askProfile" aria-label="Ask for your own profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Ask for a Profile</span></button>`}
       </div>
       <div class="who-actions">${manage ? `<button class="btn primary" id="doneManage">Done</button>` : `<button class="btn outline" id="manageBtn">Manage Profiles</button>`}</div>
     </main>`;
     $$(".who-tile[data-pid]").forEach((b) => (b.onclick = async () => {
       const p = r.profiles.find((x) => x.id === Number(b.dataset.pid));
       if (manage) return editProfile(p, () => pageProfiles(true));
-      const res = await api(`/api/profiles/${p.id}/select`, {});
+      let res;
+      if (p.locked) {
+        res = await pinPad(`Enter ${p.name}'s Code`, (code) => api(`/api/profiles/${p.id}/select`, { pin: code }));
+        if (!res) return;
+      } else res = await api(`/api/profiles/${p.id}/select`, {});
       ME.profile = res.profile;
       location.hash = "#/home";
       if (location.hash === "#/home") route();
     }));
     const add = $("#addProfile"); if (add) add.onclick = () => editProfile(null, () => pageProfiles(manage));
+    const ask = $("#askProfile"); if (ask) ask.onclick = () => askProfile();
     const mb = $("#manageBtn"); if (mb) mb.onclick = () => pageProfiles(true);
     const dm = $("#doneManage"); if (dm) dm.onclick = () => pageProfiles(false);
     const ai = $("#adminIn2"); if (ai) ai.onclick = () => adminLogin(() => pageProfiles(manage));
     const ao = $("#adminOut2"); if (ao) ao.onclick = async () => { await api("/api/admin/logout", {}); ME.admin = null; pageProfiles(manage); };
     const first = $(".who-tile"); if (first) first.focus();
+  }
+
+  // A 4 digit code pad like the iphone lock screen. check gets the code and returns the result, or throws if wrong
+  function pinPad(title, check, sub = "") {
+    return new Promise((resolve) => {
+      let code = "", busy = false, done = false;
+      const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "del"];
+      const s = sheet(`<div class="pin">
+        <div class="pin-ic">${ic("lock")}</div><h2>${esc(title)}</h2>${sub ? `<p class="secondary">${esc(sub)}</p>` : ""}
+        <div class="pin-dots" aria-live="polite">${[0, 1, 2, 3].map(() => "<i></i>").join("")}</div>
+        <div class="pin-err" role="alert"></div>
+        <div class="pin-keys">${keys.map((k) => k === "" ? "<span></span>" : `<button class="pin-key ${k === "del" ? "del" : ""}" data-k="${k}" aria-label="${k === "del" ? "Delete" : k}">${k === "del" ? ic("back") : k}</button>`).join("")}</div>
+        <div class="actions end"><button class="btn secondary small" data-close>Cancel</button></div></div>`, { onClose: () => !done && resolve(null) });
+      const dots = $$(".pin-dots i", s.el), err = $(".pin-err", s.el);
+      const draw = () => dots.forEach((d, i) => d.classList.toggle("on", i < code.length));
+      const press = async (k) => {
+        if (busy) return;
+        if (k === "del") code = code.slice(0, -1);
+        else if (/\d/.test(k) && code.length < 4) code += k;
+        err.textContent = "";
+        draw();
+        if (code.length === 4) {
+          busy = true;
+          try { const r = await check(code); done = true; s.close(); resolve(r); }
+          catch (e) {
+            err.textContent = e.message;
+            $(".pin-dots", s.el).classList.add("shake");
+            setTimeout(() => { const pd = $(".pin-dots", s.el); if (pd) pd.classList.remove("shake"); code = ""; draw(); busy = false; }, 500);
+          }
+        }
+      };
+      $$(".pin-key", s.el).forEach((b) => (b.onclick = () => press(b.dataset.k)));
+      s.el.addEventListener("keydown", (e) => { if (/^\d$/.test(e.key)) press(e.key); else if (e.key === "Backspace") press("del"); });
+      setTimeout(() => { const f = $(".pin-key", s.el); if (f) f.focus(); }, 40);
+    });
+  }
+
+  // Anyone can ask for there own profile, the admin approves it in Settings
+  function askProfile() {
+    let icon = Math.floor(Math.random() * AV.length);
+    const s = sheet(`<h2>Ask for a Profile</h2><p class="secondary">Pick a name and an icon. It shows up once the admin approves it.</p>
+      <div class="edit-top"><span id="apPreview">${avatar(icon, "lg")}</span>
+        <label class="field grow"><span class="sr">Name</span><input id="apName" maxlength="24" placeholder="Your name"></label></div>
+      <div class="icon-grid" role="radiogroup" aria-label="Profile icon">${AV.map((a, i) => `<button class="icon-pick" role="radio" aria-checked="${i === icon}" data-i="${i}" aria-label="${a[0]}">${avatar(i, "md")}</button>`).join("")}</div>
+      <div class="form-err" id="apErr" role="alert"></div>
+      <div class="actions end"><button class="btn secondary small" data-close>Cancel</button><button class="btn primary small" id="apSend">Ask</button></div>`, { wide: true });
+    $$(".icon-pick", s.el).forEach((b) => (b.onclick = () => {
+      icon = Number(b.dataset.i);
+      $$(".icon-pick", s.el).forEach((x) => x.setAttribute("aria-checked", x === b));
+      $("#apPreview", s.el).innerHTML = avatar(icon, "lg");
+    }));
+    $("#apSend", s.el).onclick = async () => {
+      try { await api("/api/profiles/request", { name: $("#apName", s.el).value, icon }); s.close(); toast("Asked the admin, your profile shows up once it's approved", 5000); }
+      catch (e) { $("#apErr", s.el).textContent = e.message; }
+    };
   }
 
   // Edit or add a profile: name and icon. Editing your own works for everyone, adding and deleting is admin only
@@ -554,14 +624,17 @@
   }
 
   // ---------------------------------------------------------- tiles
+  // Remembers the name on each addon tile, so the title page can tell if an addon gave the wrong id for it
+  const EXT_NAME = new Map();
+  const extHref = (t) => { EXT_NAME.set(t.ext, t.name); return `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}`; };
   function posterTile(t) {
     const art = t.poster
       ? `<img loading="lazy" src="${img(t.poster)}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
-    const sub = t.external ? t.releaseInfo || (t.kind === "series" ? "TV Show" : "Movie")
+    const sub = t.family ? t.family : t.external ? t.releaseInfo || (t.kind === "series" ? "TV Show" : "Movie")
       : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
-    const mark = t.watched ? `<span class="tile-check" title="Watched">${ic("check")}</span>` : "";
-    const href = t.external ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : `#/title/${t.id}`;
+    const mark = (t.watched ? `<span class="tile-check" title="Watched">${ic("check")}</span>` : "") + (t.family ? `<span class="tile-love ${t.loved ? "loved" : ""}" title="${esc(t.family)}">${ic(t.loved ? "love" : "up")}</span>` : "");
+    const href = t.external ? extHref(t) : `#/title/${t.id}`;
     return `<a class="tile poster ${t.external ? "ext" : ""} ${t.watched ? "is-watched" : ""}" href="${href}" ${t.external && t.poster ? `data-poster="${esc(t.poster)}"` : ""}><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
   }
   function wideTile(t, opts = {}) {
@@ -570,8 +643,9 @@
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
     const logo = t.logo && t.background && opts.progress == null ? `<img class="logo-over" loading="lazy" src="${img(t.logo, 1)}" alt="" data-fallback="hide">` : "";
     const bar = opts.progress != null && opts.progress > 0 ? `<div class="bar"><i style="width:${Math.min(100, opts.progress * 100)}%"></i></div>` : "";
-    const href = opts.href || (t.external ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : `#/title/${t.id}`);
-    return `<a class="tile landscape" href="${href}" ${opts.play ? `data-play="${opts.play}" data-tid="${t.id}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}</div>
+    const href = opts.href || (t.external ? extHref(t) : `#/title/${t.id}`);
+    const x = opts.hide ? `<button class="tile-x" data-hide="${opts.hide}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
+    return `<a class="tile landscape" href="${href}" ${opts.play ? `data-play="${opts.play}" data-tid="${t.id}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
       <div class="cap">${esc(t.name)}</div><div class="sub">${esc(opts.sub || t.genres?.slice(0, 2).join(", ") || t.releaseInfo || "")}</div></a>`;
   }
   const metaLine = (t) => [t.kind === "series" ? "TV Show" : "Movie", t.releaseInfo, t.genres?.slice(0, 2).join(", "), t.runtime, t.rating ? `IMDb ${t.rating}` : ""].filter(Boolean);
@@ -599,14 +673,22 @@
       <main class="page under-hero" style="padding-top:8px">
         ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
           <div class="row ${s.style === "poster" ? "posters" : "wide"}">${s.items.map((t) => s.style === "poster" ? posterTile(t)
-            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, play: t.file_id, href: t.stream ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : undefined,
+            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, play: t.file_id, hide: t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
             : wideTile(t)).join("")}</div></section>`).join("")}
       </main>`;
     wireTopbar();
     startHero(heroes.length);
 
+    // Taking something out of Continue Watching, it comes back if they start watching it again
+    app.querySelectorAll("[data-hide]").forEach((b) => b.addEventListener("click", async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      await api("/api/continue/hide", { file_id: b.dataset.hide }).catch(() => {});
+      toast("Removed from Continue Watching");
+      route();
+    }));
     app.querySelectorAll("[data-play]").forEach((a) => a.addEventListener("click", async (e) => {
+      if (e.target.closest("[data-hide]")) return;
       e.preventDefault();
       if (a.dataset.play.startsWith("s")) return playFile(a.dataset.play, {});
       const t = await api(`/api/title/${a.dataset.tid}`);
@@ -628,15 +710,30 @@
     if (isAdmin()) startPoll(pollHomeSync, 5000);
   }
 
+  // Floating back button on title pages, phones dont have the sidebar to get out with
+  const backBtn = () => `<button class="page-back glass" data-goback aria-label="Back">${ic("back")}</button>`;
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("[data-goback]")) return;
+    history.length > 1 ? history.back() : (location.hash = "#/home");
+  });
+
+  // Hero artwork. Wide art on most screens, the poster on portrait phones so it isn't cropped to a thin strip
+  function heroArt(t, lazy) {
+    const wide = t.background ? (LITE ? t.background : t.background.replace("/medium/", "/large/")) : null;
+    const tall = t.poster || null;
+    if (!wide && !tall) return "";
+    return `<picture>${tall && wide ? `<source media="(max-width: 760px) and (orientation: portrait)" srcset="${img(tall)}">` : ""}<img ${lazy ? 'loading="lazy"' : ""} src="${img(wide || tall)}" data-alt="${esc(t.background || "")}" alt="" data-fallback="hide" ${!wide ? 'class="tall"' : ""}></picture>`;
+  }
+
   // One slide of the home hero. The first one is whatever was watched last, with its own continue style
   const HERO_MS = 6500;
   function heroSlide(t, i) {
     const tab = i ? 'tabindex="-1"' : "";
-    const link = t.external ? `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}` : `#/title/${t.id}`;
+    const link = t.external ? extHref(t) : `#/title/${t.id}`;
     const left = t.dur ? Math.max(0, t.dur - t.pos) : 0;
     const what = t.cont ? [t.season != null ? epLabel(t.season, t.episode) : "", left ? `${clock(left)} left` : ""].filter(Boolean).join(" · ") : "";
     return `<div class="hero-slide ${i === 0 ? "on" : ""} ${t.cont ? "is-cont" : ""}" data-i="${i}" ${i ? 'aria-hidden="true"' : ""}>
-      <div class="hero-bg">${t.background ? `<img ${i ? 'loading="lazy"' : ""} src="${img(t.background.replace("/medium/", "/large/"))}" data-alt="${esc(t.background)}" alt="" data-fallback="hide">` : ""}</div>
+      <div class="hero-bg ${t.poster ? "has-tall" : ""}">${heroArt(t, i > 0)}</div>
       <div class="hero-content">
         ${t.cont ? `<span class="hero-kicker glass">${ic("play")} Continue Watching</span>` : ""}
         ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
@@ -648,6 +745,7 @@
           ${t.cont ? `<button class="btn primary" data-heroresume="${t.file_id}" data-tid="${t.id || ""}" ${tab}>${ic("play")} ${t.next_episode ? "Play" : "Resume"}${t.season != null ? " " + esc(epLabel(t.season, t.episode)) : ""}</button>`
             : `<button class="btn primary" data-heroplay="${t.id}" ${tab}>${ic("play")} Play</button>`}
           <a class="btn secondary glass-btn-lg" href="${link}" ${tab}>More Info</a>
+          ${t.cont ? `<button class="round-btn" data-hide="${t.file_id}" ${tab} aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
         </div>
       </div></div>`;
   }
@@ -726,27 +824,48 @@
   async function pageBrowse(kind) {
     const lib = await api("/api/library");
     const list = lib.titles.filter((t) => t.kind === kind);
-    const genres = [...new Set(list.flatMap((t) => t.genres || []))].sort();
+    // Genres as chips, the most common first. Picking more than one shows titles that have all of them
+    const gc = {};
+    list.forEach((t) => (t.genres || []).forEach((g) => (gc[g] = (gc[g] || 0) + 1)));
+    const genres = Object.keys(gc).sort((a, b) => gc[b] - gc[a] || a.localeCompare(b));
+    const yr = (t) => parseInt(String(t.releaseInfo || t.year || "").slice(0, 4), 10) || 0;
+    const decades = [...new Set(list.map(yr).filter(Boolean).map((y) => Math.floor(y / 10) * 10))].sort((a, b) => b - a);
+    const hasExt = list.some((t) => t.external) && list.some((t) => !t.external);
+    const noun = kind === "movie" ? "movie" : "show";
     app.innerHTML = topbar(kind === "movie" ? "movies" : "shows") + `<main class="page">
       <h1 class="large-title">${kind === "movie" ? "Movies" : "TV Shows"}</h1>
       <div class="toolbar">
-        <label class="search">${ic("search")}<span class="sr">Filter</span><input id="q" type="search" placeholder="Filter ${kind === "movie" ? "movies" : "shows"}"></label>
-        <select class="plain" id="sort" aria-label="Sort"><option value="added">Recently Added</option><option value="name">Name</option><option value="year">Year</option><option value="rating">Rating</option></select>
-        <select class="plain" id="genre" aria-label="Genre"><option value="">All Genres</option>${genres.map((g) => `<option>${esc(g)}</option>`).join("")}</select>
+        <label class="search">${ic("search")}<span class="sr">Filter</span><input id="q" type="search" placeholder="Filter ${noun}s"></label>
+        <select class="plain" id="sort" aria-label="Sort"><option value="added">Recently Added</option><option value="name">Name</option><option value="year">Newest</option><option value="old">Oldest</option><option value="rating">Rating</option></select>
+        <select class="plain" id="decade" aria-label="Decade"><option value="">Any Year</option>${decades.map((d) => `<option value="${d}">${d}s</option>`).join("")}</select>
+        <select class="plain" id="minr" aria-label="Rating"><option value="">Any Rating</option><option value="6">6+ on IMDb</option><option value="7">7+ on IMDb</option><option value="8">8+ on IMDb</option></select>
+        ${hasExt ? `<select class="plain" id="src" aria-label="Where"><option value="">Library and Addons</option><option value="lib">In Your Library</option><option value="ext">From Addons</option></select>` : ""}
         <select class="plain" id="seen" aria-label="Watched"><option value="">Watched and Unwatched</option><option value="no">Unwatched</option><option value="yes">Watched</option></select>
         <span class="secondary" id="count" style="font-size:15px"></span>
       </div>
+      ${genres.length ? `<div class="chips" role="group" aria-label="Genres"><button class="chip on" data-g="" aria-pressed="true">All Genres</button>${genres.map((g) => `<button class="chip" data-g="${esc(g)}" aria-pressed="false">${esc(g)} <span>${gc[g]}</span></button>`).join("")}</div>` : ""}
       <div class="grid" id="grid"></div></main>`;
     wireTopbar();
+    const picked = new Set();
+    const val = (id) => ($("#" + id) ? $("#" + id).value : "");
     const draw = () => {
-      const q = $("#q").value.trim().toLowerCase(), g = $("#genre").value, s = $("#sort").value, w = $("#seen").value;
-      let r = list.filter((t) => (!q || t.name.toLowerCase().includes(q)) && (!g || (t.genres || []).includes(g)) && (!w || (w === "yes") === t.watched));
-      r = r.slice().sort((a, b) => s === "name" ? a.name.localeCompare(b.name) : s === "year" ? String(b.releaseInfo || "").localeCompare(String(a.releaseInfo || ""))
+      const q = val("q").trim().toLowerCase(), s = val("sort"), w = val("seen"), dec = Number(val("decade")) || 0, mr = Number(val("minr")) || 0, src = val("src");
+      let r = list.filter((t) => (!q || t.name.toLowerCase().includes(q)) && [...picked].every((g) => (t.genres || []).includes(g))
+        && (!w || (w === "yes") === !!t.watched) && (!dec || (yr(t) >= dec && yr(t) < dec + 10)) && (!mr || (parseFloat(t.rating) || 0) >= mr)
+        && (!src || (src === "ext") === !!t.external));
+      r = r.slice().sort((a, b) => s === "name" ? a.name.localeCompare(b.name) : s === "year" ? yr(b) - yr(a) : s === "old" ? (yr(a) || 9999) - (yr(b) || 9999)
         : s === "rating" ? (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0) : b.added - a.added);
       $("#grid").innerHTML = r.length ? r.map(posterTile).join("") : `<div class="empty" style="grid-column:1/-1"><h2>No matches</h2><p>Try a different filter or genre.</p></div>`;
-      $("#count").textContent = `${r.length} ${kind === "movie" ? "movie" : "show"}${r.length === 1 ? "" : "s"}`;
+      $("#count").textContent = `${r.length} ${noun}${r.length === 1 ? "" : "s"}`;
     };
-    ["q", "genre", "sort", "seen"].forEach((id) => $("#" + id).addEventListener("input", draw));
+    $$(".chip[data-g]").forEach((c) => (c.onclick = () => {
+      const g = c.dataset.g;
+      if (!g) picked.clear();
+      else picked.has(g) ? picked.delete(g) : picked.add(g);
+      $$(".chip[data-g]").forEach((x) => { const on = x.dataset.g ? picked.has(x.dataset.g) : !picked.size; x.classList.toggle("on", on); x.setAttribute("aria-pressed", on); });
+      draw();
+    }));
+    ["q", "sort", "seen", "decade", "minr", "src"].forEach((id) => $("#" + id) && $("#" + id).addEventListener("input", draw));
     draw();
   }
 
@@ -760,15 +879,25 @@
   }
 
   // ---------------------------------------------------------- search
+  // Results come in rows like apple tv: Movies, TV Shows, People and Episodes. Library and addon results are mixed
+  // into the same rows and sorted by how well they match plus how popular they are, the best row goes first
+  const searchRow = (id, title, items, tile, extra = "") => items.length ? `<section class="shelf srow" data-srow="${id}" aria-label="${esc(title)}">
+      <h2 class="section-title">${esc(title)} <span class="from">${items.length}</span>${items.length > 6 ? ` <button class="see-all" data-viewall="${id}">View All</button>` : ""}${extra}</h2>
+      <div class="row ${tile === "wide" ? "wide" : "posters"}">${items.map(tile === "wide" ? epTile : tile === "person" ? personTile : posterTile).join("")}</div></section>` : "";
+  const epTile = (e) => `<a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail)}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
+      <div class="cap">${esc(nice(e.name))}</div><div class="sub">${esc(e.show)} · ${esc(epLabel(e.season, e.episode))}</div></a>`;
+  const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" src="${img(p.poster)}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
+      <div class="cap">${esc(p.name)}</div><div class="sub">${esc(p.role)} · ${p.count} title${p.count === 1 ? "" : "s"}</div></a>`;
+
   async function pageSearch() {
     const start = decodeURIComponent((location.hash.split("?q=")[1] || ""));
     app.innerHTML = topbar("search") + `<main class="page">
-      <div class="search big">${ic("search")}<label class="sr" for="sq">Search</label><input id="sq" type="search" placeholder="Films, shows, actors and more" value="${esc(start)}" autocomplete="off">
+      <div class="search big">${ic("search")}<label class="sr" for="sq">Search</label><input id="sq" type="search" placeholder="Films, shows, actors, directors and more" value="${esc(start)}" autocomplete="off">
         <button class="mic-btn" id="micBtn" type="button" aria-label="Search by Voice" title="Search by Voice" hidden>${ic("mic")}</button></div>
       <div id="sres"></div></main>`;
     wireTopbar();
     const input = $("#sq");
-    input.focus();
+    if (!TV) input.focus();
     setupMic(input, () => run());
     let t, seq = 0;
     const run = async () => {
@@ -777,30 +906,49 @@
       const box = $("#sres");
       if (!q) { ++seq; return drawStart(box); }
       const my = ++seq;
-      box.innerHTML = `<div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${Array.from({ length: 12 }, () => '<div class="sk sk-poster"></div>').join("")}</div>`;
+      box.innerHTML = `<div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="row posters">${Array.from({ length: 8 }, () => '<div class="sk sk-poster"></div>').join("")}</div>`;
       const r = await api("/api/search?q=" + encodeURIComponent(q));
       if (my !== seq || !$("#sres")) return;
-      box.innerHTML = (r.titles.length ? `<h2 class="section-title" style="margin-top:28px">Films and Shows</h2><div class="grid">${r.titles.map(posterTile).join("")}</div>` : "")
-        + (r.episodes.length ? `<h2 class="section-title" style="margin-top:36px">Episodes</h2><div class="grid wide-grid">${r.episodes.map((e) => `
-          <a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail)}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
-          <div class="cap">${esc(nice(e.name))}</div><div class="sub">${esc(e.show)} · ${esc(epLabel(e.season, e.episode))}</div></a>`).join("")}</div>` : "")
-        || `<div class="empty" id="sEmpty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor or genre.</p></div>`;
-      box.insertAdjacentHTML("beforeend", `<div id="sExt"></div>`);
-      api("/api/search/addons?q=" + encodeURIComponent(q)).then((x) => {
-        if (my !== seq || !$("#sExt") || !x.external.length) return;
-        const e = $("#sEmpty"); if (e) e.remove();
-        $("#sExt").innerHTML = `<h2 class="section-title" style="margin-top:36px">From Addons <span class="from">Not in your library</span></h2>
-          <div class="grid">${x.external.map(posterTile).join("")}</div>`;
-      }).catch(() => {});
-      $$("[data-play]", box).forEach((a) => a.addEventListener("click", async (ev) => {
-        ev.preventDefault();
-        const tt = await api(`/api/title/${a.dataset.tid}`);
-        playFile(a.dataset.play, { title: tt, from: 0 });
-      }));
+      let ext = [], extDone = false;
+      const draw = () => {
+        const all = r.titles.concat(ext).sort((a, b) => (b.score || 0) - (a.score || 0));
+        const movies = all.filter((x) => x.kind === "movie"), shows = all.filter((x) => x.kind === "series");
+        const rows = [
+          { s: movies.length ? movies[0].score : -1, html: searchRow("movies", "Movies", movies) },
+          { s: shows.length ? shows[0].score : -1, html: searchRow("shows", "TV Shows", shows) },
+        ].sort((a, b) => b.s - a.s).map((x) => x.html);
+        const people = searchRow("people", "Cast and Crew", r.people || [], "person");
+        // Someone typing an actor's name wants the people first
+        const peopleFirst = (r.people || []).length && (!all.length || (all[0].score || 0) < 60);
+        box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + searchRow("eps", "Episodes", r.episodes, "wide")
+          + (!extDone ? `<div class="s-more"><span class="spin small"></span>Looking in your addons</div>` : ""))
+          || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor, director or genre.</p></div>`;
+        enhanceRows(box);
+      };
+      draw();
+      api("/api/search/addons?q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; ext = x.external; extDone = true; draw(); })
+        .catch(() => { extDone = true; if (my === seq && $("#sres")) draw(); });
     };
     input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(run, 220); });
-    // Anything opened from search goes into this profile's Recently Searched
-    $("#sres").addEventListener("click", (e) => {
+    $("#sres").addEventListener("click", async (e) => {
+      // View All opens a row up into a grid, and back
+      const va = e.target.closest("[data-viewall]");
+      if (va) {
+        const sec = va.closest(".srow"), row = $(".row", sec);
+        const open = !sec.classList.contains("all");
+        sec.classList.toggle("all", open);
+        row.classList.toggle("grid", open);
+        va.textContent = open ? "Show Less" : "View All";
+        if (!open) sec.scrollIntoView({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
+        return;
+      }
+      const pa = e.target.closest("[data-play]");
+      if (pa) {
+        e.preventDefault();
+        const tt = await api(`/api/title/${pa.dataset.tid}`);
+        return playFile(pa.dataset.play, { title: tt, from: 0 });
+      }
+      // Anything opened from search goes into this profile's Recently Searched
       const a = e.target.closest("a.tile");
       if (!a) return;
       const href = a.getAttribute("href") || "";
@@ -810,6 +958,17 @@
       if (body) api("/api/search/recent", body).catch(() => {});
     });
     run();
+  }
+  const norm = (x) => String(x || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+
+  // Everything in the library with one actor or director
+  async function pagePerson(name) {
+    const r = await api("/api/person?name=" + encodeURIComponent(name));
+    app.innerHTML = topbar("search") + backBtn() + `<main class="page">
+      <div class="person-head"><span class="person-big">${ic("person")}</span><div><h1 class="large-title" style="margin:0">${esc(r.name)}</h1>
+        <div class="secondary">${r.titles.length} title${r.titles.length === 1 ? "" : "s"} in your library</div></div></div>
+      ${r.titles.length ? `<div class="grid">${r.titles.map(posterTile).join("")}</div>` : `<div class="empty"><h2>Nothing with ${esc(r.name)} yet</h2></div>`}</main>`;
+    wireTopbar();
   }
 
   // Before typing: what this profile opened from search lately, or a mix of things to watch if there's nothing yet
@@ -826,48 +985,107 @@
   }
   let START_SEQ = 0;
 
-  // Voice search with the browsers own speech recognition, the button only shows where the browser has it
+  // Voice search. The android app uses the phone's own voice typing, browsers with speech recognition built in
+  // (chrome, edge, safari) use that, and everything else records a few seconds and the server works out the words.
+  // If the built in one fails (brave and opera have it but it never works) it quietly switches to the server
+  let VOICE_SERVER = false;
   function setupMic(input, onDone) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const btn = $("#micBtn");
-    // In the android app the phone's own voice typing does it, webviews dont have speech recognition
-    if (btn && ANDROID && window.KinoAndroid.hasVoice()) {
+    if (!btn) return;
+    const put = (text) => {
+      if (!text) return;
+      input.value = text.replace(/[.?!]$/, "");
+      input.dispatchEvent(new Event("input"));
+      onDone && onDone();
+    };
+    if (ANDROID && window.KinoAndroid.hasVoice()) {
       btn.hidden = false;
-      window.kinoVoice = (text) => {
-        if (!text) return;
-        input.value = text.replace(/[.?!]$/, "");
-        input.dispatchEvent(new Event("input"));
-        onDone && onDone();
-      };
+      window.kinoVoice = put;
       btn.onclick = () => window.KinoAndroid.startVoice();
       return;
     }
-    if (!SR || !btn) return;
+    const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+    if (!SR && !canRecord) return;
     btn.hidden = false;
-    let rec = null;
+    const listening = (on, label) => {
+      btn.classList.toggle("listening", on);
+      btn.setAttribute("aria-label", on ? "Stop Listening" : "Search by Voice");
+      input.placeholder = on ? label || "Listening…" : "Films, shows, actors, directors and more";
+    };
+    let stop = null;
     btn.onclick = () => {
-      if (rec) { rec.stop(); return; }
-      rec = new SR();
+      if (stop) { stop(); return; }
+      if (SR && !VOICE_SERVER) browserVoice(); else recordVoice();
+    };
+
+    function browserVoice() {
+      const rec = new SR();
+      let heard = false, failed = false;
       rec.lang = navigator.language || "en-GB";
       rec.interimResults = true;
       rec.maxAlternatives = 1;
-      btn.classList.add("listening");
-      btn.setAttribute("aria-label", "Stop Listening");
-      input.placeholder = "Listening…";
+      listening(true);
+      stop = () => rec.stop();
       rec.onresult = (e) => {
+        heard = true;
         input.value = Array.from(e.results).map((r) => r[0].transcript).join("").replace(/[.?!]$/, "");
         input.dispatchEvent(new Event("input"));
       };
-      rec.onerror = (e) => toast(e.error === "not-allowed" || e.error === "service-not-allowed" ? "Microphone access is blocked, allow it in your browser settings" : e.error === "no-speech" ? "Didn't catch that, try again" : "Voice search isn't working right now");
-      rec.onend = () => {
-        rec = null;
-        btn.classList.remove("listening");
-        btn.setAttribute("aria-label", "Search by Voice");
-        input.placeholder = "Films, shows, actors and more";
-        onDone && onDone();
+      rec.onerror = (e) => {
+        failed = true;
+        if (e.error === "not-allowed") return toast("Microphone access is blocked, allow it in your browser settings");
+        if (e.error === "no-speech") return toast("Didn't catch that, try again");
+        // network, service-not-allowed and language-not-supported mean the browser cant do it, the server takes over
+        if (canRecord) { VOICE_SERVER = true; setTimeout(recordVoice, 50); }
+        else toast("Voice search isn't working in this browser");
       };
-      try { rec.start(); } catch (_) { rec = null; btn.classList.remove("listening"); }
-    };
+      rec.onend = () => { stop = null; if (!VOICE_SERVER || !failed) listening(false); if (heard && !failed) onDone && onDone(); };
+      try { rec.start(); } catch (_) { stop = null; listening(false); if (canRecord) { VOICE_SERVER = true; recordVoice(); } }
+    }
+
+    async function recordVoice() {
+      let stream;
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+      catch (_) { toast("Microphone access is blocked, allow it in your browser settings"); return; }
+      const type = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || "";
+      const rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+      const chunks = [];
+      rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
+      // Stops by itself once you've said something and gone quiet, or after 8 seconds
+      let ctx, timer, spoke = false, quietSince = 0;
+      try {
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const an = ctx.createAnalyser(); an.fftSize = 1024;
+        ctx.createMediaStreamSource(stream).connect(an);
+        const buf = new Float32Array(an.fftSize);
+        timer = setInterval(() => {
+          an.getFloatTimeDomainData(buf);
+          const rms = Math.sqrt(buf.reduce((a, x) => a + x * x, 0) / buf.length);
+          if (rms > 0.025) { spoke = true; quietSince = 0; }
+          else if (spoke) { quietSince = quietSince || Date.now(); if (Date.now() - quietSince > 1100) finish(); }
+        }, 100);
+      } catch (_) {}
+      const cap = setTimeout(() => finish(), 8000);
+      function finish() { if (rec.state === "recording") rec.stop(); }
+      stop = finish;
+      rec.onstop = async () => {
+        clearInterval(timer); clearTimeout(cap); stop = null;
+        stream.getTracks().forEach((t) => t.stop());
+        if (ctx) ctx.close().catch(() => {});
+        listening(true, "Working it out…");
+        try {
+          const r = await fetch("/api/voice", { method: "POST", headers: { "X-Kino": "1", "Content-Type": rec.mimeType || "audio/webm" }, body: new Blob(chunks, { type: rec.mimeType || "audio/webm" }), credentials: "same-origin" });
+          const j = await r.json().catch(() => ({}));
+          listening(false);
+          if (!r.ok) return toast(j.detail || "Voice search didn't work, try again");
+          if (!j.text) return toast("Didn't catch that, try again");
+          put(j.text);
+        } catch (_) { listening(false); toast("Voice search didn't work, try again"); }
+      };
+      rec.start();
+      listening(true);
+    }
   }
 
   // ---------------------------------------------------------- title detail
@@ -881,9 +1099,9 @@
     const curSeason = up ? up.season ?? 0 : seasons[0];
     const rateBtn = (v, icon, label) => `<button class="round-btn ${t.my_rating === v ? "on" : ""}" data-rate="${v}" aria-pressed="${t.my_rating === v}" aria-label="${label}" title="${label}">${ic(icon)}</button>`;
 
-    app.innerHTML = topbar(t.kind === "series" ? "shows" : "movies") + `
+    app.innerHTML = topbar(t.kind === "series" ? "shows" : "movies") + backBtn() + `
       <section class="detail-hero">
-        <div class="hero-bg">${t.background ? `<img src="${img(t.background.replace("/medium/", "/large/"))}" data-alt="${esc(t.background)}" alt="" data-fallback="hide" style="width:100%;height:100%;object-fit:cover;object-position:center 20%">` : ""}</div>
+        <div class="hero-bg ${t.poster ? "has-tall" : ""}">${heroArt(t)}</div>
         <div class="hero-content" style="z-index:2">
           ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
           <div class="hero-meta">${metaLine(t).map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
@@ -917,9 +1135,9 @@
           <div class="v"><div class="grow"><div class="badges">${f.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join("")}</div><div class="nm">${esc(f.name)}</div></div>
           <span class="secondary" style="font-size:14px">${bytes(f.size)}</span><button class="btn secondary small" data-playfile="${f.id}">${ic("play")} Play</button>
           ${t.is_admin ? `<button class="round-btn sm" data-delfile="${f.id}" aria-label="Delete this version" title="Delete this version">${ic("trash")}</button>` : ""}</div>`).join("")}</div></section>` : ""}
-        ${t.cast?.length ? `<section class="section"><h2 class="section-title">Cast</h2><div class="cast">${t.cast.map((c) => `<a href="#/search?q=${encodeURIComponent(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
+        ${t.cast?.length ? `<section class="section"><h2 class="section-title">Cast</h2><div class="cast">${t.cast.map((c) => `<a href="#/person/${encodeURIComponent(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
         <section class="section"><div class="facts">
-          ${t.director ? `<div><h4>Director</h4><p>${esc([].concat(t.director).join(", "))}</p></div>` : ""}
+          ${t.director ? `<div><h4>Director</h4><p>${[].concat(t.director).map((d) => `<a class="plain-link" href="#/person/${encodeURIComponent(d)}">${esc(d)}</a>`).join(", ")}</p></div>` : ""}
           <div><h4>In Your Library</h4><p>${t.files.length} file${t.files.length === 1 ? "" : "s"}, ${bytes(t.size)}</p></div>
           ${t.genres?.length ? `<div><h4>Genres</h4><p>${esc(t.genres.join(", "))}</p></div>` : ""}
           ${!t.matched ? `<div><h4>Info</h4><p>Couldn't find this title on Cinemeta, so its shown with the file name.${t.is_admin ? " Use Fix match to pick the right one." : ""}</p></div>` : ""}
@@ -991,8 +1209,17 @@
     };
     const am = $("#adminMore");
     if (am) {
-      am.onclick = (e) => { e.stopPropagation(); $("#adminMenu").hidden = !$("#adminMenu").hidden; };
-      document.addEventListener("click", () => { const m = $("#adminMenu"); if (m) m.hidden = true; }, { once: true });
+      // The hero gets lifted above the episodes while the menu is open, otherwise the season row paints over it
+      const menu = $("#adminMenu"), hero = $(".detail-hero");
+      const setM = (on) => { menu.hidden = !on; hero.classList.toggle("menu-open", on); am.setAttribute("aria-expanded", on); };
+      am.onclick = (e) => { e.stopPropagation(); setM(menu.hidden); };
+      const off = (e) => {
+        if (!document.body.contains(menu)) { document.removeEventListener("click", off); document.removeEventListener("keydown", esc2); return; }
+        if (!menu.hidden && !e.target.closest("#adminMenu")) setM(false);
+      };
+      const esc2 = (e) => { if (e.key === "Escape" && !menu.hidden) { setM(false); am.focus(); } };
+      document.addEventListener("click", off);
+      document.addEventListener("keydown", esc2);
       $("#fixMatch").onclick = () => fixMatch(t);
       $("#rescanT").onclick = async () => { await api("/api/admin/rescan", {}); toast("Rescanning the library"); };
       $("#delTitle").onclick = async () => {
@@ -1005,12 +1232,14 @@
 
   // A title from an addon catalog, Kino can show what it is but only plays whats in the library
   async function pageDiscover(kind, id) {
-    const t = await api(`/api/external/${encodeURIComponent(kind)}/${encodeURIComponent(id)}${location.hash.includes("?all=1") ? "?stay=1" : ""}`);
+    const nm = EXT_NAME.get(`${kind}/${id}`) || "";
+    const q = [location.hash.includes("?all=1") ? "stay=1" : "", nm ? "name=" + encodeURIComponent(nm) : ""].filter(Boolean).join("&");
+    const t = await api(`/api/external/${encodeURIComponent(kind)}/${encodeURIComponent(id)}${q ? "?" + q : ""}`);
     if (t.library_id) { location.replace(`#/title/${t.library_id}`); return; }
     const facts = metaLine({ ...t, kind });
-    app.innerHTML = topbar(kind === "series" ? "shows" : "movies") + `
+    app.innerHTML = topbar(kind === "series" ? "shows" : "movies") + backBtn() + `
       <section class="detail-hero">
-        <div class="hero-bg">${t.background ? `<img src="${img(t.background.replace("/medium/", "/large/"))}" data-alt="${esc(t.background)}" alt="" data-fallback="hide" style="width:100%;height:100%;object-fit:cover;object-position:center 20%">` : ""}</div>
+        <div class="hero-bg ${t.poster ? "has-tall" : ""}">${heroArt(t)}</div>
         <div class="hero-content" style="z-index:2">
           ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
           <div class="hero-meta">${facts.map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
@@ -1022,9 +1251,9 @@
         ${t.videos?.length ? `<section class="section" style="margin-top:0">
           <div class="seasons" id="extSeasons"></div>
           <div class="episodes" id="eps"></div></section>` : ""}
-        ${t.cast?.length ? `<section class="section"><h2 class="section-title">Cast</h2><div class="cast">${t.cast.map((c) => `<a href="#/search?q=${encodeURIComponent(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
+        ${t.cast?.length ? `<section class="section"><h2 class="section-title">Cast</h2><div class="cast">${t.cast.map((c) => `<a href="#/person/${encodeURIComponent(c)}">${esc(c)}</a>`).join("")}</div></section>` : ""}
         <section class="section"><div class="facts">
-          ${t.director ? `<div><h4>Director</h4><p>${esc([].concat(t.director).join(", "))}</p></div>` : ""}
+          ${t.director ? `<div><h4>Director</h4><p>${[].concat(t.director).map((d) => `<a class="plain-link" href="#/person/${encodeURIComponent(d)}">${esc(d)}</a>`).join(", ")}</p></div>` : ""}
           ${t.genres?.length ? `<div><h4>Genres</h4><p>${esc(t.genres.join(", "))}</p></div>` : ""}
           ${kind === "series" && t.seasons ? `<div><h4>Seasons</h4><p>${t.seasons} season${t.seasons === 1 ? "" : "s"}, ${t.episodes} episodes</p></div>` : ""}
         </div></section>
@@ -1187,6 +1416,8 @@
         <h2 class="set-title">Profile</h2>
         <div class="set-profile">${avatar(p.icon, "lg")}<div class="grow"><div class="set-name">${esc(p.name)}</div><div class="secondary">Everyone on this profile shares the watch history and these settings.</div></div>
           <button class="btn secondary small" id="editMe">${ic("pencil")} Edit</button></div>
+        <div class="set-row"><span><b>Profile Lock</b><span class="secondary">${p.locked ? "A 4 digit code is needed to open this profile" : "Ask for a 4 digit code when someone picks this profile"}</span></span>
+          <span class="actions">${p.locked ? `<button class="btn secondary small" id="pinChange">Change Code</button><button class="btn secondary small" id="pinOff">Remove</button>` : `<button class="btn secondary small" id="pinSet">${ic("lock")} Set Code</button>`}</span></div>
       </section>
       <section class="card set-card">
         <h2 class="set-title">Appearance</h2>
@@ -1206,6 +1437,8 @@
         <div class="set-row"><span><b>Subtitle Size</b></span>${sel("pSubS", [["s", "Small"], ["m", "Medium"], ["l", "Large"]], pr.sub_size)}</div>
         ${toggle("pAuto", pr.autoplay, "Autoplay Next Episode", "Starts the next episode after a short countdown")}
         ${toggle("pSkip", pr.skip_intro, "Skip Intros Automatically", "Only works where Kino knows the intro")}
+        <div class="set-row"><span><b>Are You Still Watching?</b><span class="secondary">Pauses and asks after this long with nobody touching anything</span></span>${sel("pStill", [["0", "Never"], ["30", "30 Minutes"], ["60", "1 Hour"], ["90", "1.5 Hours"], ["120", "2 Hours"], ["180", "3 Hours"], ["240", "4 Hours"]], String(pr.still_watching || 0))}</div>
+        ${toggle("pLoadStats", pr.load_stats !== false, "Loading Details", "Shows what Kino is doing while a video starts, like the speed and audio track")}
         ${toggle("pBlur", pr.blur_watched, "Blur Watched", "Blurs the artwork of films and episodes you've already watched")}
         ${toggle("pShare", pr.share_events, "Share Watch Activity with Addons", "Lets tracking addons like Trakt see what this profile watches")}
         <div class="actions end"><span class="secondary" id="prefSaved"></span></div>
@@ -1215,16 +1448,36 @@
     </main>`;
     wireTopbar();
     $("#editMe").onclick = () => editProfile(p, () => route());
+    const setPin = async (remove) => {
+      let old = "";
+      if (p.locked) {
+        old = await pinPad("Enter the Current Code", async (c) => c);
+        if (!old) return;
+      }
+      let code = "";
+      if (!remove) {
+        code = await pinPad("Choose a 4 Digit Code", async (c) => c, "You'll need it every time you open this profile");
+        if (!code) return;
+        const again = await pinPad("Enter It Again", async (c) => { if (c !== code) throw new Error("Those codes don't match"); return c; });
+        if (!again) return;
+      }
+      try { const r = await api("/api/profile/pin", { old, pin: code }); ME.profile = r.profile; toast(remove ? "Lock removed" : "Profile locked"); route(); }
+      catch (e) { toast(e.message, 5000); }
+    };
+    const ps = $("#pinSet"), pc = $("#pinChange"), po = $("#pinOff");
+    if (ps) ps.onclick = () => setPin(false);
+    if (pc) pc.onclick = () => setPin(false);
+    if (po) po.onclick = () => setPin(true);
     wireThemePicker($("#setTheme"));
     const saveP = async () => {
-      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked };
+      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
       ME.profile = r.profile;
       applyPrefs();
       $("#prefSaved").textContent = "Saved";
       setTimeout(() => $("#prefSaved") && ($("#prefSaved").textContent = ""), 1800);
     };
-    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare"].forEach((id) => $("#" + id).addEventListener("change", saveP));
+    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
     if (isAdmin()) drawAdminSettings();
   }
@@ -1238,7 +1491,11 @@
     box.innerHTML = `
       <section class="card set-card">
         <h2 class="set-title">Profiles</h2>
-        <div class="list">${pr.profiles.map((p) => `<div class="li">${avatar(p.icon, "xs")}<span class="grow">${esc(p.name)}</span><button class="btn secondary small" data-editp="${p.id}">${ic("pencil")} Edit</button></div>`).join("")}</div>
+        ${pr.pending && pr.pending.length ? `<h3 class="sr-sub">Asked For</h3><div class="list">${pr.pending.map((p) => `<div class="li">${avatar(p.icon, "xs")}<span class="grow">${esc(p.name)}</span>
+          <button class="btn primary small" data-papprove="${p.id}">Approve</button><button class="btn secondary small" data-pdeny="${p.id}">Deny</button></div>`).join("")}</div><h3 class="sr-sub">Profiles</h3>` : ""}
+        <div class="list">${pr.profiles.map((p) => `<div class="li">${avatar(p.icon, "xs")}<span class="grow">${esc(p.name)}${p.locked ? ` <span class="badge">${ic("lock")} Locked</span>` : ""}</span>
+          ${p.locked ? `<button class="btn secondary small" data-unlock="${p.id}" title="Takes the code off, you never see what it was">Remove Lock</button>` : ""}
+          <button class="btn secondary small" data-editp="${p.id}">${ic("pencil")} Edit</button></div>`).join("")}</div>
         <div class="actions end"><button class="btn secondary small" id="addP">${ic("plus")} Add Profile</button></div>
       </section>
       <section class="card set-card">
@@ -1260,6 +1517,12 @@
     drawDevices();
     drawAddons();
     $$("[data-editp]", box).forEach((b) => (b.onclick = () => editProfile(pr.profiles.find((x) => x.id === Number(b.dataset.editp)), () => drawAdminSettings())));
+    $$("[data-papprove]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/profiles/${b.dataset.papprove}/approve`, {}); toast("Profile approved"); drawAdminSettings(); }));
+    $$("[data-pdeny]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/profiles/${b.dataset.pdeny}`, undefined, "DELETE"); toast("Request removed"); drawAdminSettings(); }));
+    $$("[data-unlock]", box).forEach((b) => (b.onclick = async () => {
+      if (!(await confirmSheet("Remove this lock?", "Anyone can open the profile again until they set a new code. You never get to see the old code.", "Remove Lock"))) return;
+      await api(`/api/admin/profiles/${b.dataset.unlock}/pin-reset`, {}); toast("Lock removed"); drawAdminSettings();
+    }));
     $("#addP").onclick = () => editProfile(null, () => drawAdminSettings());
     $("#fillMine").onclick = () => { $("#ipCidr").value = mine; $("#ipLabel").focus(); };
     $("#ipForm").onsubmit = async (e) => {
@@ -1552,10 +1815,25 @@
   }
 
   // ---------------------------------------------------------- polling
+  // Finds the same control again after a redraw, by id, data attribute or text
+  function focusKey(el) {
+    if (!el || el === document.body || !app.contains(el)) return null;
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    const d = Object.keys(el.dataset)[0];
+    if (d) return `[data-${d.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase())}="${CSS.escape(el.dataset[d])}"]`;
+    return { text: el.textContent.trim(), tag: el.tagName };
+  }
+  function refocus(k) {
+    if (!k) return;
+    const el = typeof k === "string" ? $(k, app) : $$(k.tag, app).find((x) => x.textContent.trim() === k.text);
+    if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+  }
   function startPoll(fn, ms) {
     stopPoll();
     const tick = async () => {
+      const k = focusKey(document.activeElement);
       try { await fn(); } catch (e) { if (e.message !== "pick profile") console.warn(e); }
+      refocus(k);
       if (POLL) POLL.t = setTimeout(tick, document.hidden ? ms * 5 : ms);
     };
     POLL = { t: null };
@@ -1590,6 +1868,7 @@
   }
 
   function showMsg(title, text, actions = "") {
+    loadHide();
     const m = $("#pMsg");
     m.innerHTML = `<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="actions" style="justify-content:center">${actions}</div>`;
     m.hidden = false;
@@ -1597,26 +1876,96 @@
   }
   const spinner = (on) => ($("#playerSpinner").hidden = !on);
 
+  // Loading screen like stremio: the artwork, the logo pulsing and what Kino is doing underneath. The lines can be
+  // turned off per profile in Settings, the artwork and logo always show
+  const LOAD = { on: false, t0: 0, lines: [], stats: true, timer: null };
+  function loadShow(art, name) {
+    const el = $("#pLoad");
+    LOAD.on = true; LOAD.t0 = performance.now(); LOAD.lines = [];
+    LOAD.stats = !(ME.profile && ME.profile.prefs && ME.profile.prefs.load_stats === false);
+    $("#plBg").innerHTML = art && art.background ? `<img src="${img(art.background)}" alt="" data-fallback="hide">` : "";
+    loadLogo(art, name);
+    $("#plStats").innerHTML = "";
+    el.classList.toggle("no-stats", !LOAD.stats);
+    el.hidden = false;
+    requestAnimationFrame(() => el.classList.add("on"));
+    clearInterval(LOAD.timer);
+    LOAD.timer = setInterval(drawLoad, 500);
+  }
+  function loadLogo(art, name) {
+    const box = $("#plLogo");
+    if (art && art.logo) box.innerHTML = `<img src="${img(art.logo, 1)}" alt="${esc(name || "")}" data-fallback="text" data-cls="pl-name">`;
+    else box.innerHTML = `<div class="pl-name">${esc(name || "")}</div>`;
+  }
+  function loadArt(art, name) {
+    if (!LOAD.on || !art) return;
+    if (art.background && !$("#plBg img")) $("#plBg").innerHTML = `<img src="${img(art.background)}" alt="" data-fallback="hide">`;
+    if (art.logo && !$("#plLogo img")) loadLogo(art, name);
+  }
+  // Each step is one line, the newest one is the one that's still going
+  function loadStep(text) {
+    if (!LOAD.on) return;
+    const last = LOAD.lines[LOAD.lines.length - 1];
+    if (last) last.done = performance.now();
+    LOAD.lines.push({ text, t: performance.now(), done: 0 });
+    drawLoad();
+  }
+  function loadNote(text) { if (LOAD.on && LOAD.lines.length) { LOAD.lines[LOAD.lines.length - 1].note = text; drawLoad(); } }
+  function drawLoad() {
+    if (!LOAD.on || !LOAD.stats) return;
+    const now = performance.now();
+    $("#plStats").innerHTML = LOAD.lines.slice(-4).map((l) => `<div class="${l.done ? "done" : "now"}"><span>${esc(l.text)}</span>${l.note ? `<span class="pl-note">${esc(l.note)}</span>` : ""}<b>${((l.done || now) - l.t) / 1000 < 0.1 ? "" : (((l.done || now) - l.t) / 1000).toFixed(1) + " s"}</b></div>`).join("");
+  }
+  function loadHide() {
+    if (!LOAD.on) return;
+    LOAD.on = false;
+    clearInterval(LOAD.timer);
+    const el = $("#pLoad");
+    el.classList.remove("on");
+    setTimeout(() => { if (!LOAD.on) el.hidden = true; }, 450);
+  }
+
+  // Picks the audio track for the profile's language. Tracks are matched by there language tag first, then by the name
+  // the file gives them, cause plenty of files have untagged tracks just called "English" or "ENG 5.1"
+  const LANG_CODES = { English: ["en", "eng"], German: ["de", "ger", "deu"], French: ["fr", "fre", "fra"], Spanish: ["es", "spa"], Italian: ["it", "ita"], Dutch: ["nl", "dut", "nld"], Polish: ["pl", "pol"], Portuguese: ["pt", "por"], Russian: ["ru", "rus"], Japanese: ["ja", "jpn"], Korean: ["ko", "kor"], Chinese: ["zh", "chi", "zho"], Swedish: ["sv", "swe"], Danish: ["da", "dan"], Norwegian: ["no", "nor"], Finnish: ["fi", "fin"], Turkish: ["tr", "tur"], Arabic: ["ar", "ara"], Hindi: ["hi", "hin"] };
+  function pickAudio(info, want) {
+    if (!want || !info.audio || info.audio.length < 2) return info.default_audio;
+    const codes = LANG_CODES[want] || [];
+    const has = (x) => {
+      const l = String(x.lang || "").toLowerCase(), lab = String(x.label || "").toLowerCase();
+      if (l === want.toLowerCase() || codes.includes(l)) return true;
+      return lab.includes(want.toLowerCase()) || codes.some((c) => new RegExp(`(^|[^a-z])${c}([^a-z]|$)`).test(lab));
+    };
+    // Commentary tracks are nearly always the second english one, skip them unless theres nothing else
+    const hits = info.audio.filter(has);
+    const main = hits.find((x) => !/comment/i.test(x.label || "")) || hits[0];
+    return main ? main.n : info.default_audio;
+  }
+
   async function playFile(fid, opts = {}) {
     closePlayer(true);
     clearInterval(HERO_T);
     pl.el.hidden = false;
     document.body.style.overflow = "hidden";
-    spinner(true);
+    spinner(false);
+    const tt = opts.title;
+    loadShow(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "");
+    loadStep("Getting the file ready");
     $("#pMsg").hidden = true;
     $("#upNext").hidden = true;
     $("#skipIntro").hidden = true;
     $("#subsLayer").innerHTML = "";
     let info;
-    try { info = await api(`/api/file/${fid}`); } catch (e) { showMsg("Can't play this file", e.message); return; }
+    try { info = await api(`/api/file/${fid}`); } catch (e) { loadHide(); showMsg("Can't play this file", e.message); return; }
+    loadArt(info.art, (opts.title && opts.title.name) || info.show || info.name);
+    if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
     pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false;
     pl.title = opts.title || null;
     const prefs = info.prefs || {};
     $("#subsLayer").dataset.size = prefs.sub_size || "m";
 
     // Picks the audio and subtitles from the profile settings
-    pl.audio = info.default_audio;
-    if (prefs.audio_lang) { const a = info.audio.find((x) => x.lang === prefs.audio_lang); if (a) pl.audio = a.n; }
+    pl.audio = pickAudio(info, prefs.audio_lang);
     const t = opts.title;
     $("#pTitle").textContent = t ? t.name : info.name;
     if (info.stream && info.src) {
@@ -1624,6 +1973,7 @@
       buildMenus();
       setupDeviceButtons();
       pl.mode = "direct";
+      loadStep("Connecting to the source");
       pl.v.src = info.src;
       const from = opts.from != null ? opts.from : info.resume || 0;
       pl.v.addEventListener("loadedmetadata", () => { if (from && from < pl.v.duration - 10) pl.v.currentTime = from; }, { once: true });
@@ -1660,10 +2010,13 @@
 
     if (info.direct && codecOk(vcodec) && pl.audio === info.default_audio) {
       pl.mode = "direct";
+      loadStep("Direct play");
+      loadNote([vcodec && vcodec.toUpperCase(), ...(info.badges || [])].filter(Boolean).join(" · "));
       pl.v.src = `/api/stream/${fid}/direct`;
       pl.v.addEventListener("loadedmetadata", () => { if (start) pl.v.currentTime = start; }, { once: true });
       pl.v.play().catch(() => {});
     } else if (!codecOk(vcodec)) {
+      loadHide();
       showMsg("This browser can't play this video", `It uses ${String(vcodec).toUpperCase()} video. Safari or Chrome on a Mac usually can, or you can download it and use VLC.`, dlBtn);
       wireCopy(info);
       return;
@@ -1700,18 +2053,24 @@
   }
 
   async function startHls(t) {
-    spinner(true);
+    if (!LOAD.on) spinner(true);
     $("#pMsg").hidden = true;
     if (pl.hls) { pl.hls.destroy(); pl.hls = null; }
     let r;
+    const vc = pl.info.video || {};
+    loadStep(vc.codec && !["h264", "hevc", "av1", "vp9"].includes(vc.codec) ? "Converting the video for this screen" : "Starting the stream");
+    const au = (pl.info.audio || []).find((x) => x.n === pl.audio);
+    loadNote([au && au.label, vc.dovi ? "Dolby Vision to HDR" : "", t > 1 ? `from ${clock(t)}` : ""].filter(Boolean).join(" · "));
     try {
-      r = await api(`/api/play/${pl.info.id}`, { t, audio: pl.audio });
+      r = await api(`/api/play/${pl.info.id}`, { t, audio: pl.audio, hevc: codecOk("hevc") });
     } catch (e) {
+      loadHide();
       showMsg("Playback couldn't start", e.message, `<a class="btn secondary small" href="${esc(pl.info.download)}&save=1">${ic("download")} Download instead</a>`);
       return;
     }
     if (pl.el.hidden) { api(`/api/play/${r.sid}/stop`, {}).catch(() => {}); return; }
     pl.mode = "hls"; pl.sid = r.sid; pl.offset = r.offset;
+    loadStep("Buffering");
     // Safari plays the stream itself which keeps AirPlay working, everyone else uses hls.js
     if (isSafari && pl.v.canPlayType("application/vnd.apple.mpegurl")) {
       pl.v.src = r.url;
@@ -1719,6 +2078,12 @@
       // startPosition 0 cause the playlist is still growing and hls.js would otherwise jump to the end
       const h = new Hls({ startPosition: 0, maxBufferLength: 60, backBufferLength: 120, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 });
       pl.hls = h;
+      // Download speed for the loading screen, from the segments hls.js fetches
+      h.on(Hls.Events.FRAG_LOADED, (_, d) => {
+        const st = d.frag && d.frag.stats, b = st && (st.total || st.loaded);
+        const ms = st && st.loading ? st.loading.end - st.loading.start : 0;
+        if (b && ms > 0) loadNote(`${(b * 8 / ms / 1000).toFixed(1)} Mbps`);
+      });
       h.on(Hls.Events.ERROR, (_, d) => {
         if (!d.fatal) return;
         if (d.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
@@ -1770,6 +2135,7 @@
     pl.v.removeAttribute("src");
     pl.v.load();
     pl.info = null; pl.mode = null;
+    loadHide(); $("#pStill").hidden = true; clearTimeout(STILL.t);
     if (!keepOpen && wasOpen) {
       pl.el.hidden = true;
       document.body.style.overflow = "";
@@ -1926,6 +2292,32 @@
     }
   }
 
+  // Are you still watching: after the profile's set time with nobody touching anything it pauses and asks, so a
+  // show doesnt autoplay all night to an empty room. Off unless the profile turns it on in Settings
+  const STILL = { t: null };
+  function stillReset() {
+    clearTimeout(STILL.t);
+    const mins = ME.profile && ME.profile.prefs && Number(ME.profile.prefs.still_watching);
+    if (!mins || pl.el.hidden) return;
+    STILL.t = setTimeout(stillAsk, mins * 60000);
+  }
+  function stillAsk() {
+    if (pl.el.hidden || pl.v.paused) return stillReset();
+    pl.v.pause();
+    const box = $("#pStill");
+    $("#stillWhat").textContent = $("#pTitle").textContent + ($("#pSub").textContent ? " · " + $("#pSub").textContent.split("  ").slice(0, 2).join(" ") : "");
+    box.hidden = false;
+    $("#stillYes").focus();
+    // Nobody answers for 10 minutes, the player closes and saves where it got to
+    STILL.t = setTimeout(() => { if (!box.hidden) closePlayer(); }, 600000);
+  }
+  $("#stillYes").onclick = () => { $("#pStill").hidden = true; pl.v.play().catch(() => {}); stillReset(); };
+  $("#stillNo").onclick = () => { $("#pStill").hidden = true; closePlayer(); };
+  // On the document so tv remotes count too, there key presses dont always land inside the player
+  ["pointerdown", "keydown", "wheel"].forEach((ev) => document.addEventListener(ev, () => { if (!pl.el.hidden && $("#pStill").hidden) stillReset(); }, { passive: true }));
+  let stillMove = 0;
+  pl.el.addEventListener("mousemove", () => { if (Date.now() - stillMove > 5000 && $("#pStill").hidden) { stillMove = Date.now(); stillReset(); } });
+
   // controls
   const v = pl.v;
   function drawTime() {
@@ -1948,9 +2340,9 @@
   }
   v.addEventListener("timeupdate", drawTime);
   v.addEventListener("progress", drawTime);
-  v.addEventListener("waiting", () => spinner(true));
+  v.addEventListener("waiting", () => { if (!LOAD.on) spinner(true); });
   v.addEventListener("playing", () => {
-    spinner(false); $("#pMsg").hidden = true;
+    spinner(false); $("#pMsg").hidden = true; loadHide(); stillReset();
     if (pl.info && (!pl.evStarted || pl.evPaused)) { pl.evStarted = true; pl.evPaused = false; sendEvent("start"); }
   });
   v.addEventListener("canplay", () => spinner(false));
@@ -2114,11 +2506,15 @@
     const menu = $$(".player .menu").find((m) => !m.hidden);
     if (menu) { hideMenus(); return true; }
     if (sheetClose) { closeSheet(); return true; }
+    if (!$("#pStill").hidden) { $("#stillYes").click(); return true; }
     if (!pl.el.hidden) { closePlayer(); return true; }
     const am = $("#avatarMenu");
     if (am && !am.hidden) { am.hidden = true; $("#side").classList.remove("pinned"); return true; }
+    const page = (location.hash || "#/home").split("?")[0].split("/")[1] || "home";
+    if (page === "title" || page === "discover" || page === "person") { history.length > 1 ? history.back() : (location.hash = "#/home"); return true; }
+    if (page !== "home" && page !== "profiles") { location.hash = "#/home"; return true; }
     if (TV && document.activeElement && !document.activeElement.closest("#chrome") && $("#side")) {
-      // On a tv, back first jumps to the sidebar like apple tv, and from there it leaves
+      // On a tv, back on Home jumps to the sidebar like apple tv, and from there it leaves
       const cur = $(".side-item[aria-current='page']") || $(".side-item");
       if (cur) { cur.focus(); return true; }
     }
@@ -2136,11 +2532,46 @@
   };
   window.kinoPip = (on) => document.body.classList.toggle("pip", !!on);
 
+  // ---------------------------------------------------------- side scrolling rows
+  // A mouse without a trackpad cant scroll sideways, so rows get arrow buttons like netflix when you point at them.
+  // The mouse wheel also scrolls a row sideways while the pointer is over its arrows. Touch screens and tvs dont get them
+  const FINE = matchMedia("(hover: hover) and (pointer: fine)");
+  function enhanceRows(root = app) {
+    if (TV || !FINE.matches) return;
+    $$(".row, .episodes", root).forEach((row) => {
+      if (row.parentElement.classList.contains("row-wrap")) return;
+      const wrap = document.createElement("div");
+      wrap.className = "row-wrap";
+      row.parentNode.insertBefore(wrap, row);
+      wrap.appendChild(row);
+      wrap.insertAdjacentHTML("beforeend", `<button class="row-arrow l" tabindex="-1" aria-label="Scroll left">${ic("chevronL")}</button><button class="row-arrow r" tabindex="-1" aria-label="Scroll right">${ic("chevronR")}</button>`);
+      const [l, r] = $$(".row-arrow", wrap);
+      const upd = () => {
+        const max = row.scrollWidth - row.clientWidth - 4;
+        l.classList.toggle("off", row.scrollLeft <= 4 || row.classList.contains("grid"));
+        r.classList.toggle("off", row.scrollLeft >= max || row.classList.contains("grid"));
+      };
+      // Moves by whole tiles so nothing ends up cut in half at the edge
+      const step = (dir) => {
+        const tile = row.firstElementChild;
+        const w = tile ? tile.getBoundingClientRect().width + parseFloat(getComputedStyle(row).columnGap || 18) : 300;
+        const n = Math.max(1, Math.floor((row.clientWidth - 80) / w));
+        row.scrollBy({ left: dir * n * w, behavior: reduceMotion() ? "auto" : "smooth" });
+      };
+      l.onclick = (e) => { e.preventDefault(); step(-1); };
+      r.onclick = (e) => { e.preventDefault(); step(1); };
+      [l, r].forEach((b) => b.addEventListener("wheel", (e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { e.preventDefault(); row.scrollBy({ left: e.deltaY }); } }, { passive: false }));
+      row.addEventListener("scroll", upd, { passive: true });
+      wrap.addEventListener("mouseenter", upd);
+      upd();
+    });
+  }
+
   // ---------------------------------------------------------- router
   const applyPrefs = () => document.body.classList.toggle("blur-watched", !!(ME.profile && ME.profile.prefs && ME.profile.prefs.blur_watched));
 
   // Which sidebar item a page belongs to
-  const sideFor = (page) => ({ title: "", discover: "" })[page] ?? (page || "home");
+  const sideFor = (page) => ({ title: "", discover: "", person: "search" })[page] ?? (page || "home");
   let LAST_PAGE = null, ROUTE_N = 0, ENTER_T = null;
 
   // Apple style placeholders that show the shape of the page while it loads
@@ -2180,12 +2611,14 @@
       else if (page === "title" && arg) await pageTitle(arg);
       else if (page === "discover" && arg) await pageDiscover(decodeURIComponent(arg), decodeURIComponent((location.hash.split("?")[0].split("/")[3] || "")));
       else if (page === "search") await pageSearch();
+      else if (page === "person" && arg) await pagePerson(decodeURIComponent(arg));
       else if (page === "mylist") await pageMyList();
       else if (page === "settings") await pageSettings();
       else if (page === "sync" && isAdmin()) await pageSync();
       else if (page === "server" && isAdmin()) await pageServer();
       else await pageHome();
       if (isAdmin() && page !== "sync" && page !== "home") api("/api/admin/sync").then((s) => { SYNC = s; updateSyncChip(); }).catch(() => {});
+      if (n === ROUTE_N) enhanceRows(app);
       if (changed && n === ROUTE_N) {
         void app.offsetWidth; app.classList.add("enter");
         // Only the first draw of a page animates, pages that refresh themselves every few seconds stay still

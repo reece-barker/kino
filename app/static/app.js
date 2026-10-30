@@ -1791,7 +1791,7 @@
     app.innerHTML = topbar("live") + `<main class="page live-page">
       <div class="live-head"><h1 class="large-title">Live TV</h1>
         <div class="live-tabs" role="tablist"><a class="${guide ? "" : "on"}" href="#/live" role="tab">${ic("live")} Channels</a>${r.has_guide ? `<a class="${guide ? "on" : ""}" href="#/live/guide" role="tab">${ic("guide")} TV Guide</a>` : ""}</div></div>
-      ${!r.total && !r.addon_rows.length ? `<div class="empty"><h2>No channels yet</h2><p>${isAdmin() ? "Add an IPTV playlist (M3U) in Settings under Live TV, or install an addon with live channels." : "Ask the admin to add some channels."}</p>${isAdmin() ? `<a class="btn secondary small" href="#/settings">Open Settings</a>` : ""}</div>` : `
+      ${!r.total && !r.addon_rows.length && !r.embeds.length ? `<div class="empty"><h2>No channels yet</h2><p>${isAdmin() ? "Add an IPTV playlist (M3U) in Settings under Live TV, or install an addon with live channels." : "Ask the admin to add some channels."}</p>${isAdmin() ? `<a class="btn secondary small" href="#/settings">Open Settings</a>` : ""}</div>` : `
       ${r.countries.length > 1 ? chips(r.countries.slice(0, 12), "country", "Country") : ""}
       ${r.groups.length > 1 ? chips(r.groups, "group", "Category") : ""}
       ${guide ? `<div id="guide" class="guide"></div>` : `
@@ -1831,6 +1831,21 @@
     grid.addEventListener("focusin", more);
     // Live rows from addons (events, channels), each filled in when it arrives
     const rows = $("#liveRows");
+    // Embed sources (a service's own player pages), a row each, live ones first
+    if (!st.group && !st.country && !st.q) r.embeds.forEach(async (src) => {
+      const sec = document.createElement("section");
+      sec.className = "shelf";
+      sec.setAttribute("aria-label", src.name);
+      sec.innerHTML = `<h2 class="section-title">${esc(src.name)}</h2><div class="row wide">${Array.from({ length: 5 }, () => `<div class="sk sk-wide"></div>`).join("")}</div>`;
+      rows.prepend(sec);
+      try {
+        const x = await api(`/api/live/embed/${src.id}`);
+        if (!x.items.length) { sec.remove(); return; }
+        $(".row", sec).innerHTML = x.items.map((it, i) => `<a class="tile landscape emb-tile" href="#/live" data-emb="${i}"><div class="art">${it.image ? `<img loading="lazy" src="${img(it.image, 0, WW())}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(it.title)}">${esc(it.title)}</div>`}${it.live ? `<span class="tile-live">Live${it.score ? " " + esc(it.score) : ""}</span>` : ""}</div>
+          <div class="cap">${esc(it.title)}</div><div class="sub">${esc([it.category, !it.live && it.when].filter(Boolean).join(" · "))}</div></a>`).join("");
+        $(".row", sec).addEventListener("click", (e) => { const a = e.target.closest("[data-emb]"); if (!a) return; e.preventDefault(); openEmbed(x.items, Number(a.dataset.emb), src.name); });
+      } catch (_) { sec.remove(); }
+    });
     if (!st.group && !st.country && !st.q) r.addon_rows.forEach(async (row) => {
       const sec = document.createElement("section");
       sec.className = "shelf";
@@ -1871,6 +1886,54 @@
       <div class="g-now" style="left:calc(var(--g-ch) + (100% - var(--g-ch)) * ${pct(Date.now() / 1000) / 100})"></div>`;
     box.addEventListener("click", (e) => { const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST); });
   }
+
+  // ---- embed player: the service's own player page in a locked down frame (no popups, cant navigate Kino away),
+  // full screen with the title, previous and next on top. Back closes it
+  let EMB = null;
+  function openEmbed(items, i, source) {
+    closeEmbed();
+    const el = document.createElement("div");
+    el.className = "embed-view";
+    el.setAttribute("role", "dialog");
+    el.innerHTML = `<div class="emb-bar"><button class="glass-btn round" id="embClose" aria-label="Close">${ic("close")}</button>
+        <div class="emb-title"><b id="embTitle"></b><span class="secondary" id="embSub"></span></div>
+        <button class="icon-btn" id="embPrev" aria-label="Previous">${ic("chevronL")}</button><button class="icon-btn" id="embNext" aria-label="Next">${ic("chevronR")}</button></div>
+      <iframe id="embFrame" sandbox="allow-scripts allow-same-origin allow-presentation" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="no-referrer"></iframe>`;
+    document.body.appendChild(el);
+    document.body.style.overflow = "hidden";
+    EMB = { el, items, i, source, t: null };
+    const wake = () => { el.classList.remove("idle"); clearTimeout(EMB && EMB.t); if (EMB) EMB.t = setTimeout(() => el.classList.add("idle"), 3500); };
+    el.addEventListener("mousemove", wake);
+    el.addEventListener("keydown", wake);
+    $("#embClose", el).onclick = closeEmbed;
+    $("#embPrev", el).onclick = () => stepEmbed(-1);
+    $("#embNext", el).onclick = () => stepEmbed(1);
+    showEmbed();
+    wake();
+    $("#embClose", el).focus();
+  }
+  function showEmbed() {
+    const it = EMB.items[EMB.i];
+    $("#embTitle").textContent = it.title;
+    $("#embSub").textContent = [EMB.source, it.live ? "Live" : it.when, it.category].filter(Boolean).join(" · ");
+    $("#embFrame").src = it.player;
+    $("#embPrev").hidden = $("#embNext").hidden = EMB.items.length < 2;
+  }
+  function stepEmbed(d) { if (!EMB) return; EMB.i = (EMB.i + d + EMB.items.length) % EMB.items.length; showEmbed(); }
+  function closeEmbed() {
+    if (!EMB) return false;
+    clearTimeout(EMB.t);
+    EMB.el.remove();
+    EMB = null;
+    document.body.style.overflow = "";
+    return true;
+  }
+  document.addEventListener("keydown", (e) => {
+    if (!EMB) return;
+    if (e.key === "Escape") { e.preventDefault(); closeEmbed(); }
+    else if (["PageUp", "ChannelUp"].includes(e.key)) stepEmbed(-1);
+    else if (["PageDown", "ChannelDown"].includes(e.key)) stepEmbed(1);
+  });
 
   // ---- playing a channel
   let LIVE_NOW = null;  // { list, i }
@@ -2156,7 +2219,34 @@
         <input id="lvEpg" placeholder="Guide link (XMLTV), optional" spellcheck="false" autocapitalize="none" inputmode="url">
         <label class="set-row" style="padding:4px 0"><span><b>On My Network</b><span class="secondary">For a TV server at home, lets Kino reach local addresses for this playlist</span></span><input type="checkbox" class="switch" id="lvLocal"></label>
         <div class="actions end"><button class="btn primary small" type="submit" id="lvGo">${ic("plus")} Add Playlist</button></div>
-      </form><div class="form-err" id="lvErr" role="alert"></div>`;
+      </form><div class="form-err" id="lvErr" role="alert"></div>
+      <h3 class="set-sub">Embed Sources</h3>
+      <p class="secondary set-hint">For services that give you a JSON list of channels or events with a player page for each. Kino shows them on Live TV and opens their player in a locked down frame. If the list only has ids, add the player link with {id} where the id goes, like https://example.com/embed/{id}.</p>
+      <div class="list">${(r.embeds || []).map((x) => `<div class="addon ${x.enabled ? "" : "off"}"><div class="addon-top"><span class="addon-logo">${ic("link")}</span>
+          <span class="grow"><b>${esc(x.name)}</b><span class="addon-desc secondary">${esc(x.url)}${x.player ? `<br>Player: ${esc(x.player)}` : ""}</span></span>
+          <input type="checkbox" class="switch" data-eon="${x.id}" ${x.enabled ? "checked" : ""} aria-label="Turn ${esc(x.name)} on or off"></div>
+        ${x.error ? `<div class="note warn-text">${esc(x.error)}</div>` : ""}
+        <div class="addon-foot"><span></span><div class="actions end"><button class="btn danger small" data-erm="${x.id}">${ic("trash")} Remove</button></div></div></div>`).join("")}</div>
+      <form class="live-form" id="embForm">
+        <input id="emName" placeholder="Name" autocomplete="off">
+        <input id="emUrl" placeholder="List link (JSON, https)" required spellcheck="false" autocapitalize="none" inputmode="url">
+        <input id="emPlayer" placeholder="Player link with {id}, optional" spellcheck="false" autocapitalize="none" inputmode="url">
+        <div class="actions end"><button class="btn primary small" type="submit" id="emGo">${ic("plus")} Add Source</button></div>
+      </form><div class="form-err" id="emErr" role="alert"></div>`;
+    $("#embForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const go = $("#emGo"); go.disabled = true;
+      try {
+        const x = await api("/api/admin/embeds", { name: $("#emName").value, url: $("#emUrl").value, player: $("#emPlayer").value });
+        toast(`Found ${x.count}, like ${x.sample.join(", ")}`, 5000);
+        ME.features = null; drawLiveAdmin();
+      } catch (er) { $("#emErr").textContent = er.message; go.disabled = false; }
+    };
+    $$("[data-eon]", box).forEach((c) => (c.onchange = async () => { await api(`/api/admin/embeds/${c.dataset.eon}`, { enabled: c.checked }, "PUT").catch(() => {}); ME.features = null; drawLiveAdmin(); }));
+    $$("[data-erm]", box).forEach((b) => (b.onclick = async () => {
+      if (!(await confirmSheet("Remove this source?", "Its row comes off Live TV for everyone.", "Remove"))) return;
+      await api(`/api/admin/embeds/${b.dataset.erm}`, undefined, "DELETE").catch(() => {}); ME.features = null; drawLiveAdmin();
+    }));
     $("#liveForm").onsubmit = async (e) => {
       e.preventDefault();
       const go = $("#lvGo"); go.disabled = true; go.innerHTML = `<span class="spin small"></span> Loading channels…`;
@@ -3335,7 +3425,7 @@
     if (playerOpen && (!cur || !pl.el.contains(cur) || cur === pl.v) && d[0]) return;  // left and right seek
     // An open dropdown keeps the remote inside it until it's closed, otherwise down could land on the page behind it
     const openMenu = cur && cur.closest && cur.closest(".menu:not([hidden])");
-    const scope = sheetClose ? $$(".sheet-wrap").pop() : openMenu || (playerOpen ? pl.el : document);
+    const scope = sheetClose ? $$(".sheet-wrap").pop() : EMB ? EMB.el : openMenu || (playerOpen ? pl.el : document);
     if (playerOpen) wakeUi();
     const items = $$('a[href], button, input, select, summary, [tabindex]:not([tabindex="-1"])', scope).filter((el) => {
       // Things inside a closed section can't take focus, only the section's own toggle can
@@ -3437,6 +3527,7 @@
   }
   // Back on a remote or phone closes whatever is on top first, the app goes back a page when this says no
   window.kinoBack = () => {
+    if (closeEmbed()) return true;
     const menu = $$(".player .menu").find((m) => !m.hidden);
     if (menu) { hideMenus(); return true; }
     if (sheetClose) { closeSheet(); return true; }

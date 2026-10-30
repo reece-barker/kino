@@ -142,6 +142,7 @@ CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, list_id INTEGER, name 
 CREATE INDEX IF NOT EXISTS channels_rank ON channels(rank, name);
 CREATE TABLE IF NOT EXISTS epg (tvg TEXT, start REAL, stop REAL, title TEXT, sub TEXT, descr TEXT);
 CREATE INDEX IF NOT EXISTS epg_ch ON epg(tvg, start);
+CREATE TABLE IF NOT EXISTS embed_sources (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, player TEXT, enabled INTEGER DEFAULT 1, added REAL, error TEXT);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
 """
@@ -1226,7 +1227,8 @@ async def videos_page(p=Depends(current_profile)):
 @app.get("/api/features")
 async def features(p=Depends(current_profile)):
     """Which sidebar sections have anything in them"""
-    live = bool(db().q("SELECT 1 FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1 LIMIT 1")) or bool(live_catalogs())
+    live = bool(db().q("SELECT 1 FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1 LIMIT 1")) or bool(live_catalogs()) \
+        or (not p.get("kids") and bool(db().q("SELECT 1 FROM embed_sources WHERE enabled = 1 LIMIT 1")))
     return {"live": live and (not p.get("kids") or bool(db().q("SELECT 1 FROM channels WHERE grp = 'Kids' LIMIT 1"))),
             "videos": any(video_type(c.get("type")) for _, c in home_catalogs())}
 
@@ -5129,6 +5131,7 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
         out["countries"] = lead + [c for c in cs if c not in lead]
         out["total"] = db().q(f"SELECT COUNT(*) n {base}")[0]["n"]
         out["has_guide"] = bool(db().q("SELECT 1 FROM epg WHERE stop > ? LIMIT 1", (time.time(),)))
+        out["embeds"] = [] if p.get("kids") else [{"id": r["id"], "name": r["name"]} for r in db().q("SELECT id, name FROM embed_sources WHERE enabled = 1 ORDER BY id")]
         out["addon_rows"] = [] if p.get("kids") else [{"id": f"{a['id']}|{c['id']}", "title": f"{c.get('name') or c.get('id')}", "source": a["m"].get("name")} for a, c, _ in live_catalogs()]
     return out
 
@@ -5375,11 +5378,147 @@ async def live_bad(cid: str, p=Depends(current_profile)):
     return {"ok": True}
 
 
+# ---- embed sources: services that hand out a JSON list (channels, events) with a player page for each, the way a
+# lot of free live tv sites do. Kino reads the list and opens the player page in a locked down frame: no popups, no
+# sending you to another page, no reading Kino's cookies. Only https player pages. These cant go through Kino's own
+# player (the video is inside someone elses page), so they have there own full screen view with previous and next
+EMBED_CACHE = {}  # source id -> (when, items)
+EMBED_TITLE = ("title", "name", "channel_name", "event", "match", "label")
+EMBED_IMG = ("thumbnail", "logo_url", "logo", "poster", "image", "img", "icon", "homeTeamImage")
+EMBED_CAT = ("sport", "league", "category", "group", "genre", "type")
+EMBED_PLAYER = ("playerUrl", "player_url", "embedUrl", "embed_url", "embed", "iframe", "url", "link")
+
+
+def embed_items(j, src):
+    """Finds the playable things in whatever shape the service's JSON is: a list, {events: [...]}, {data: [...]},
+    or a schedule of days and categories with events inside"""
+    base, tmpl, out = src["url"], src["player"] or "", []
+
+    def absolute(u):
+        u = str(u or "").strip()
+        return urljoin(base, u) if u else None
+
+    def item(it, cat):
+        title = next((str(it[k]) for k in EMBED_TITLE if it.get(k)), "")
+        if not title:
+            return None
+        chans = [c for c in it.get("channels") or [] if isinstance(c, dict)]
+        cid = str(it.get("id") or it.get("channel_id") or (chans[0].get("channel_id") or chans[0].get("id") if chans else "") or it.get("slug") or "")
+        player = next((it[k] for k in EMBED_PLAYER if isinstance(it.get(k), str) and it.get(k)), None)
+        if player:
+            player = absolute(player)
+        elif tmpl and cid:
+            player = tmpl.replace("{id}", quote(cid, safe="")).replace("{slug}", quote(str(it.get("slug") or cid), safe="")).replace("{title}", quote(title, safe=""))
+        if not player or urlparse(player).scheme != "https":
+            return None
+        img_ = next((it[k] for k in EMBED_IMG if isinstance(it.get(k), str) and it.get(k)), None) or (chans[0].get("logo_url") if chans else None)
+        status = str(it.get("status") or "")
+        when = " ".join(str(it[k]) for k in ("date", "time") if it.get(k))
+        return {"id": "e" + hashlib.sha1(player.encode()).hexdigest()[:14], "title": unesc(title)[:120], "image": https_url(absolute(img_)) if img_ else None,
+                "category": str(next((it[k] for k in EMBED_CAT if it.get(k)), cat or ""))[:40], "status": status[:20],
+                "live": status.lower() in ("live", "in play", "inplay", "1h", "2h", "ht") or it.get("live") is True,
+                "when": when[:40], "score": str(it.get("score") or "")[:20] or None, "player": player}
+
+    def walk(x, cat=None, depth=0):
+        if depth > 5:
+            return
+        if isinstance(x, list):
+            for it in x:
+                if isinstance(it, dict) and any(it.get(k) for k in EMBED_TITLE):
+                    got = item(it, cat)
+                    if got:
+                        out.append(got)
+                else:
+                    walk(it, cat, depth + 1)
+        elif isinstance(x, dict):
+            for k, v in x.items():
+                if isinstance(v, (list, dict)):
+                    walk(v, cat if k in ("events", "channels", "data", "items", "results", "list") else k, depth + 1)
+    walk(j)
+    seen, uniq = set(), []
+    for x in out:
+        if x["id"] not in seen:
+            seen.add(x["id"])
+            uniq.append(x)
+    # Whats live now first, then the rest in the order the service gave
+    uniq.sort(key=lambda x: not x["live"])
+    return uniq
+
+
+async def embed_list(src, fresh=False):
+    hit = EMBED_CACHE.get(src["id"])
+    if hit and not fresh and time.time() - hit[0] < 90:
+        return hit[1]
+    raw, _ = await live_get(src["url"], max_bytes=20 * 1024**2, timeout=30)
+    try:
+        j = json.loads(raw)
+    except Exception:
+        raise HTTPException(502, "That link didn't send JSON")
+    items = await asyncio.to_thread(embed_items, j, dict(src))
+    EMBED_CACHE[src["id"]] = (time.time(), items)
+    return items
+
+
+@app.get("/api/live/embeds")
+async def live_embeds(p=Depends(current_profile)):
+    if p.get("kids"):
+        return {"sources": []}
+    return {"sources": [{"id": r["id"], "name": r["name"]} for r in db().q("SELECT id, name FROM embed_sources WHERE enabled = 1 ORDER BY id")]}
+
+
+@app.get("/api/live/embed/{eid}")
+async def live_embed(eid: int, p=Depends(current_profile)):
+    if p.get("kids"):
+        raise HTTPException(404, "Not on this profile")
+    r = db().q("SELECT * FROM embed_sources WHERE id = ? AND enabled = 1", (eid,))
+    if not r:
+        raise HTTPException(404, "Unknown source")
+    try:
+        items = await embed_list(r[0])
+        db().q("UPDATE embed_sources SET error = NULL WHERE id = ?", (eid,))
+    except Exception as e:
+        db().q("UPDATE embed_sources SET error = ? WHERE id = ?", (str(getattr(e, "detail", None) or e)[:200], eid))
+        raise HTTPException(502, f"{r[0]['name']} didn't answer")
+    return {"name": r[0]["name"], "items": items[:300]}
+
+
+@app.post("/api/admin/embeds")
+async def embed_add(request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    url, player = str(b.get("url") or "").strip(), str(b.get("player") or "").strip()
+    if not url.startswith("https://") or (player and not player.startswith("https://")):
+        raise HTTPException(400, "Links have to start with https://")
+    name = str(b.get("name") or "").strip()[:60] or urlparse(url).hostname
+    src = {"id": 0, "url": url, "player": player}
+    items = await embed_list(src, fresh=True)
+    if not items:
+        raise HTTPException(400, "Kino read that list but found nothing it could play. If the items only have an id, add the player link with {id} in it")
+    db().q("INSERT INTO embed_sources (name, url, player, enabled, added) VALUES (?,?,?,1,?)", (name, url, player or None, time.time()))
+    EMBED_CACHE.pop(0, None)
+    return {"ok": True, "count": len(items), "sample": [x["title"] for x in items[:3]]}
+
+
+@app.put("/api/admin/embeds/{eid}")
+async def embed_edit(eid: int, request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    if "enabled" in b:
+        db().q("UPDATE embed_sources SET enabled = ? WHERE id = ?", (1 if b["enabled"] else 0, eid))
+    return {"ok": True}
+
+
+@app.delete("/api/admin/embeds/{eid}")
+async def embed_remove(eid: int, admin=Depends(require_admin)):
+    db().q("DELETE FROM embed_sources WHERE id = ?", (eid,))
+    EMBED_CACHE.pop(eid, None)
+    return {"ok": True}
+
+
 @app.get("/api/admin/live")
 async def live_admin(admin=Depends(require_admin)):
     rows = db().q("SELECT * FROM iptv_lists ORDER BY id")
     stats = {r["list_id"]: dict(r) for r in db().q("SELECT list_id, COUNT(*) n, SUM(ok = 1) good, SUM(ok = 0) bad FROM channels GROUP BY list_id")}
     return {"lists": [{**dict(r), "good": (stats.get(r["id"]) or {}).get("good") or 0, "bad": (stats.get(r["id"]) or {}).get("bad") or 0} for r in rows],
+            "embeds": [dict(r) for r in db().q("SELECT * FROM embed_sources ORDER BY id")],
             "guide_rows": db().q("SELECT COUNT(*) n FROM epg")[0]["n"], "checking": LIVE["checking"]}
 
 

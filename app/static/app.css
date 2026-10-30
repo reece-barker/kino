@@ -1503,3 +1503,14 @@ body.tv .search input:focus, body.tv .sheet .search input:focus { outline: none;
 body.tv .ch-card:focus-visible, body.tv .g-ch:focus-visible { outline: none; transform: scale(1.04); box-shadow: 0 0 0 3px #fff, 0 14px 30px rgba(0, 0, 0, 0.5); z-index: 2; }
 body.tv .g-prog:focus-visible { outline: none; box-shadow: inset 0 0 0 3px #fff; background: var(--bg-4); z-index: 2; }
 body.tv .live-tabs a:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; }
+
+/* embed sources: someone elses player page full screen, with a bar on top that hides itself */
+.embed-view { position: fixed; inset: 0; z-index: 90; background: #000; }
+.embed-view iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.emb-bar { position: absolute; left: 0; right: 0; top: 0; z-index: 2; display: flex; align-items: center; gap: 14px; padding: 18px var(--gutter, 24px) 40px;
+  background: linear-gradient(rgba(0, 0, 0, 0.75), transparent); transition: opacity 0.3s ease; }
+.embed-view.idle .emb-bar { opacity: 0; pointer-events: none; }
+.emb-title { display: grid; flex: 1; min-width: 0; color: #fff; }
+.emb-title b { font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.emb-bar .icon-btn { color: #fff; }
+.set-sub { font-size: 17px; margin: 26px 0 4px; }

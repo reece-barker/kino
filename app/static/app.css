@@ -1514,3 +1514,24 @@ body.tv .live-tabs a:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; 
 .emb-title b { font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .emb-bar .icon-btn { color: #fff; }
 .set-sub { font-size: 17px; margin: 26px 0 4px; }
+
+/* channel cards with there options button, and the recordings list */
+.ch-cell { position: relative; display: flex; min-width: 0; }
+.ch-cell .ch-card { flex: 1; padding-right: 46px; }
+.ch-opt { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: var(--label-2); }
+.ch-opt:hover { background: var(--hover); color: var(--label); }
+.ch-fav { position: absolute; left: 14px; top: 8px; z-index: 2; color: #ffd60a; font-size: 14px; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); }
+.ch-card { position: relative; }
+.opt-list { display: grid; gap: 4px; margin-top: 14px; }
+.opt-list .mi { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border-radius: 12px; background: var(--fill-2); font-size: 16px; text-align: left; }
+.opt-list .mi:hover { background: var(--fill); }
+.rec-list .li { gap: 10px; }
+.badge.rec-on { color: #fff; background: #e5383b; box-shadow: none; }
+body.tv .ch-opt:focus-visible { outline: none; background: var(--label); color: var(--page-bg); transform: translateY(-50%) scale(1.1); }
+body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none; background: var(--label); color: var(--page-bg); }
+/* phones held upright: the player's title bar sits below the status bar with room to breathe */
+@media (orientation: portrait) and (max-width: 760px) {
+  .player-top { padding-top: calc(env(safe-area-inset-top) + 18px); padding-bottom: 56px; background: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0)); }
+  .player-title { min-width: 0; flex: 1; }
+  .player-title div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}

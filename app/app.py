@@ -142,6 +142,9 @@ CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, list_id INTEGER, name 
 CREATE INDEX IF NOT EXISTS channels_rank ON channels(rank, name);
 CREATE TABLE IF NOT EXISTS epg (tvg TEXT, start REAL, stop REAL, title TEXT, sub TEXT, descr TEXT);
 CREATE INDEX IF NOT EXISTS epg_ch ON epg(tvg, start);
+CREATE TABLE IF NOT EXISTS live_fav (profile_id INTEGER, cid TEXT, added REAL, PRIMARY KEY (profile_id, cid));
+CREATE TABLE IF NOT EXISTS recordings (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, cid TEXT, channel TEXT, title TEXT,
+  start REAL, stop REAL, state TEXT, path TEXT, size INTEGER, error TEXT, created REAL);
 CREATE TABLE IF NOT EXISTS embed_sources (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, player TEXT, enabled INTEGER DEFAULT 1, added REAL, error TEXT);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
@@ -460,7 +463,7 @@ def scan_fs():
         raise RuntimeError(f"{MEDIA_DIR} isn't reachable, check the Storage Box mount")
     vids, subs = [], {}
     for root, dirs, names in os.walk(MEDIA_DIR):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("kino-recordings", "kino-backups")]
         for n in names:
             if n.startswith(".") or n.endswith(".part"):
                 continue
@@ -955,7 +958,7 @@ async def lifespan(app):
             await rescan()
             await asyncio.sleep(RESCAN_MINUTES * 60)
 
-    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker)]
+    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker, rec_worker)]
     yield
     for t in tasks:
         t.cancel()
@@ -1211,17 +1214,6 @@ async def history_remove(file_id: str = "", p=Depends(current_profile)):
 
 def pub_profile(p):
     return {"id": p["id"], "name": p["name"], "icon": p["icon"]}
-
-
-@app.get("/api/videos")
-async def videos_page(p=Depends(current_profile)):
-    """The Videos section: rows from youtube style addons (youtubio), kept apart from films and shows"""
-    summ, _, _ = all_summaries(p["id"])
-    rows = [sh for sh in addon_shelves(summ, kids=p.get("kids")) if sh["style"] == "wide"]
-    for sh in rows:
-        sh["next"] = len(sh["items"][:SHELF_FIRST])
-        sh["items"] = sh["items"][:SHELF_FIRST]
-    return {"shelves": rows}
 
 
 @app.get("/api/features")
@@ -2617,6 +2609,13 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     body = await request.json()
     t = max(0.0, float(body.get("t") or 0))
     a = int(body.get("audio") or 0)
+    # Audio sync: aresample keeps the sound matched to the video's timestamps (files with gaps or drift go out of
+    # sync slowly otherwise), and the player's Audio Sync setting can shift it by hand, positive is later
+    try:
+        ad = max(-5.0, min(5.0, float(body.get("ad") or 0)))
+    except (TypeError, ValueError):
+        ad = 0.0
+    afilter = "aresample=async=1000" + (f",asetpts=PTS{ad:+.3f}/TB" if ad else "")
     if fid.startswith("s"):
         r = stream_row(fid)
         if r["url"].startswith("torbox:"):
@@ -2679,7 +2678,7 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     if t > 0:
         args += ["-ss", f"{t:.3f}"]
     args += ["-i", f["path"], "-map", "0:v:0", "-map", f"0:a:{a}?", *vargs,
-             "-c:a", "aac", "-ac", "2", "-b:a", "192k", "-sn", "-dn", "-max_muxing_queue_size", "2048",
+             "-c:a", "aac", "-ac", "2", "-b:a", "192k", "-af", afilter, "-sn", "-dn", "-max_muxing_queue_size", "2048",
              "-f", "hls", "-hls_time", "6", "-hls_playlist_type", "event", "-hls_segment_type", "fmp4",
              "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", str(out / "seg%05d.m4s"),
              str(out / "index.m3u8")]
@@ -4946,11 +4945,30 @@ def xmltv_time(t):
             return None
 
 
+def guide_name(n):
+    """Channel names made comparable between a playlist and a guide: BBC One HD, bbc one and BBCOne all match"""
+    n = (n or "").lower().replace("&", "and").replace("+", "plus")
+    n = re.sub(r"[^a-z0-9]", "", n)
+    n = re.sub(r"(fhd|uhd|hd|sd|4k|uk|gb|us|usa)$", "", n)
+    return n.replace("bbc1", "bbcone").replace("bbc2", "bbctwo")
+
+
+def epg_channels(raw):
+    """The channels a guide has: id -> its names"""
+    import xml.etree.ElementTree as ET
+    out = {}
+    for _, el in ET.iterparse(io.BytesIO(raw), events=("end",)):
+        if el.tag == "channel":
+            out[el.get("id")] = [d.text or "" for d in el.findall("display-name")]
+            el.clear()
+        elif el.tag == "programme":
+            el.clear()
+    return out
+
+
 def parse_epg(raw, want):
     """Whats on from an XMLTV guide, only for channels Kino has and only from 2 hours ago to 36 hours ahead"""
     import xml.etree.ElementTree as ET
-    if raw[:2] == b"\x1f\x8b":
-        raw = gzip.decompress(raw)
     now, rows = time.time(), []
     lo, hi = now - 7200, now + 36 * 3600
     for _, el in ET.iterparse(io.BytesIO(raw), events=("end",)):
@@ -4967,6 +4985,47 @@ def parse_epg(raw, want):
     return rows
 
 
+UK_REGIONS = {"london", "lon", "east", "west", "north", "south", "midlands", "wales", "scotland", "northern", "ireland", "ni", "cumbria", "yorkshire",
+              "anglia", "border", "central", "granada", "meridian", "tyne", "tees", "west", "england", "channel", "islands", "", "&", "and", "eastern", "western"}
+# Free guides by country, used for playlists that dont name one (iptv-org's dont), matched by channel name
+AUTO_GUIDES = {"uk": "https://epg.pw/xmltv/epg_GB.xml.gz", "us": "https://epg.pw/xmltv/epg_US.xml.gz",
+               "ca": "https://epg.pw/xmltv/epg_CA.xml.gz", "au": "https://epg.pw/xmltv/epg_AU.xml.gz"}
+
+
+async def load_guide(url, local, chans):
+    """Downloads a guide, matches it to the playlist's channels (by guide id, then by name) and stores whats on.
+    Returns how many channels got a guide"""
+    raw, _ = await live_get(url, local=local, max_bytes=300 * 1024**2, timeout=240)
+    if raw[:2] == b"\x1f\x8b":
+        raw = await asyncio.to_thread(gzip.decompress, raw)
+    gch = await asyncio.to_thread(epg_channels, raw)
+    by_name = {}
+    for gid, names in gch.items():
+        for n in names:
+            by_name.setdefault(guide_name(n), gid)
+    matched = {}
+    for c in chans:
+        gid = c["tvg"] if c["tvg"] in gch else by_name.get(guide_name(c["name"]))
+        if not gid:
+            # Regional versions (BBC One London, BBC One Wales) fall back to the main channel's guide
+            words = re.sub(r"\s+(hd|sd|fhd)$", "", c["name"], flags=re.I).split()
+            while not gid and len(words) > 2 and words[-1].lower().strip("&") in UK_REGIONS:
+                words.pop()
+                gid = by_name.get(guide_name(" ".join(words)))
+        if gid:
+            matched[c["id"]] = gid
+    if not matched:
+        return 0
+    want = set(matched.values())
+    progs = await asyncio.to_thread(parse_epg, raw, want)
+    for i in range(0, len(want), 500):
+        part = list(want)[i:i + 500]
+        db().q("DELETE FROM epg WHERE tvg IN (%s)" % ",".join("?" * len(part)), part)
+    db().many("INSERT INTO epg VALUES (?,?,?,?,?,?)", progs)
+    db().many("UPDATE channels SET tvg = ? WHERE id = ?", [(g, cid) for cid, g in matched.items()])
+    return len(matched)
+
+
 async def refresh_list(row):
     lid = row["id"]
     try:
@@ -4979,23 +5038,24 @@ async def refresh_list(row):
         if m:
             default = "uk" if m.group(1) == "gb" else m.group(1)
         chans, epg = await asyncio.to_thread(parse_m3u, text, lid, default)
-        old = {r["id"]: r for r in db().q("SELECT id, ok, checked FROM channels WHERE list_id = ?", (lid,))}
+        old = {r["id"]: dict(r) for r in db().q("SELECT id, ok, checked FROM channels WHERE list_id = ?", (lid,))}
         db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
         db().many("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                   [(c["id"], lid, c["name"], c["logo"], c["grp"], c["country"], c["tvg"], c["url"], c["headers"], c["rank"],
                     (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked")) for c in chans])
         guide = row["epg"] or epg
         err = None
-        if guide:
+        guides = [guide] if guide else []
+        if not guides:
+            # No guide named, the free country guides fill in for the english speaking countries in it
+            counts = {}
+            for c in chans:
+                counts[c["country"]] = counts.get(c["country"], 0) + 1
+            guides = [AUTO_GUIDES[k] for k in AUTO_GUIDES if counts.get(k, 0) >= 5]
+        for g in guides:
             try:
-                graw, _ = await live_get(guide, local=bool(row["local"]), max_bytes=300 * 1024**2, timeout=180)
-                want = {c["tvg"] for c in chans if c["tvg"]}
-                progs = await asyncio.to_thread(parse_epg, graw, want)
-                if want:
-                    for i in range(0, len(want), 500):
-                        part = list(want)[i:i + 500]
-                        db().q("DELETE FROM epg WHERE tvg IN (%s)" % ",".join("?" * len(part)), part)
-                db().many("INSERT INTO epg VALUES (?,?,?,?,?,?)", progs)
+                n = await load_guide(g, bool(row["local"]) and g == guide, chans)
+                log.info("live tv guide %s matched %d channels", g, n)
             except Exception as e:
                 err = f"Guide failed: {getattr(e, 'detail', None) or e}"[:200]
         db().q("UPDATE iptv_lists SET refreshed = ?, count = ?, error = ?, epg = COALESCE(epg, ?) WHERE id = ?", (time.time(), len(chans), err, row["epg"] or None, lid))
@@ -5107,8 +5167,10 @@ def live_catalogs():
 
 
 @app.get("/api/live")
-async def live_list(group: str = "", country: str = "", q: str = "", skip: int = 0, all: int = 0, p=Depends(current_profile)):
+async def live_list(group: str = "", country: str = "", q: str = "", skip: int = 0, all: int = 0, fav: int = 0, p=Depends(current_profile)):
     where, args = ["l.enabled = 1"], []
+    if fav:
+        where.append("c.id IN (SELECT cid FROM live_fav WHERE profile_id = ?)"); args.append(p["id"])
     if not all:
         where.append("(c.ok IS NULL OR c.ok = 1)")
     if p.get("kids"):
@@ -5122,8 +5184,11 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
     w = " AND ".join(where)
     rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {w} ORDER BY c.rank, c.ok DESC, c.name LIMIT 120 OFFSET ?", [*args, max(0, skip)])
     guide = now_next({r["tvg"] for r in rows if r["tvg"]})
-    out = {"channels": [chan_out(r, guide) for r in rows], "next": skip + len(rows) if len(rows) == 120 else None}
+    favs = {r["cid"] for r in db().q("SELECT cid FROM live_fav WHERE profile_id = ?", (p["id"],))}
+    out = {"channels": [{**chan_out(r, guide), "fav": r["id"] in favs} for r in rows], "next": skip + len(rows) if len(rows) == 120 else None}
     if skip == 0:
+        out["fav_count"] = len(favs)
+        out["recordings"] = db().q("SELECT COUNT(*) n FROM recordings WHERE state != 'cancelled'")[0]["n"]
         base = "FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1" + ("" if all else " AND (c.ok IS NULL OR c.ok = 1)") + (" AND c.grp = 'Kids'" if p.get("kids") else "")
         out["groups"] = [r["grp"] for r in db().q(f"SELECT c.grp, COUNT(*) n {base} GROUP BY c.grp ORDER BY n DESC LIMIT 30")]
         cs = [r["country"] for r in db().q(f"SELECT c.country, COUNT(*) n {base} AND c.country != '' GROUP BY c.country ORDER BY n DESC")]
@@ -5169,11 +5234,12 @@ async def live_guide(start: float = 0, hours: float = 3, group: str = "", countr
     if country:
         where.append("c.country = ?"); args.append(country)
     rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {' AND '.join(where)} ORDER BY c.rank, c.name LIMIT 60 OFFSET ?", [*args, max(0, skip)])
+    favs = {r["cid"] for r in db().q("SELECT cid FROM live_fav WHERE profile_id = ?", (p["id"],))}
     out = []
     for r in rows:
         progs = [{"title": x["title"], "sub": x["sub"], "desc": x["descr"], "start": x["start"], "stop": x["stop"]} for x in
                  db().q("SELECT * FROM epg WHERE tvg = ? AND stop > ? AND start < ? ORDER BY start", (r["tvg"], start, end))]
-        out.append({**chan_out(r, {}), "progs": progs})
+        out.append({**chan_out(r, {}), "fav": r["id"] in favs, "progs": progs})
     return {"start": start, "end": end, "channels": out, "next": skip + len(rows) if len(rows) == 60 else None}
 
 
@@ -5368,6 +5434,194 @@ async def live_proxy(tok: str, request: Request, p=Depends(current_profile)):
             await r.aclose()
             await client.aclose()
     return StreamingResponse(body(), status_code=r.status_code, headers=out, media_type=ct or "video/mp2t")
+
+
+@app.post("/api/live/fav/{cid}")
+async def live_fav_add(cid: str, p=Depends(current_profile)):
+    db().q("INSERT OR REPLACE INTO live_fav VALUES (?,?,?)", (p["id"], cid[:40], time.time()))
+    return {"ok": True}
+
+
+@app.delete("/api/live/fav/{cid}")
+async def live_fav_remove(cid: str, p=Depends(current_profile)):
+    db().q("DELETE FROM live_fav WHERE profile_id = ? AND cid = ?", (p["id"], cid))
+    return {"ok": True}
+
+
+# ---- recording live tv to the Storage Box. Each recording is ffmpeg saving the channel to an mp4 in
+# kino-recordings (left out of the library scan), started and stopped by the worker below at the right times.
+# Fragmented mp4 so whatever got saved still plays if it was cut off. Kept apart from films and shows on there own page
+REC_DIR = MEDIA_DIR / "kino-recordings"
+REC_PROCS = {}  # recording id -> ffmpeg process
+REC_MAX = int(env("REC_MAX", "4"))
+
+
+def rec_out(r):
+    d = dict(r)
+    d.pop("path", None)
+    d["playable"] = r["state"] in ("recording", "done", "stopped") and bool(r["size"] or r["state"] == "recording")
+    return d
+
+
+async def rec_start(r):
+    try:
+        url, headers, local = await live_source(r["cid"])
+    except Exception as e:
+        db().q("UPDATE recordings SET state = 'failed', error = ? WHERE id = ?", (str(getattr(e, "detail", None) or e)[:200], r["id"]))
+        return
+    safe = re.sub(r"[^\w .()'-]", "", f"{r['channel']} - {r['title']}").strip()[:90] or f"Recording {r['id']}"
+    when = datetime.datetime.fromtimestamp(r["start"]).strftime("%Y-%m-%d %H.%M")
+    folder = REC_DIR / re.sub(r"[^\w .()'-]", "", r["channel"]).strip()[:60]
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        db().q("UPDATE recordings SET state = 'failed', error = ? WHERE id = ?", (f"Couldn't write to the Storage Box: {e}"[:200], r["id"]))
+        return
+    path = folder / f"{safe} {when}.mp4"
+    secs = max(60, int(r["stop"] - time.time()))
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-fflags", "+genpts+discardcorrupt", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
+    if headers:
+        args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+    args += ["-i", url, "-t", str(secs), "-map", "0:v:0?", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1000",
+             "-f", "mp4", "-movflags", "+frag_keyframe+empty_moov+default_base_moof", str(path)]
+    errlog = open(HLS_DIR / f"rec{r['id']}.log", "wb") if HLS_DIR.exists() else asyncio.subprocess.DEVNULL
+    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=errlog)
+    REC_PROCS[r["id"]] = proc
+    db().q("UPDATE recordings SET state = 'recording', path = ?, error = NULL WHERE id = ?", (str(path), r["id"]))
+    log.info("recording %s from %s", path.name, r["channel"])
+
+    async def wait():
+        rc = await proc.wait()
+        REC_PROCS.pop(r["id"], None)
+        size = path.stat().st_size if path.exists() else 0
+        cur = db().q("SELECT state FROM recordings WHERE id = ?", (r["id"],))
+        if not cur:
+            return
+        state = cur[0]["state"]
+        if state == "recording":
+            state = "done" if size > 100_000 else "failed"
+        err = None
+        if state == "failed":
+            try:
+                err = (HLS_DIR / f"rec{r['id']}.log").read_text(errors="ignore")[-200:] or f"ffmpeg stopped ({rc})"
+            except OSError:
+                err = f"ffmpeg stopped ({rc})"
+        db().q("UPDATE recordings SET state = ?, size = ?, error = COALESCE(?, error) WHERE id = ?", (state, size, err, r["id"]))
+    asyncio.create_task(wait())
+
+
+async def rec_worker():
+    # Anything that was recording when Kino stopped keeps what it got
+    for r in db().q("SELECT * FROM recordings WHERE state = 'recording'"):
+        size = Path(r["path"]).stat().st_size if r["path"] and Path(r["path"]).exists() else 0
+        db().q("UPDATE recordings SET state = ?, size = ?, error = ? WHERE id = ?", ("stopped" if size else "failed", size, "Kino restarted while this was recording", r["id"]))
+    while True:
+        try:
+            now = time.time()
+            for r in db().q("SELECT * FROM recordings WHERE state = 'scheduled' AND start <= ? ORDER BY start", (now + 15,)):
+                if r["stop"] <= now:
+                    db().q("UPDATE recordings SET state = 'failed', error = 'Missed, Kino was off' WHERE id = ?", (r["id"],))
+                elif len(REC_PROCS) >= REC_MAX:
+                    db().q("UPDATE recordings SET state = 'failed', error = ? WHERE id = ?", (f"Already recording {REC_MAX} things", r["id"]))
+                else:
+                    await rec_start(r)
+            for r in db().q("SELECT id, size, path FROM recordings WHERE state = 'recording'"):
+                if r["path"] and Path(r["path"]).exists():
+                    db().q("UPDATE recordings SET size = ? WHERE id = ?", (Path(r["path"]).stat().st_size, r["id"]))
+        except Exception as e:
+            log.info("recording worker: %s", e)
+        await asyncio.sleep(15)
+
+
+@app.post("/api/live/record")
+async def rec_add(request: Request, p=Depends(current_profile)):
+    if p.get("kids"):
+        raise HTTPException(403, "Kids profiles can't record")
+    b = await request.json()
+    cid = str(b.get("cid") or "")[:40]
+    if cid.startswith("c"):
+        row = db().q("SELECT name FROM channels WHERE id = ?", (cid,))
+        if not row:
+            raise HTTPException(404, "Unknown channel")
+        channel = row[0]["name"]
+    elif cid.startswith("t"):
+        channel = str(b.get("channel") or "Live")[:80]
+    else:
+        raise HTTPException(400, "That can't be recorded")
+    now = time.time()
+    start = float(b.get("start") or now)
+    stop = float(b.get("stop") or 0) or start + 60 * float(b.get("minutes") or 60)
+    if b.get("start"):
+        start -= 120  # a couple of minutes either side, guides are often a bit out
+        stop += 300
+    start = max(now, start)
+    if stop <= start or stop - start > 6 * 3600:
+        raise HTTPException(400, "Recordings can be up to 6 hours")
+    title = str(b.get("title") or "").strip()[:120]
+    if not title and cid.startswith("c"):
+        # Named after whats on when it starts, from the guide
+        g = db().q("SELECT e.title FROM epg e JOIN channels c ON c.tvg = e.tvg WHERE c.id = ? AND e.start <= ? AND e.stop > ? LIMIT 1", (cid, start + 60, start + 60))
+        title = g[0]["title"] if g else ""
+    title = title or datetime.datetime.fromtimestamp(start).strftime("%d %b %H:%M")
+    clash = db().q("SELECT 1 FROM recordings WHERE cid = ? AND state IN ('scheduled', 'recording') AND start < ? AND stop > ?", (cid, stop, start))
+    if clash:
+        raise HTTPException(409, "That's already being recorded")
+    db().q("INSERT INTO recordings (profile_id, cid, channel, title, start, stop, state, created) VALUES (?,?,?,?,?,?, 'scheduled', ?)",
+           (p["id"], cid, channel, title, start, stop, now))
+    rid = db().q("SELECT id FROM recordings ORDER BY id DESC LIMIT 1")[0]["id"]
+    if start <= now + 15:
+        r = db().q("SELECT * FROM recordings WHERE id = ?", (rid,))[0]
+        await rec_start(r)
+    return {"ok": True, "id": rid, "now": start <= now + 15}
+
+
+@app.get("/api/live/recordings")
+async def rec_list(p=Depends(current_profile)):
+    if p.get("kids"):
+        return {"recordings": []}
+    rows = db().q("SELECT * FROM recordings WHERE state != 'cancelled' ORDER BY CASE state WHEN 'recording' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END, start DESC LIMIT 300")
+    return {"recordings": [rec_out(r) for r in rows]}
+
+
+@app.post("/api/live/recordings/{rid}/stop")
+async def rec_stop(rid: int, request: Request, p=Depends(current_profile)):
+    r = db().q("SELECT * FROM recordings WHERE id = ?", (rid,))
+    if not r or (r[0]["profile_id"] != p["id"] and not admin_user(request)):
+        raise HTTPException(404, "Unknown recording")
+    if r[0]["state"] == "scheduled":
+        db().q("UPDATE recordings SET state = 'cancelled' WHERE id = ?", (rid,))
+    elif r[0]["state"] == "recording":
+        db().q("UPDATE recordings SET state = 'stopped', stop = ? WHERE id = ?", (time.time(), rid))
+        proc = REC_PROCS.get(rid)
+        if proc and proc.returncode is None:
+            # q tells ffmpeg to finish up properly instead of being killed mid write
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+    return {"ok": True}
+
+
+@app.delete("/api/live/recordings/{rid}")
+async def rec_delete(rid: int, request: Request, p=Depends(current_profile)):
+    r = db().q("SELECT * FROM recordings WHERE id = ?", (rid,))
+    if not r or (r[0]["profile_id"] != p["id"] and not admin_user(request)):
+        raise HTTPException(404, "Unknown recording")
+    proc = REC_PROCS.get(rid)
+    if proc and proc.returncode is None:
+        proc.kill()
+    if r[0]["path"]:
+        Path(r[0]["path"]).unlink(missing_ok=True)
+    db().q("DELETE FROM recordings WHERE id = ?", (rid,))
+    return {"ok": True}
+
+
+@app.get("/api/live/recordings/{rid}/file")
+async def rec_file(rid: int, request: Request, p=Depends(current_profile)):
+    r = db().q("SELECT * FROM recordings WHERE id = ?", (rid,))
+    if not r or not r[0]["path"] or not Path(r[0]["path"]).exists() or p.get("kids"):
+        raise HTTPException(404, "That recording isn't there anymore")
+    return range_response(r[0]["path"], request, download_name=Path(r[0]["path"]).name if request.query_params.get("save") else None)
 
 
 @app.post("/api/live/{cid}/bad")

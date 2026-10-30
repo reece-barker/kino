@@ -544,6 +544,17 @@ select.plain { background: var(--fill); border: 0; border-radius: 10px; height: 
 .page.narrow { max-width: 860px; margin: 0 auto; }
 .set-card { margin-bottom: 18px; padding: 22px; }
 .set-title { font-size: 20px; margin: 0 0 14px; letter-spacing: -0.01em; }
+/* settings cards that fold away, the title row is the button */
+.set-fold > summary { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; border-radius: 12px; margin: -6px -8px; padding: 6px 8px; }
+.set-fold > summary::-webkit-details-marker { display: none; }
+.set-fold > summary .set-title { margin: 0; flex: 1; }
+.set-fold .fold-chev { display: grid; place-items: center; color: var(--label-2); transition: transform 0.2s; }
+.set-fold .fold-chev .i { width: 22px; height: 22px; }
+.set-fold[open] > summary { margin-bottom: 8px; }
+.set-fold[open] .fold-chev { transform: rotate(180deg); }
+.set-fold > summary:hover .fold-chev { color: var(--label); }
+.set-fold .fold-body { padding-top: 6px; }
+body.tv .set-fold > summary:focus-visible { outline: none; background: var(--hover); box-shadow: inset 0 0 0 2px var(--label); }
 .set-hint { font-size: 14px; margin: -6px 0 10px; }
 .set-profile { display: flex; gap: 18px; align-items: center; }
 .set-profile .av.lg { width: 84px; height: 84px; }
@@ -975,13 +986,36 @@ body.with-side .hero-dots { left: auto; }
 .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 
 /* ---- gate page for devices that aren't allowed */
-.gate-body { min-height: 100vh; display: grid; place-items: center; padding: 20px; background: radial-gradient(120% 80% at 50% 0%, var(--bg-3), var(--page-bg)); }
-.gate-card { width: min(460px, 100%); text-align: center; padding: 36px 28px 28px; border-radius: 32px; background: var(--bg-2); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35), inset 0 1px 0 var(--glass-hi); animation: sheetIn 0.6s var(--spring); }
+.gate-body { min-height: 100vh; min-height: 100dvh; display: flex; padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); background: radial-gradient(120% 80% at 50% 0%, var(--bg-3), var(--page-bg)); }
+/* the main wrapper fills the screen and the card is centred in it, auto margins keep it centred and still let a short screen scroll */
+.gate { flex: 1; display: flex; width: 100%; }
+.gate-card { width: min(460px, 100%); margin: auto; text-align: center; padding: 36px 28px 28px; border-radius: 32px; background: var(--bg-2); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35), inset 0 1px 0 var(--glass-hi); animation: sheetIn 0.6s var(--spring); }
 .gate-card h1 { font-size: 26px; margin: 0 0 10px; letter-spacing: -0.02em; }
-.gate-ic { width: 64px; height: 64px; margin: 0 auto 18px; border-radius: 18px; background: linear-gradient(145deg, #ff6b6b, #f9a03f); }
+.gate-mark { display: flex; justify-content: center; margin: 0 auto 22px; color: var(--label); }
+.gate-mark .wordmark { height: 34px; width: auto; display: block; }
 .gate-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 34px; font-weight: 700; letter-spacing: 0.12em; margin: 22px 0; padding: 14px; border-radius: 18px; background: var(--fill); }
-.gate-form { display: grid; gap: 10px; }
-.gate-form input { height: 50px; border-radius: 14px; border: 0; background: var(--fill); padding: 0 16px; font-size: 16px; color: var(--label); outline: none; }
+.gate-form { display: flex; flex-direction: column; gap: 16px; }
+.gate-form input { height: 50px; width: 100%; box-sizing: border-box; border-radius: 14px; border: 0; background: var(--fill); padding: 0 16px; font-size: 16px; color: var(--label); outline: none; }
+.gate-form .btn { width: 100%; margin: 0; }
+.gate-card .note { margin: 16px 0 0; min-height: 1.2em; }
+/* short screens (a tv, a phone held sideways) get a tighter card so it fits without scrolling */
+@media (max-height: 600px) {
+  .gate-card { padding: 20px 24px 18px; border-radius: 26px; }
+  .gate-mark { margin-bottom: 12px; } .gate-mark .wordmark { height: 24px; }
+  .gate-card h1 { font-size: 21px; margin-bottom: 6px; }
+  .gate-card p.secondary { font-size: 14px; margin: 0; }
+  .gate-code { font-size: 26px; margin: 12px 0; padding: 8px; }
+  .gate-form { gap: 12px; } .gate-form input { height: 44px; }
+  .gate-card .note { margin-top: 10px; }
+}
+@media (max-height: 430px) {
+  .gate-body { padding-top: 12px; padding-bottom: 12px; }
+  .gate-card { padding: 14px 22px 14px; }
+  .gate-mark .wordmark { height: 20px; }
+  .gate-code { font-size: 22px; margin: 8px 0; padding: 6px; }
+  .gate-form { gap: 10px; } .gate-form input { height: 40px; } .gate-form .btn { height: 40px; }
+}
+body.tv .gate-form .btn:focus-visible, body.tv .gate-form input:focus-visible { outline: 3px solid var(--label); outline-offset: 2px; }
 
 /* ---- tablets: same rail, a touch tighter */
 @media (max-width: 1100px) and (min-width: 761px) {
@@ -1543,8 +1577,26 @@ body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none
 .fav-tile .art { background: #111; }
 .fav-shot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .fav-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; background: transparent; }
-.fav-logo { position: absolute; left: 10px; bottom: 12px; z-index: 2; max-width: 30%; max-height: 28%; object-fit: contain; filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.8)); }
-.fav-star { position: absolute; right: 10px; top: 8px; z-index: 2; color: #ffd60a; font-size: 16px; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); }
+/* the global ".tile .art img" rule fills the whole picture, so the logo needs a more specific one to stay small and uncropped */
+.fav-tile .art img.fav-logo { position: absolute; left: 10px; bottom: 12px; z-index: 2; width: auto; height: auto; max-width: 30%; max-height: 28%; object-fit: contain; filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.8)); }
+.fav-cell { position: relative; min-width: 0; }
+.fav-cell .fav-tile { width: 100%; }
+.fav-btns { position: absolute; top: 8px; right: 8px; z-index: 4; display: flex; gap: 6px; }
+.fav-btn { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, 0.55); color: #fff; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); font-size: 16px; line-height: 1; transition: background 0.15s, transform 0.15s; }
+.fav-btn .i { width: 18px; height: 18px; }
+.fav-btn:hover { background: rgba(0, 0, 0, 0.8); }
+.fav-btn.fav-star { color: #ffd60a; }
+body.tv .fav-btn:focus-visible { outline: none; background: #fff; color: #000; transform: scale(1.12); }
+body.tv .fav-btn.fav-star:focus-visible { color: #b8860b; }
+/* the star on a channel card is a button now, tap it to unfavourite */
+button.ch-fav { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; font-size: 15px; line-height: 1; }
+button.ch-fav:hover { background: var(--hover); }
+body.tv button.ch-fav:focus-visible { outline: none; background: #fff; color: #b8860b; transform: scale(1.12); }
+/* options popup, sits right next to the button it opened from instead of a full screen sheet */
+.menu.drop.pop { position: fixed; z-index: 400; right: auto; bottom: auto; min-width: 230px; overflow-y: auto; overscroll-behavior: contain; padding: 6px; }
+.pop-head { display: grid; gap: 2px; padding: 8px 12px 10px; margin-bottom: 4px; border-bottom: 0.5px solid var(--glass-edge, rgba(255, 255, 255, 0.12)); }
+.pop-head b { font-size: 15px; overflow-wrap: anywhere; }
+.pop-head .secondary { font-size: 13px; overflow-wrap: anywhere; }
 .fav-tile .tile-live, .fav-tile .bar { z-index: 2; }
 .emb-adv { margin: 4px 0; }
 .emb-adv summary { cursor: pointer; color: var(--label-2); padding: 6px 0; }

@@ -6,6 +6,7 @@ import gzip
 import io
 import json
 import os
+import re
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -16,25 +17,36 @@ def read(path):
     return gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
 
 
+TIME_RE = re.compile(r"^\s*(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?\s*(?:(Z|UTC|GMT)|([+-])(\d{2}):?(\d{2})?)?")
+
+
 def xmltv_time(t):
+    """XMLTV times are 20261030203000 +0100, but guides in the wild also write +01:00, +01, no space before the offset, Z or
+    no offset at all (that one is UTC). Anything that doesnt read as a time is None"""
+    m = TIME_RE.match(t or "")
+    if not m:
+        return None
+    y, mo, d, h, mi, se = (int(x or 0) for x in m.groups()[:6])
+    off = 0
+    if m.group(8):
+        off = (int(m.group(9)) * 3600 + int(m.group(10) or 0) * 60) * (1 if m.group(8) == "+" else -1)
     try:
-        return datetime.datetime.strptime(t[:20].strip(), "%Y%m%d%H%M%S %z").timestamp()
+        return datetime.datetime(y, mo, d, h, mi, se, tzinfo=datetime.timezone(datetime.timedelta(seconds=off))).timestamp()
     except ValueError:
-        try:
-            return datetime.datetime.strptime(t[:14], "%Y%m%d%H%M%S").replace(tzinfo=datetime.timezone.utc).timestamp()
-        except ValueError:
-            return None
+        return None
 
 
 def channels(raw):
-    out = {}
+    """{guide id: [names]} and how many programmes each id has, so when two ids share a name the one with data wins"""
+    out, count = {}, {}
     for _, el in ET.iterparse(io.BytesIO(raw), events=("end",)):
         if el.tag == "channel":
             out[el.get("id")] = [d.text or "" for d in el.findall("display-name")]
             el.clear()
         elif el.tag == "programme":
+            count[el.get("channel")] = count.get(el.get("channel"), 0) + 1
             el.clear()
-    return out
+    return {"names": out, "count": count}
 
 
 def progs(raw, want):

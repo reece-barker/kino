@@ -83,7 +83,7 @@ IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.spa
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
 AVATAR_COUNT = 36  # Has to match the AVATARS list in app.js
-DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False}
+DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("kino")
@@ -1440,7 +1440,7 @@ async def profile_update(request: Request, p=Depends(current_profile)):
             prefs[k] = str(v or "")[:30]
         elif k == "sub_size" and v in ("s", "m", "l"):
             prefs[k] = v
-        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source"):
+        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source", "live_all_countries"):
             prefs[k] = bool(v)
         elif k == "still_watching":
             # Minutes without touching anything before the player asks if anyones still there, 0 is off
@@ -2565,8 +2565,10 @@ async def search(q: str, p=Depends(current_profile)):
                             "season": f["season"], "episode": f["episode"], "thumbnail": v.get("thumbnail")})
     ppl = sorted(people.values(), key=lambda x: (norm(x["name"]).startswith(q), x["count"]), reverse=True)
     # Live channels from the playlists whose name matches, english ones first like on the Live TV page
+    cw = live_country_where(p)
     chans = db().q("SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1 AND (c.ok IS NULL OR c.ok = 1) AND c.name LIKE ? "
-                   + ("AND c.grp = 'Kids' " if p.get("kids") else "") + "ORDER BY c.rank, c.name LIMIT 30", (f"%{q}%",))
+                   + ("AND c.grp = 'Kids' " if p.get("kids") else "") + (f"AND {cw} " if cw else "") + "ORDER BY c.rank, c.name LIMIT 30",
+                   (f"%{q}%", *(LIVE_HOME_COUNTRIES if cw else ())))
     guide = now_next({c["tvg"] for c in chans if c["tvg"]})
     embeds = []
     if not p.get("kids"):
@@ -4594,20 +4596,22 @@ async def ext_play(fid: str, name: str, request: Request):
     return range_response(file_or_404(fid)["path"], request)
 
 
-GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light"><meta name="robots" content="noindex, nofollow"><title>Kino</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml"><link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png"><link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="stylesheet" href="/static/app.css?v=__V__"></head><body class="gate-body"><main class="gate" id="gate">
-<div class="gate-card glass-card"><div class="gate-ic"></div><h1>This Device Isn't Allowed Yet</h1>
+<div class="gate-card glass-card"><div class="gate-mark">__WORDMARK__</div><h1>This Device Isn't Allowed Yet</h1>
 <p class="secondary">Kino only opens on your family's networks or on devices the admin has approved. Ask for access and give the admin this code.</p>
 <div class="gate-code" id="gateCode">···-···</div>
 <form id="gateForm" class="gate-form"><input id="gateName" maxlength="40" placeholder="Name this device, like Mum's iPad" required>
 <button class="btn primary" type="submit">Ask for Access</button></form>
 <p class="note" id="gateMsg"></p></div></main><script src="/static/gate.js?v=__V__"></script></body></html>"""
+GATE_WORDMARK = (Path(__file__).with_name("static") / "wordmark.svg").read_text()
 
 
 @app.get("/gate")
 async def gate_page():
-    return Response(GATE_HTML.replace("__V__", STATIC_VERSION["v"]), media_type="text/html", headers={"Cache-Control": "no-store"})
+    return Response(GATE_HTML.replace("__V__", STATIC_VERSION["v"]).replace("__WORDMARK__", GATE_WORDMARK), media_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/gate/status")
@@ -5452,35 +5456,13 @@ async def live_get(url, headers=None, local=False, max_bytes=60 * 1024**2, timeo
     raise HTTPException(502, "Too many redirects")
 
 
-def xmltv_time(t):
-    try:
-        return datetime.datetime.strptime(t[:20].strip(), "%Y%m%d%H%M%S %z").timestamp()
-    except ValueError:
-        try:
-            return datetime.datetime.strptime(t[:14], "%Y%m%d%H%M%S").replace(tzinfo=datetime.timezone.utc).timestamp()
-        except ValueError:
-            return None
-
-
 def guide_name(n):
     """Channel names made comparable between a playlist and a guide: BBC One HD, bbc one and BBCOne all match"""
-    n = (n or "").lower().replace("&", "and").replace("+", "plus")
+    n = re.sub(r"^[A-Za-z]{2}\s+-\s+", "", n or "")   # the guide calls it "UK - BBC One"
+    n = n.lower().replace("&", "and").replace("+", "plus")
     n = re.sub(r"[^a-z0-9]", "", n)
     n = re.sub(r"(fhd|uhd|hd|sd|4k|uk|gb|us|usa)$", "", n)
     return n.replace("bbc1", "bbcone").replace("bbc2", "bbctwo")
-
-
-def epg_channels(raw):
-    """The channels a guide has: id -> its names"""
-    import xml.etree.ElementTree as ET
-    out = {}
-    for _, el in ET.iterparse(io.BytesIO(raw), events=("end",)):
-        if el.tag == "channel":
-            out[el.get("id")] = [d.text or "" for d in el.findall("display-name")]
-            el.clear()
-        elif el.tag == "programme":
-            el.clear()
-    return out
 
 
 async def guide_parse(*args):
@@ -5493,51 +5475,45 @@ async def guide_parse(*args):
     return json.loads(out)
 
 
-def parse_epg(raw, want):
-    """Whats on from an XMLTV guide, only for channels Kino has and only from 2 hours ago to 36 hours ahead"""
-    import xml.etree.ElementTree as ET
-    now, rows = time.time(), []
-    lo, hi = now - 7200, now + 36 * 3600
-    for _, el in ET.iterparse(io.BytesIO(raw), events=("end",)):
-        if el.tag != "programme":
-            if el.tag == "channel":
-                el.clear()
-            continue
-        ch = el.get("channel")
-        if ch in want:
-            a, b = xmltv_time(el.get("start") or ""), xmltv_time(el.get("stop") or "")
-            if a and b and b > lo and a < hi:
-                rows.append((ch, a, b, (el.findtext("title") or "")[:200], (el.findtext("sub-title") or "")[:200], (el.findtext("desc") or "")[:600]))
-        el.clear()
-    return rows
-
-
 UK_REGIONS = {"london", "lon", "east", "west", "north", "south", "midlands", "wales", "scotland", "northern", "ireland", "ni", "cumbria", "yorkshire",
               "anglia", "border", "central", "granada", "meridian", "tyne", "tees", "west", "england", "channel", "islands", "", "&", "and", "eastern", "western"}
-# Free guides by country, used for playlists that dont name one (iptv-org's dont), matched by channel name
-AUTO_GUIDES = {"uk": "https://epg.pw/xmltv/epg_GB.xml.gz", "us": "https://epg.pw/xmltv/epg_US.xml.gz",
-               "ca": "https://epg.pw/xmltv/epg_CA.xml.gz", "au": "https://epg.pw/xmltv/epg_AU.xml.gz"}
+# Free guides by country, used for playlists that dont name one (iptv-org's dont), matched by channel name. These are from
+# iptv-epg.org, the epg.pw ones we used before have their times shifted by hours (BBC News at One shows at 05:00)
+AUTO_GUIDES = {k: f"https://iptv-epg.org/files/epg-{k if k != 'uk' else 'gb'}.xml.gz" for k in ("uk", "us", "fr", "de", "ca", "au", "nz")}
 
 
-async def load_guide(url, local, chans):
+async def load_guide(url, local, chans, country=None):
     """Downloads a guide, matches it to the playlist's channels (by guide id, then by name) and stores whats on.
+    A country guide only gets that country's channels, otherwise UK Sky News ends up with the Australian Sky News schedule.
     Returns how many channels got a guide"""
     raw, _ = await live_get(url, local=local, max_bytes=300 * 1024**2, timeout=240)
     # Big guides (the US one is about 300 MB unpacked) are read in a seperate low priority process, in a thread they
     # took the whole server's attention for minutes and everything else went slow
     tmp = DATA_DIR / f"guide-{secrets.token_hex(4)}.xml"
     wfile = tmp.with_suffix(".want")
+    # Guide ids are only unique inside their own guide (the free ones are plain numbers), so each guide gets its own prefix
+    tag = guide_tag(url)
     try:
         await asyncio.to_thread(tmp.write_bytes, raw)
         del raw
-        gch = await guide_parse("channels", str(tmp))
+        res = await guide_parse("channels", str(tmp))
+        gch, have = res["names"], res["count"]
         by_name = {}
         for gid, names in gch.items():
+            if not have.get(gid):
+                continue
             for n in names:
-                by_name.setdefault(guide_name(n), gid)
+                # "BBC Four / CBeebies" is one guide channel for two playlist channels
+                for part in [n, *re.split(r"\s+/\s+", n)]:
+                    k = guide_name(part)
+                    if k and (k not in by_name or have[gid] > have[by_name[k]]):
+                        by_name[k] = gid
         matched = {}
         for c in chans:
-            gid = c["tvg"] if c["tvg"] in gch else by_name.get(guide_name(c["name"]))
+            if country and c["country"] != country:
+                continue
+            tid = (c["tvg"] or "").split("@")[0]   # playlists write BBCOne.uk@SD, the guide has BBCOne.uk
+            gid = tid if tid in gch and have.get(tid) else by_name.get(guide_name(c["name"]))
             if not gid:
                 # Regional versions (BBC One London, BBC One Wales) fall back to the main channel's guide
                 words = re.sub(r"\s+(hd|sd|fhd)$", "", c["name"], flags=re.I).split()
@@ -5550,16 +5526,28 @@ async def load_guide(url, local, chans):
             return 0
         want = set(matched.values())
         wfile.write_text(json.dumps(list(want)))
-        progs = [tuple(x) for x in await guide_parse("progs", str(tmp), str(wfile))]
+        progs = [(f"{tag}~{x[0]}", *x[1:]) for x in await guide_parse("progs", str(tmp), str(wfile))]
     finally:
         tmp.unlink(missing_ok=True)
         wfile.unlink(missing_ok=True)
-    for i in range(0, len(want), 500):
-        part = list(want)[i:i + 500]
+    keys = [f"{tag}~{g}" for g in want]
+    for i in range(0, len(keys), 500):
+        part = keys[i:i + 500]
         db().q("DELETE FROM epg WHERE tvg IN (%s)" % ",".join("?" * len(part)), part)
     db().many("INSERT INTO epg VALUES (?,?,?,?,?,?)", progs)
-    db().many("UPDATE channels SET tvg = ? WHERE id = ?", [(g, cid) for cid, g in matched.items()])
+    db().many("UPDATE channels SET tvg = ? WHERE id = ?", [(f"{tag}~{g}", cid) for cid, g in matched.items()])
     return len(matched)
+
+
+def guide_tag(url):
+    return hashlib.sha1(url.encode()).hexdigest()[:6]
+
+
+def keep_tvg(c, old, tags):
+    """A playlist refresh keeps the guide a channel was matched to (while its guide is still one we read) until the new guide is
+    read, so the guide doesnt go blank if the guide download fails"""
+    prev = (old.get(c["id"]) or {}).get("tvg")
+    return prev if prev and "~" in prev and prev.split("~", 1)[0] in tags else c["tvg"]
 
 
 async def refresh_list(row):
@@ -5574,11 +5562,7 @@ async def refresh_list(row):
         if m:
             default = "uk" if m.group(1) == "gb" else m.group(1)
         chans, epg = await asyncio.to_thread(parse_m3u, text, lid, default)
-        old = {r["id"]: dict(r) for r in db().q("SELECT id, ok, checked FROM channels WHERE list_id = ?", (lid,))}
-        db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
-        db().many("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                  [(c["id"], lid, c["name"], c["logo"], c["grp"], c["country"], c["tvg"], c["url"], c["headers"], c["rank"],
-                    (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked")) for c in chans])
+        old = {r["id"]: dict(r) for r in db().q("SELECT id, ok, checked, tvg FROM channels WHERE list_id = ?", (lid,))}
         guide = row["epg"] or epg
         err = None
         guides = [guide] if guide else []
@@ -5587,10 +5571,17 @@ async def refresh_list(row):
             counts = {}
             for c in chans:
                 counts[c["country"]] = counts.get(c["country"], 0) + 1
-            guides = [AUTO_GUIDES[k] for k in AUTO_GUIDES if counts.get(k, 0) >= 5]
-        for g in guides:
+            guides = [(AUTO_GUIDES[k], k) for k in AUTO_GUIDES if counts.get(k, 0) >= 5]
+        else:
+            guides = [(g, None) for g in guides]
+        tags = {guide_tag(g) for g, _ in guides}
+        db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
+        db().many("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                  [(c["id"], lid, c["name"], c["logo"], c["grp"], c["country"], keep_tvg(c, old, tags), c["url"], c["headers"], c["rank"],
+                    (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked")) for c in chans])
+        for g, ctry in guides:
             try:
-                n = await load_guide(g, bool(row["local"]) and g == guide, chans)
+                n = await load_guide(g, bool(row["local"]) and g == guide, chans, ctry)
                 log.info("live tv guide %s matched %d channels", g, n)
             except Exception as e:
                 err = f"Guide failed: {getattr(e, 'detail', None) or e}"[:200]
@@ -5643,8 +5634,13 @@ async def live_worker():
     await asyncio.sleep(20)
     try:
         # Playlists added before the free guides existed get them now instead of in 12 hours
-        for row in db().q("SELECT * FROM iptv_lists l WHERE enabled = 1 AND NOT EXISTS (SELECT 1 FROM channels c JOIN epg e ON e.tvg = c.tvg WHERE c.list_id = l.id)"):
+        # The guides are matched per country now (and ids carry a guide prefix), so lists read the old way get read again once
+        flag = DATA_DIR / "guide-v2"
+        if not flag.exists():
+            db().q("DELETE FROM epg")
+        for row in db().q("SELECT * FROM iptv_lists l WHERE enabled = 1 AND (? OR NOT EXISTS (SELECT 1 FROM channels c JOIN epg e ON e.tvg = c.tvg WHERE c.list_id = l.id))", (0 if flag.exists() else 1,)):
             await refresh_list(row)
+        flag.touch()
     except Exception as e:
         log.info("live tv guide catch up: %s", e)
     while True:
@@ -5714,6 +5710,16 @@ def live_catalogs():
     return out
 
 
+LIVE_HOME_COUNTRIES = ("uk", "us", "fr", "de")
+
+
+def live_country_where(p):
+    """Live TV only lists the UK, US, France and Germany unless the profile turned on Show All Countries in Settings"""
+    if (p.get("prefs") or {}).get("live_all_countries"):
+        return None
+    return "(c.country IN (%s) OR c.country = '' OR c.country IS NULL)" % ",".join("?" * len(LIVE_HOME_COUNTRIES))
+
+
 @app.get("/api/live")
 async def live_list(group: str = "", country: str = "", q: str = "", skip: int = 0, all: int = 0, fav: int = 0, p=Depends(current_profile)):
     where, args = ["l.enabled = 1"], []
@@ -5723,6 +5729,9 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
         where.append("(c.ok IS NULL OR c.ok = 1)")
     if p.get("kids"):
         where.append("c.grp = 'Kids'")
+    cw = live_country_where(p)
+    if cw:
+        where.append(cw); args.extend(LIVE_HOME_COUNTRIES)
     if group:
         where.append("c.grp = ?"); args.append(group)
     if country:
@@ -5738,12 +5747,14 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
     if skip == 0:
         out["fav_count"] = len(favs)
         out["recordings"] = db().q("SELECT COUNT(*) n FROM recordings WHERE state != 'cancelled'")[0]["n"]
-        base = "FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1" + ("" if all else " AND (c.ok IS NULL OR c.ok = 1)") + (" AND c.grp = 'Kids'" if p.get("kids") else "")
-        out["groups"] = [r["grp"] for r in db().q(f"SELECT c.grp, COUNT(*) n {base} GROUP BY c.grp ORDER BY n DESC LIMIT 30")]
-        cs = [r["country"] for r in db().q(f"SELECT c.country, COUNT(*) n {base} AND c.country != '' GROUP BY c.country ORDER BY n DESC")]
-        lead = [c for c in ("uk", "us") if c in cs]
+        base = "FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1" + ("" if all else " AND (c.ok IS NULL OR c.ok = 1)") + (" AND c.grp = 'Kids'" if p.get("kids") else "") + (f" AND {cw}" if cw else "")
+        bargs = list(LIVE_HOME_COUNTRIES) if cw else []
+        out["groups"] = [r["grp"] for r in db().q(f"SELECT c.grp, COUNT(*) n {base} GROUP BY c.grp ORDER BY n DESC LIMIT 30", bargs)]
+        cs = [r["country"] for r in db().q(f"SELECT c.country, COUNT(*) n {base} AND c.country != '' GROUP BY c.country ORDER BY n DESC", bargs)]
+        lead = [c for c in ("uk", "us", "fr", "de") if c in cs]
         out["countries"] = lead + [c for c in cs if c not in lead]
-        out["total"] = db().q(f"SELECT COUNT(*) n {base}")[0]["n"]
+        out["all_countries"] = not cw
+        out["total"] = db().q(f"SELECT COUNT(*) n {base}", bargs)[0]["n"]
         out["has_guide"] = bool(db().q("SELECT 1 FROM epg WHERE stop > ? LIMIT 1", (time.time(),)))
         out["embeds"] = [] if p.get("kids") else [{"id": r["id"], "name": r["name"]} for r in db().q("SELECT id, name FROM embed_sources WHERE enabled = 1 ORDER BY id")]
         out["addon_rows"] = [] if p.get("kids") else [{"id": f"{a['id']}|{c['id']}", "title": f"{c.get('name') or c.get('id')}", "source": a["m"].get("name")} for a, c, _ in live_catalogs()]
@@ -5778,6 +5789,9 @@ async def live_guide(start: float = 0, hours: float = 3, group: str = "", countr
     where, args = ["l.enabled = 1", "c.tvg IS NOT NULL", "(c.ok IS NULL OR c.ok = 1)", "EXISTS (SELECT 1 FROM epg e WHERE e.tvg = c.tvg AND e.stop > ?)"], [time.time()]
     if p.get("kids"):
         where.append("c.grp = 'Kids'")
+    cw = live_country_where(p)
+    if cw:
+        where.append(cw); args.extend(LIVE_HOME_COUNTRIES)
     if group:
         where.append("c.grp = ?"); args.append(group)
     if country:
@@ -6480,7 +6494,7 @@ async def live_admin(admin=Depends(require_admin)):
                                                    "SUM(EXISTS (SELECT 1 FROM epg e WHERE e.tvg = channels.tvg)) guided FROM channels GROUP BY list_id")}
     return {"lists": [{**dict(r), "good": (stats.get(r["id"]) or {}).get("good") or 0, "bad": (stats.get(r["id"]) or {}).get("bad") or 0,
                        "guided": (stats.get(r["id"]) or {}).get("guided") or 0} for r in rows],
-            "guides": [{"name": f"Free guide: {n}", "url": u} for n, u in (("UK", AUTO_GUIDES["uk"]), ("USA", AUTO_GUIDES["us"]), ("Canada", AUTO_GUIDES["ca"]), ("Australia", AUTO_GUIDES["au"]))],
+            "guides": [{"name": f"Free guide: {n}", "url": u} for n, u in (("UK", AUTO_GUIDES["uk"]), ("USA", AUTO_GUIDES["us"]), ("France", AUTO_GUIDES["fr"]), ("Germany", AUTO_GUIDES["de"]), ("Canada", AUTO_GUIDES["ca"]), ("Australia", AUTO_GUIDES["au"]))],
             "embeds": [dict(r) for r in db().q("SELECT * FROM embed_sources ORDER BY id")],
             "guide_rows": db().q("SELECT COUNT(*) n FROM epg")[0]["n"], "checking": LIVE["checking"]}
 

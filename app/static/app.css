@@ -1289,3 +1289,8 @@ body.tv .who-tile:hover:not(:focus-visible) .av { box-shadow: none; }
 body.tv .who-tile:hover:not(:focus-visible) { color: var(--label-2); }
 body.tv .tile:hover:not(:focus-visible) .art { transform: none; }
 body.tv .icon-pick:hover:not(:focus-visible) { transform: none; }
+
+/* ---- v11 */
+/* The first search row had no gap under the search bar, .shelf:first-child took its margin away */
+#sres > .srow:first-child, #sres > .s-more:first-child { margin-top: 30px; }
+body.tv #sres > .srow:first-child { margin-top: 40px; }

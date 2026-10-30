@@ -96,7 +96,8 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const app = $("#app");
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const img = (u, trim) => (u ? "/api/img?u=" + encodeURIComponent(u) + (trim ? "&trim=1" : "") : "");
+  // w asks the server for a smaller copy, full size pictures are only used for the big hero
+  const img = (u, trim, w) => (u ? "/api/img?u=" + encodeURIComponent(u) + (trim ? "&trim=1" : "") + (w ? "&w=" + w : "") : "");
   const hue = (s) => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7);
   const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -646,7 +647,7 @@
   const extHref = (t) => { EXT_NAME.set(t.ext, t.name); return `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}`; };
   function posterTile(t) {
     const art = t.poster
-      ? `<img loading="lazy" src="${img(t.poster)}" alt="${esc(t.name)}" data-fallback="ph">`
+      ? `<img loading="lazy" src="${img(t.poster, 0, 342)}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
     const sub = t.family ? t.family : t.external ? t.releaseInfo || (t.kind === "series" ? "TV Show" : "Movie")
       : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
@@ -656,9 +657,9 @@
   }
   function wideTile(t, opts = {}) {
     const bg = t.background
-      ? `<img loading="lazy" src="${img(t.background)}" alt="${esc(t.name)}" data-fallback="ph">`
+      ? `<img loading="lazy" src="${img(t.background, 0, 640)}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
-    const logo = t.logo && t.background && opts.progress == null ? `<img class="logo-over" loading="lazy" src="${img(t.logo, 1)}" alt="" data-fallback="hide">` : "";
+    const logo = t.logo && t.background && opts.progress == null ? `<img class="logo-over" loading="lazy" src="${img(t.logo, 1, 480)}" alt="" data-fallback="hide">` : "";
     const bar = opts.progress != null && opts.progress > 0 ? `<div class="bar"><i style="width:${Math.min(100, opts.progress * 100)}%"></i></div>` : "";
     const href = opts.href || (t.external ? extHref(t) : `#/title/${t.id}`);
     const x = opts.hide ? `<button class="tile-x" data-hide="${opts.hide}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
@@ -692,7 +693,7 @@
           <div class="row ${s.style === "poster" ? "posters" : "wide"}">${s.items.map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: TV ? null : t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
-            : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster") : ""}</div></section>`).join("")}
+            : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster", s.more === "#/shows" ? "All TV Shows" : "All Movies") : ""}</div></section>`).join("")}
       </main>`;
     wireTopbar();
     startHero(heroes.length);
@@ -728,7 +729,7 @@
   }
 
   // On a tv the See All link at the top is hard to reach, so rows end with a card that does the same
-  const moreCard = (href, poster, attr = "") => `<a class="tile more-card ${poster ? "poster" : "landscape"}" ${href ? `href="${href}"` : 'href="#" role="button"'} ${attr}><div class="art"><span class="more-in">${ic("chevronR")}<b>View More</b></span></div><div class="cap">&nbsp;</div></a>`;
+  const moreCard = (href, poster, label) => `<a class="tile more-card ${poster ? "poster" : "landscape"}" href="${href}"><div class="art"><span class="more-in">${ic("chevronR")}<b>${esc(label)}</b></span></div><div class="cap">&nbsp;</div></a>`;
 
   // Floating back button on title pages, phones dont have the sidebar to get out with
   const backBtn = () => `<button class="page-back glass" data-goback aria-label="Back">${ic("back")}</button>`;
@@ -742,7 +743,7 @@
     const wide = t.background ? (LITE ? t.background : t.background.replace("/medium/", "/large/")) : null;
     const tall = t.poster || null;
     if (!wide && !tall) return "";
-    return `<picture>${tall && wide ? `<source media="(max-width: 760px) and (orientation: portrait)" srcset="${img(tall)}">` : ""}<img ${lazy ? 'loading="lazy"' : ""} src="${img(wide || tall)}" data-alt="${esc(t.background || "")}" alt="" data-fallback="hide" ${!wide ? 'class="tall"' : ""}></picture>`;
+    return `<picture>${tall && wide ? `<source media="(max-width: 760px) and (orientation: portrait)" srcset="${img(tall, 0, 640)}">` : ""}<img ${lazy ? 'loading="lazy"' : ""} src="${img(wide || tall, 0, LITE ? 1280 : 0)}" data-alt="${esc(t.background || "")}" alt="" data-fallback="hide" ${!wide ? 'class="tall"' : ""}></picture>`;
   }
 
   // One slide of the home hero. The first one is whatever was watched last, with its own continue style
@@ -774,7 +775,7 @@
   function freshShelf(s) {
     return `<section class="shelf fresh" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}</h2>
       <div class="row fresh-row">${s.items.map((t) => `<a class="fresh-card" href="#/title/${t.id}" data-play="${t.file_id}" data-tid="${t.id}">
-        <div class="fresh-bg">${t.thumbnail || t.background ? `<img loading="lazy" src="${img(t.thumbnail || t.background)}" alt="" data-fallback="hide">` : ""}</div>
+        <div class="fresh-bg">${t.thumbnail || t.background ? `<img loading="lazy" src="${img(t.thumbnail || t.background, 0, 640)}" alt="" data-fallback="hide">` : ""}</div>
         <div class="fresh-body">
           <span class="fresh-pill">${t.new_count} New Episode${t.new_count === 1 ? "" : "s"}</span>
           ${t.logo ? `<img class="fresh-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text" data-cls="fresh-name">` : `<div class="fresh-name">${esc(t.name)}</div>`}
@@ -820,7 +821,7 @@
     if (!c) { el.hidden = true; return; }
     const pct = c.total ? c.bytes / c.total : 0;
     el.hidden = false;
-    el.innerHTML = `${SYNC.poster ? `<img src="${img(SYNC.poster)}" alt="" data-fallback="hide">` : ""}
+    el.innerHTML = `${SYNC.poster ? `<img src="${img(SYNC.poster, 0, 342)}" alt="" data-fallback="hide">` : ""}
       <div class="grow"><div class="lbl">Downloading to your Storage Box</div>
       <div class="nm">${esc(c.title || c.name)}${c.episode != null ? ` ${esc(epLabel(c.season, c.episode))}` : ""}</div>
       <div class="progress thin"><i style="width:${pct * 100}%"></i></div>
@@ -901,19 +902,42 @@
   // ---------------------------------------------------------- search
   // Results come in rows like apple tv: Movies, TV Shows, People and Episodes. Library and addon results are mixed
   // into the same rows and sorted by how well they match plus how popular they are, the best row goes first
-  const searchRow = (id, title, items, tile, extra = "") => items.length ? `<section class="shelf srow" data-srow="${id}" aria-label="${esc(title)}">
-      <h2 class="section-title">${esc(title)} <span class="from">${items.length}</span>${items.length > 6 ? ` <button class="see-all" data-viewall="${id}">View All</button>` : ""}${extra}</h2>
-      <div class="row ${tile === "wide" ? "wide" : "posters"}">${items.map(tile === "wide" ? epTile : tile === "person" ? personTile : posterTile).join("")}${TV && items.length > 6 ? moreCard(null, tile !== "wide", `data-viewall="${id}"`) : ""}</div></section>` : "";
-  const epTile = (e) => `<a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail)}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
+  // Rows only draw the first few results and add more as you scroll or move along them, so a search with lots of
+  // results is quick to show and light on a tv
+  const SROWS = {};
+  const SROW_STEP = 14;
+  const tileFor = (tile) => (tile === "wide" ? epTile : tile === "person" ? personTile : posterTile);
+  const searchRow = (id, title, items, tile) => {
+    if (!items.length) return "";
+    SROWS[id] = { items, tile, shown: Math.min(items.length, SROW_STEP) };
+    return `<section class="shelf srow" data-srow="${id}" aria-label="${esc(title)}">
+      <h2 class="section-title">${esc(title)} <span class="from">${items.length}</span></h2>
+      <div class="row ${tile === "wide" ? "wide" : "posters"}">${items.slice(0, SROW_STEP).map(tileFor(tile)).join("")}</div></section>`;
+  };
+  function growRows(box) {
+    $$(".srow", box).forEach((sec) => {
+      const row = $(".row", sec), st = SROWS[sec.dataset.srow];
+      if (!row || !st) return;
+      const more = () => {
+        if (st.shown >= st.items.length || row.scrollWidth - row.scrollLeft - row.clientWidth > row.clientWidth * 1.2) return;
+        row.insertAdjacentHTML("beforeend", st.items.slice(st.shown, st.shown + SROW_STEP).map(tileFor(st.tile)).join(""));
+        st.shown = Math.min(st.items.length, st.shown + SROW_STEP);
+      };
+      row.addEventListener("scroll", more, { passive: true });
+      row.addEventListener("focusin", more);
+      more();
+    });
+  }
+  const epTile = (e) => `<a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail, 0, 480)}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
       <div class="cap">${esc(nice(e.name))}</div><div class="sub">${esc(e.show)} · ${esc(epLabel(e.season, e.episode))}</div></a>`;
-  const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" src="${img(p.poster)}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
+  const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" src="${img(p.poster, 0, 342)}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
       <div class="cap">${esc(p.name)}</div><div class="sub">${esc(p.role)} · ${p.count} title${p.count === 1 ? "" : "s"}</div></a>`;
 
   async function pageSearch() {
     const start = decodeURIComponent((location.hash.split("?q=")[1] || ""));
     app.innerHTML = topbar("search") + `<main class="page">
-      <div class="search big">${ic("search")}<label class="sr" for="sq">Search</label><input id="sq" type="search" placeholder="Films, shows, actors, directors and more" value="${esc(start)}" autocomplete="off">
-        <button class="mic-btn" id="micBtn" type="button" aria-label="Search by Voice" title="Search by Voice" hidden>${ic("mic")}</button></div>
+      <form class="search big" id="sForm" role="search" action="#">${ic("search")}<label class="sr" for="sq">Search</label><input id="sq" type="search" enterkeyhint="search" placeholder="Films, shows, actors, directors and more" value="${esc(start)}" autocomplete="off">
+        <button class="mic-btn" id="micBtn" type="button" aria-label="Search by Voice" title="Search by Voice" hidden>${ic("mic")}</button></form>
       <div id="sres"></div></main>`;
     wireTopbar();
     const input = $("#sq");
@@ -933,37 +957,35 @@
       const draw = () => {
         const all = r.titles.concat(ext).sort((a, b) => (b.score || 0) - (a.score || 0));
         const movies = all.filter((x) => x.kind === "movie"), shows = all.filter((x) => x.kind === "series");
-        const rows = [
-          { s: movies.length ? movies[0].score : -1, html: searchRow("movies", "Movies", movies) },
-          { s: shows.length ? shows[0].score : -1, html: searchRow("shows", "TV Shows", shows) },
-        ].sort((a, b) => b.s - a.s).map((x) => x.html);
+        // Movies always first, then TV Shows, like the sidebar
+        const rows = [searchRow("movies", "Movies", movies), searchRow("shows", "TV Shows", shows)];
+        // When the addon results land the page redraws, focus and how far each row was scrolled stay put
+        const k = focusKey(document.activeElement), keep = {};
+        $$(".srow", box).forEach((sec) => (keep[sec.dataset.srow] = $(".row", sec).scrollLeft));
         const people = searchRow("people", "Cast and Crew", r.people || [], "person");
         // Someone typing an actor's name wants the people first
         const peopleFirst = (r.people || []).length && (!all.length || (all[0].score || 0) < 60);
         box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + searchRow("eps", "Episodes", r.episodes, "wide")
           + (!extDone ? `<div class="s-more"><span class="spin small"></span>Looking in your addons</div>` : ""))
           || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor, director or genre.</p></div>`;
+        growRows(box);
         enhanceRows(box);
+        $$(".srow", box).forEach((sec) => { if (keep[sec.dataset.srow]) $(".row", sec).scrollLeft = keep[sec.dataset.srow]; });
+        if (k && document.activeElement === document.body) { const s2 = typeof k === "string" ? $(k, box) : $$(k.tag, box).find((x) => x.textContent.trim() === k.text); if (s2) s2.focus({ preventScroll: true }); }
       };
       draw();
       api("/api/search/addons?q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; ext = x.external; extDone = true; draw(); })
         .catch(() => { extDone = true; if (my === seq && $("#sres")) draw(); });
     };
-    input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(run, 220); });
+    input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(run, TV ? 450 : 220); });
+    // Search on the keyboard (the fire tv keyboard's go button, or play pause) searches straight away and closes it
+    $("#sForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      clearTimeout(t);
+      input.blur();
+      run().then(() => { if (TV) { const f = $("#sres .tile"); if (f) f.focus(); } });
+    });
     $("#sres").addEventListener("click", async (e) => {
-      // View All opens a row up into a grid, and back
-      const va = e.target.closest("[data-viewall]");
-      if (va) {
-        e.preventDefault();
-        const sec = va.closest(".srow"), row = $(".row", sec);
-        const open = !sec.classList.contains("all");
-        if (va.classList.contains("more-card")) { va.remove(); sec.classList.add("all"); row.classList.add("grid"); const h = $(".see-all", sec); if (h) h.textContent = "Show Less"; const f = $(".tile", row); if (f) f.focus(); return; }
-        sec.classList.toggle("all", open);
-        row.classList.toggle("grid", open);
-        va.textContent = open ? "Show Less" : "View All";
-        if (!open) sec.scrollIntoView({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
-        return;
-      }
       const pa = e.target.closest("[data-play]");
       if (pa) {
         e.preventDefault();
@@ -1175,7 +1197,7 @@
       const eps = t.files.filter((f) => (f.season ?? 0) === season);
       $("#eps").innerHTML = eps.map((f) => {
         const p = f.progress && f.progress.dur ? f.progress.pos / f.progress.dur : null;
-        const art = f.thumbnail ? `<img loading="lazy" src="${img(f.thumbnail)}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
+        const art = f.thumbnail ? `<img loading="lazy" src="${img(f.thumbnail, 0, 480)}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
         return `<div class="ep"><button class="tile landscape ${f.watched ? "is-watched" : ""}" data-playfile="${f.id}" aria-label="Play ${esc(epLabel(f.season, f.episode))} ${esc(f.ep_name || "")}"><div class="art">${art}${p != null ? `<div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div>` : ""}${f.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(f.season, f.episode) || "Extra")}${f.duration ? ` · ${Math.max(1, Math.round(f.duration / 60))} min` : ""}</div>
             <button class="ep-mark" data-epwatch="${f.id}" data-state="${f.watched ? 1 : 0}" aria-label="${f.watched ? "Mark as unwatched" : "Mark as watched"}" title="${f.watched ? "Watched, click to unmark" : "Mark as watched"}">${ic(f.watched ? "check" : "plus")}</button>
@@ -1301,7 +1323,7 @@
     const drawEps = (season) => {
       $("#eps").innerHTML = t.videos.filter((v) => v.season === season).map((v) => {
         const pr = v.progress && v.progress.dur ? v.progress.pos / v.progress.dur : null;
-        const art = v.thumbnail ? `<img loading="lazy" src="${img(v.thumbnail)}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(v.season, v.episode))}</div>`;
+        const art = v.thumbnail ? `<img loading="lazy" src="${img(v.thumbnail, 0, 480)}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(v.season, v.episode))}</div>`;
         return `<div class="ep"><button class="tile landscape ${v.progress && v.progress.watched ? "is-watched" : ""}" data-playep="${esc(v.id)}" aria-label="Play ${esc(epLabel(v.season, v.episode))} ${esc(v.name || "")}"><div class="art">${art}${pr != null ? `<div class="bar"><i style="width:${Math.min(100, pr * 100)}%"></i></div>` : ""}${v.progress && v.progress.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(v.season, v.episode))}</div>
             ${isAdmin() ? `<button class="ep-mark" data-saveep="${esc(v.id)}" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}</div>
@@ -1416,7 +1438,7 @@
       try {
         const r = await api(`/api/admin/match/search?kind=${$("#fmk", s.el).value}&q=${encodeURIComponent($("#fmq", s.el).value)}`);
         box.innerHTML = r.results.length ? r.results.map((m) => `<button class="fm-item" data-id="${m.id}" data-kind="${m.kind}">
-          <span class="fm-post">${m.poster ? `<img src="${img(m.poster)}" alt="" data-fallback="hide">` : ""}</span>
+          <span class="fm-post">${m.poster ? `<img src="${img(m.poster, 0, 342)}" alt="" data-fallback="hide">` : ""}</span>
           <span class="grow"><b>${esc(m.name)}</b><span class="secondary">${esc([m.releaseInfo, m.source].filter(Boolean).join(" · "))}</span></span>${m.id === t.imdb ? `<span class="badge">Current</span>` : ""}</button>`).join("")
           : `<div class="secondary">No results, try a different spelling or switch Movie and TV Show.</div>`;
         $$(".fm-item", box).forEach((b) => (b.onclick = async () => {
@@ -1701,11 +1723,11 @@
         : last.result === "error" ? "The last sync failed" : last.result === "stopped" ? "The last sync was stopped" : "Waiting for the next sync") : "No sync has run yet";
       line = last ? `${last.message ? last.message + ". " : ""}Finished ${ago(last.finished)}.` : "";
     }
-    const post = s.poster ? `<img src="${img(s.poster)}" alt="" data-fallback="hide">` : `<div class="ph" style="--h:${hue(headline)}"></div>`;
+    const post = s.poster ? `<img src="${img(s.poster, 0, 342)}" alt="" data-fallback="hide">` : `<div class="ph" style="--h:${hue(headline)}"></div>`;
 
     b.innerHTML = `<div class="cards">
       <section class="card now-card span-12">
-        ${c && c.background ? `<div class="bgblur" style="background-image:url('${img(c.background)}')"></div>` : ""}
+        ${c && c.background ? `<div class="bgblur" style="background-image:url('${img(c.background, 0, 640)}')"></div>` : ""}
         <div class="post">${post}</div>
         <div style="min-width:0">
           <div class="state-line ${ss.cls}"><span class="dot"></span>${running ? (c ? "Downloading" : "Running") : s.paused ? "Paused" : ss.cls === "error" ? "Needs attention" : "Idle"}</div>
@@ -1798,7 +1820,7 @@
     const r = await api("/api/admin/storage").catch(() => null);
     const box = $("#storageReview");
     if (!r || !box) return;
-    const row = (t, sub) => `<div class="sr-row"><span class="fm-post">${t.poster ? `<img src="${img(t.poster)}" alt="" data-fallback="hide">` : ""}</span>
+    const row = (t, sub) => `<div class="sr-row"><span class="fm-post">${t.poster ? `<img src="${img(t.poster, 0, 342)}" alt="" data-fallback="hide">` : ""}</span>
       <span class="grow"><b>${esc(t.name)}</b><span class="secondary">${esc(sub)}</span></span><span class="secondary sr-size">${bytes(t.size)}</span>
       <button class="round-btn sm" data-clear="${t.id}" data-name="${esc(t.name)}" data-size="${t.size}" aria-label="Delete ${esc(t.name)}" title="Delete from Library">${ic("trash")}</button></div>`;
     const sum = (l) => l.reduce((a, t) => a + t.size, 0);
@@ -1917,7 +1939,7 @@
     const el = $("#pLoad");
     LOAD.on = true; LOAD.t0 = performance.now(); LOAD.lines = [];
     LOAD.stats = !(ME.profile && ME.profile.prefs && ME.profile.prefs.load_stats === false);
-    $("#plBg").innerHTML = art && art.background ? `<img src="${img(art.background)}" alt="" data-fallback="hide">` : "";
+    $("#plBg").innerHTML = art && art.background ? `<img src="${img(art.background, 0, 960)}" alt="" data-fallback="hide">` : "";
     loadLogo(art, name);
     $("#plStats").innerHTML = "";
     el.classList.toggle("no-stats", !LOAD.stats);
@@ -1933,7 +1955,7 @@
   }
   function loadArt(art, name) {
     if (!LOAD.on || !art) return;
-    if (art.background && !$("#plBg img")) $("#plBg").innerHTML = `<img src="${img(art.background)}" alt="" data-fallback="hide">`;
+    if (art.background && !$("#plBg img")) $("#plBg").innerHTML = `<img src="${img(art.background, 0, 960)}" alt="" data-fallback="hide">`;
     if (art.logo && !$("#plLogo img")) loadLogo(art, name);
   }
   // Each step is one line, the newest one is the one that's still going
@@ -2368,7 +2390,7 @@
     const n = info.next, box = $("#upNext");
     const auto = !info.prefs || info.prefs.autoplay !== false;
     let left = 10;
-    box.innerHTML = `<div class="un-thumb">${n.thumbnail ? `<img src="${img(n.thumbnail)}" alt="" data-fallback="hide">` : ""}${auto ? `<svg class="un-ring" viewBox="0 0 36 36"><circle cx="18" cy="18" r="16" /></svg>` : ""}</div>
+    box.innerHTML = `<div class="un-thumb">${n.thumbnail ? `<img src="${img(n.thumbnail, 0, 480)}" alt="" data-fallback="hide">` : ""}${auto ? `<svg class="un-ring" viewBox="0 0 36 36"><circle cx="18" cy="18" r="16" /></svg>` : ""}</div>
       <div class="un-body"><div class="lbl">Next episode${auto ? ` in <b id="unLeft">${left}</b>` : ""}</div><div class="nm">${esc(epLabel(n.season, n.episode))}${n.name ? "  " + esc(nice(n.name)) : ""}</div>
       <div class="actions"><button class="btn primary small" id="unPlay">${ic("play")} Play Now</button><button class="btn secondary small" id="unHide">${auto ? "Cancel" : "Hide"}</button></div></div>`;
     box.hidden = false;
@@ -2547,7 +2569,6 @@
     if (!d || e.altKey || e.ctrlKey || e.metaKey) return;
     const cur = document.activeElement;
     if (cur && cur.matches("input[type=search], input[type=text], input:not([type])") && d[0] && cur.value) return;  // moving the text cursor
-    if (cur && cur.tagName === "SELECT") return;
     if (cur && cur.id === "scrub" && d[0]) return;   // the timeline seeks with left and right
     const playerOpen = !pl.el.hidden;
     if (playerOpen && (!cur || !pl.el.contains(cur) || cur === pl.v) && d[0]) return;  // left and right seek
@@ -2556,7 +2577,8 @@
     const scope = sheetClose ? $(".sheet-wrap") : openMenu || (playerOpen ? pl.el : document);
     if (playerOpen) wakeUi();
     const items = $$('a[href], button, input, select, [tabindex]:not([tabindex="-1"])', scope).filter((el) => {
-      if (el.disabled || el.closest("[hidden]") || el.closest('[aria-hidden="true"]') || el.closest(".hero-dots")) return false;
+      // The little See All links in row headers get skipped, rows end with a card that does the same and is easy to land on
+      if (el.disabled || el.closest("[hidden]") || el.closest('[aria-hidden="true"]') || el.closest(".hero-dots") || el.closest(".section-title")) return false;
       const r = el.getBoundingClientRect();
       return r.width > 2 && r.height > 2 && getComputedStyle(el).visibility !== "hidden";
     });
@@ -2574,23 +2596,42 @@
     const sideRight = side && !playerOpen && !sheetClose ? side.getBoundingClientRect().right : -1;
     // Right at the end of a row stays put instead of jumping up into whatever row is above
     const curRow = d[0] > 0 && cur.closest && cur.closest(".row, .episodes, .chips");
-    let best = null, bestScore = Infinity;
+    // Two steps like a tv's own focus engine: first the nearest line of things in that direction, then on that line the
+    // one closest to where you are. Measured edge to edge, so a tall card further away never beats a button right next to you
+    const cands = [];
     for (const el of items) {
       if (el === cur) continue;
       if (curRow && !curRow.contains(el)) continue;
       const elSide = !!(side && side.contains(el));
       if (d[1] && elSide !== inSide) continue;
       if (d[0] > 0 && inSide && elSide) continue;
-      if (!elSide && scope === document) { const r = el.getBoundingClientRect(); if (r.left + r.width / 2 < sideRight) continue; }
       const b = el.getBoundingClientRect();
+      if (!elSide && scope === document && b.left + b.width / 2 < sideRight) continue;
       const bx = b.left + b.width / 2, by = b.top + b.height / 2;
-      const main = d[0] ? (bx - ax) * d[0] : (by - ay) * d[1];
-      if (main <= 4) continue;
-      // Edges overlapping in the other direction count as in line, so rows and columns feel natural
-      const cross = d[0] ? Math.max(0, Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom)) ? Math.abs(by - ay) : 0
-                         : Math.max(0, Math.max(a.left, b.left) - Math.min(a.right, b.right)) ? Math.abs(bx - ax) : 0;
-      const score = main + cross * 3;
-      if (score < bestScore) { bestScore = score; best = el; }
+      if (d[0] ? (bx - ax) * d[0] <= 4 : (by - ay) * d[1] <= 4) continue;
+      // How far away the next line is, and how far along it
+      const gap = d[1] > 0 ? b.top - a.bottom : d[1] < 0 ? a.top - b.bottom : d[0] > 0 ? b.left - a.right : a.left - b.right;
+      const overlap = d[1] ? Math.min(a.right, b.right) - Math.max(a.left, b.left) : Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      const along = d[1] ? Math.abs(bx - ax) : Math.abs(by - ay);
+      cands.push({ el, gap: Math.max(-8, gap), overlap, along });
+    }
+    let best = null;
+    if (cands.length) {
+      if (d[1]) {
+        const near = Math.min(...cands.map((c) => c.gap));
+        const line = cands.filter((c) => c.gap <= near + 24);
+        line.sort((x, y) => (y.overlap > 0) - (x.overlap > 0) || x.along - y.along);
+        best = line[0].el;
+      } else {
+        // Sideways prefers things on the same row, then the closest
+        cands.sort((x, y) => (y.overlap > 0) - (x.overlap > 0) || (x.gap + x.along * 2) - (y.gap + y.along * 2));
+        best = cands[0].el;
+      }
+    }
+    // Going into the sidebar lands on the page you're on, not whichever item happened to be level with you
+    if (best && d[0] < 0 && !inSide && side && side.contains(best)) {
+      const here = $(".side-item[aria-current='page']", side);
+      if (here && here.getBoundingClientRect().height > 2) best = here;
     }
     if (best) {
       best.focus({ preventScroll: true });
@@ -2621,7 +2662,11 @@
     return false;
   };
   window.kinoMedia = (cmd) => {
-    if (pl.el.hidden) return;
+    if (pl.el.hidden) {
+      const f = document.activeElement && document.activeElement.form;
+      if (cmd === "playpause" && f) f.requestSubmit ? f.requestSubmit() : f.dispatchEvent(new Event("submit", { cancelable: true }));
+      return;
+    }
     wakeUi();
     if (cmd === "playpause") toggle();
     else if (cmd === "play") pl.v.play().catch(() => {});

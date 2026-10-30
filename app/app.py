@@ -2212,11 +2212,48 @@ def trim_png(data):
         return data, None
 
 
+IMG_WIDTHS = {240, 342, 480, 640, 960, 1280}
+
+
+def shrink_image(data, w):
+    from PIL import Image
+    try:
+        im = Image.open(io.BytesIO(data))
+        im.load()
+    except Exception:
+        return data, "image/jpeg"
+    if im.width <= w:
+        return data, Image.MIME.get(im.format, "image/jpeg")
+    im = im.resize((w, max(1, round(im.height * w / im.width))), Image.LANCZOS)
+    buf = io.BytesIO()
+    # Logos keep there see through background, everything else becomes a jpeg
+    if im.mode in ("RGBA", "LA", "P"):
+        im.convert("RGBA").save(buf, "PNG", optimize=True)
+        return buf.getvalue(), "image/png"
+    im.convert("RGB").save(buf, "JPEG", quality=82, optimize=True, progressive=True)
+    return buf.getvalue(), "image/jpeg"
+
+
 @app.get("/api/img")
-async def img(u: str, trim: int = 0):
+async def img(u: str, trim: int = 0, w: int = 0):
     host = urlparse(u).hostname or ""
     if urlparse(u).scheme != "https" or not host:
         raise HTTPException(400, "Image host not allowed")
+    w = w if w in IMG_WIDTHS else 0
+    if w:
+        # A smaller copy for tiles and episode pictures. Episode stills come in at full hd, and a season of them made
+        # fire tv sticks run out of memory and crash, at the size they're shown they use about a tenth of it
+        key = hashlib.sha1(u.encode()).hexdigest() + ("-t" if trim else "") + f"-w{w}"
+        small = DATA_DIR / "img" / key
+        if small.exists():
+            meta = read_json(str(small) + ".json") or {}
+            return FileResponse(small, media_type=meta.get("type", "image/jpeg"), headers={"Cache-Control": "private, max-age=604800"})
+        full = await img(u, trim)
+        data = full.body if hasattr(full, "body") else Path(full.path).read_bytes()
+        out, ctype = await asyncio.to_thread(shrink_image, data, w)
+        small.write_bytes(out)
+        Path(str(small) + ".json").write_text(json.dumps({"type": ctype}))
+        return Response(out, media_type=ctype, headers={"Cache-Control": "private, max-age=604800"})
     cache = DATA_DIR / "img" / (hashlib.sha1(u.encode()).hexdigest() + ("-t" if trim else ""))
     if cache.exists():
         meta = read_json(str(cache) + ".json") or {}

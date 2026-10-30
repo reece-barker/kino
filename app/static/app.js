@@ -428,6 +428,8 @@
       if (TV && !m.hidden) { const f = $(".mi", m); if (f) setTimeout(() => f.focus(), 30); }
     };
     m.addEventListener("click", (e) => e.stopPropagation());
+    // Tapping anywhere else closes the profile menu again, there's no mouse leaving on a touch screen
+    if (!window.__sideOut) { window.__sideOut = true; document.addEventListener("click", (e) => { const sd = $("#side"), mm = $("#avatarMenu"); if (sd && mm && !mm.hidden && !sd.contains(e.target)) { mm.hidden = true; sd.classList.remove("pinned"); } }); }
     $$(".mi", m).forEach((x) => x.addEventListener("click", () => { m.hidden = true; side.classList.remove("pinned"); }));
     wireThemePicker(m);
     const ai = $("#adminIn"); if (ai) ai.onclick = () => adminLogin(() => route());
@@ -435,8 +437,10 @@
     $("#sideHead").onclick = () => toggleGroup(!$("#sideGroup").classList.contains("open"));
     // Opens when you point at it or tab into it with the keyboard, and folds away again as soon as you pick
     // something, like the apple tv sidebar. Clicking leaves focus on the link, so focus alone never keeps it open
-    side.addEventListener("mouseenter", () => { if (!side.classList.contains("rest")) setOpen(true); });
-    side.addEventListener("mouseleave", () => { side.classList.remove("rest"); setOpen(false); });
+    // Only a real mouse opens it by pointing. On a touch screen (ipad, iphone on its side) a tap also fires mouseenter and the
+    // sidebar would open and stay open till you tapped somewhere else, there it stays a slim rail and the profile button opens the menu
+    side.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse" && !side.classList.contains("rest")) setOpen(true); });
+    side.addEventListener("pointerleave", (e) => { if (e.pointerType !== "mouse") return; side.classList.remove("rest"); setOpen(false); });
     side.addEventListener("focusin", (e) => { if (e.target.matches(":focus-visible")) setOpen(true); });
     side.addEventListener("focusout", (e) => { if (!side.contains(e.relatedTarget)) setOpen(false); });
     $$(".side-item", side).forEach((a) => a.addEventListener("click", () => {
@@ -765,21 +769,19 @@
           <label class="field"><span class="sr">Folder</span><input id="epFolder" maxlength="24" list="epFolders" placeholder="Folder, like Barker Family" value="${esc(p ? p.folder || "" : "")}"></label>
           <datalist id="epFolders">${(folders || []).map((f) => `<option value="${esc(f)}">`).join("")}</datalist>
         </div></div>
-      ${ME.admin ? `<label class="set-row kids-row"><span><b>Kids Profile</b><span class="secondary">Only shows family and animated titles, and hides admin tools</span></span><input type="checkbox" class="switch" id="epKids" ${p && p.kids ? "checked" : ""}></label>` : ""}
-      <h3 class="sheet-sub">Choose an Icon${joint ? ` <button class="linkish" id="epDuo" ${st.image ? "" : "hidden"}>Use Both Icons</button>` : ""}</h3>
-      ${iconBox(st)}
+      ${ME.admin ? `<label class="set-row kids-row"><span><b>Kids Profile</b><span class="secondary">${joint ? "Only shows family and animated titles. Stays on while either of the two is a kids profile" : "Only shows family and animated titles, and hides admin tools"}</span></span><input type="checkbox" class="switch" id="epKids" ${p && p.kids ? "checked" : ""}></label>` : ""}
+      ${joint ? `<p class="secondary edit-note">The icon is made from ${esc(p.members.map((m) => m.name).join(" and "))}'s own icons, so change those to change this one.</p>`
+        : `<h3 class="sheet-sub">Choose an Icon</h3>${iconBox(st)}`}
       <div class="form-err" id="epErr" role="alert"></div>
       <div class="actions between">
         ${!isNew && joint ? `<button class="btn danger small" id="epSplit">${ic("people")} Split Profile</button>` : !isNew && isAdmin() ? `<button class="btn danger small" id="epDel">${ic("trash")} Delete Profile</button>` : "<span></span>"}
         <div class="actions"><button class="btn secondary small" data-close>Cancel</button><button class="btn primary small" id="epSave">Save</button></div>
       </div>`, { wide: true });
-    const redraw = () => { $("#epPreview", s.el).innerHTML = pav(st, "lg"); const d = $("#epDuo", s.el); if (d) d.hidden = !st.image; };
-    wireIconBox(s.el, st, redraw);
-    const duo = $("#epDuo", s.el);
-    if (duo) duo.onclick = () => { st.image = ""; $$(".icon-pick", s.el).forEach((x) => x.setAttribute("aria-checked", "false")); redraw(); };
+    const redraw = () => { $("#epPreview", s.el).innerHTML = pav(st, "lg"); };
+    if (!joint) wireIconBox(s.el, st, redraw);
     if (!folders) api("/api/profiles").then((r) => { const dl = $("#epFolders", s.el); if (dl) dl.innerHTML = r.folders.map((f) => `<option value="${esc(f)}">`).join(""); }).catch(() => {});
     $("#epSave", s.el).onclick = async () => {
-      const body = { name: $("#epName", s.el).value, icon: st.icon, image: st.image, folder: $("#epFolder", s.el).value };
+      const body = { name: $("#epName", s.el).value, folder: $("#epFolder", s.el).value, ...(joint ? {} : { icon: st.icon, image: st.image }) };
       const kb = $("#epKids", s.el);
       try {
         if (isNew) await api("/api/admin/profiles", { ...body, kids: !!(kb && kb.checked) });
@@ -2305,7 +2307,7 @@
     $("#pMsg").hidden = true;
     spinner(true);
     const url = `/api/live/${ch.id}/index.m3u8`;
-    pl.mode = "live";
+    pl.mode = "live"; pl.liveStale = false; pl.liveRetries = 0;
     if (isSafari && pl.v.canPlayType("application/vnd.apple.mpegurl")) { pl.v.src = url; pl.v.play().catch(() => {}); return; }
     // One hls.js for every channel, switching just loads a new playlist into it which is much quicker than starting over
     if (!pl.hls) {
@@ -2315,6 +2317,13 @@
       h.on(Hls.Events.ERROR, (_, d) => {
         if (!d.fatal || !pl.info || !pl.info.live) return;
         if (d.type === Hls.ErrorTypes.MEDIA_ERROR) { h.recoverMediaError(); return; }
+        // Paused, or still playing from what's already loaded, isn't a dead channel. While paused the server stops being asked
+        // for new pieces and the playlist goes stale, so it gets loaded fresh (at the live edge) when play is pressed
+        const b = pl.v.buffered, t = pl.v.currentTime;
+        let ahead = 0;
+        for (let i = 0; i < b.length; i++) if (t >= b.start(i) - 0.3 && t <= b.end(i)) ahead = b.end(i) - t;
+        if (pl.v.paused) { pl.liveStale = true; return; }
+        if (ahead > 3 && (pl.liveRetries = (pl.liveRetries || 0) + 1) <= 4) { setTimeout(() => { if (pl.hls === h && pl.info && pl.info.live) h.startLoad(); }, 2000); return; }
         spinner(false);
         api(`/api/live/${pl.info.id}/bad`, {}).catch(() => {});
         showMsg("This channel isn't working", "It might be off air right now, or the link stopped working.",
@@ -2843,9 +2852,10 @@
   async function drawSrvErrors() {
     const r = await api("/api/admin/errors").catch(() => null);
     const box = $("#srvErrors");
-    if (!r || !box || !r.items.length) return;
+    if (!r || !box) return;
     box.innerHTML = `<section class="card backups"><h2 class="set-title">Server Errors</h2>
       <p class="secondary set-hint">Things that went wrong on the server since it last started. Cleared when Kino restarts.</p>
+      ${r.items.length ? "" : `<div class="note">Nothing has gone wrong since Kino last started.</div>`}
       <div class="list">${r.items.slice(0, 15).map((x) => `<div class="li"><span class="grow"><b>${esc(x.path)}</b><br><span class="secondary">${esc(x.error)}</span></span><span class="r">${esc(when(x.at))}</span></div>`).join("")}</div></section>`;
   }
 
@@ -3729,12 +3739,23 @@
   });
   v.addEventListener("canplay", () => spinner(false));
   const playIcon = () => { $("#pPlay").innerHTML = ic(v.paused ? "play" : "pause"); $("#pPlay").setAttribute("aria-label", v.paused ? "Play" : "Pause"); };
-  v.addEventListener("play", playIcon);
+  v.addEventListener("play", () => {
+    playIcon();
+    // Pressing play on a live channel after a while goes to what's on now instead of carrying on from where it stopped
+    if (pl.info && pl.info.live && pl.mode === "live" && (pl.liveStale || Date.now() - (pl.pausedAt || Date.now()) > 20000)) {
+      pl.liveStale = false; pl.liveRetries = 0;
+      if (pl.hls) { pl.hls.loadSource(`/api/live/${pl.info.id}/index.m3u8`); pl.hls.startLoad(-1); }
+      else { v.src = `/api/live/${pl.info.id}/index.m3u8`; v.play().catch(() => {}); }
+    }
+    // On a tv the focus has to stay on the controls, not drop to something else when the picture starts again
+    if (TV && !pl.el.hidden && $("#pMsg").hidden) { const a = document.activeElement; if (!a || a === document.body || !pl.el.contains(a)) { const pp = $("#pPlay"); pp && pp.focus(); } }
+  });
   if (ANDROID) {
     v.addEventListener("playing", () => window.KinoAndroid.setPlaying(true));
     ["pause", "ended", "emptied"].forEach((ev) => v.addEventListener(ev, () => window.KinoAndroid.setPlaying(false)));
   }
   v.addEventListener("pause", () => {
+    pl.pausedAt = Date.now();
     playIcon(); wakeUi();
     if (pl.info && pl.evStarted && !v.ended && v.currentSrc) { pl.evPaused = true; sendEvent("pause"); }
   });

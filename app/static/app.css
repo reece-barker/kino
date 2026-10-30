@@ -1670,3 +1670,19 @@ body.tv .sheet .who-tile:focus .av-duo .av-half:last-child { box-shadow: 0 0 0 3
 /* sources on tv: the focused one doesnt grow or get an outside ring anymore, the list clips those. It gets an inside ring like the other lists */
 body.tv .sheet .src:focus, body.tv .sheet .src:focus-visible { outline: none; transform: none; z-index: auto; box-shadow: inset 0 0 0 3px var(--label); background: var(--bg-4); }
 body.tv .src:hover:not(:focus-visible) { transform: none; box-shadow: none; }
+
+/* ---- joint icons: each of the two icons gets its own ring when picked, and the gap between them matches what's behind */
+.av.av-duo { --ring: var(--page-bg); }
+.sheet .av.av-duo, .set-card .av.av-duo, .more-head .av.av-duo, .edit-top .av.av-duo { --ring: var(--bg-2); }
+.fold-cell .av.av-duo { --ring: var(--bg-3); }
+.av.av-duo .av-half:first-child { box-shadow: none; }
+.av.av-duo .av-half:last-child { box-shadow: 0 0 0 3px var(--ring); }
+.av.lg.av-duo .av-half:last-child { box-shadow: 0 0 0 4px var(--ring); }
+.who-tile:hover .av.av-duo, .who-tile:focus-visible .av.av-duo, body.tv .sheet .who-tile:focus .av.av-duo { box-shadow: none; }
+.who-tile:hover .av.av-duo .av-half:first-child, .who-tile:focus-visible .av.av-duo .av-half:first-child, body.tv .sheet .who-tile:focus .av.av-duo .av-half:first-child { box-shadow: 0 0 0 3px var(--label); }
+.who-tile:hover .av.av-duo .av-half:last-child, .who-tile:focus-visible .av.av-duo .av-half:last-child, body.tv .sheet .who-tile:focus .av.av-duo .av-half:last-child { box-shadow: 0 0 0 3px var(--ring), 0 0 0 6px var(--label); }
+body.tv .who-tile:hover:not(:focus-visible) .av.av-duo .av-half:first-child { box-shadow: none; }
+body.tv .who-tile:hover:not(:focus-visible) .av.av-duo .av-half:last-child { box-shadow: 0 0 0 3px var(--ring); }
+.edit-top .av.av-duo { width: 76px; height: 76px; }
+@media (max-height: 760px) { .edit-top .av.av-duo { width: 60px; height: 60px; } }
+.edit-note { margin: 4px 0 14px; }

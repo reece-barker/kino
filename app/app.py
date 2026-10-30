@@ -1431,8 +1431,8 @@ def clean_icon(i):
 async def profile_update(request: Request, p=Depends(current_profile)):
     b = await request.json()
     name = clean_name(b.get("name", p["name"]))
-    icon = clean_icon(b.get("icon", p["icon"]))
-    image = clean_image(b.get("image", p.get("image")))
+    icon = clean_icon(b.get("icon", p["icon"])) if not p.get("members") else p["icon"]
+    image = clean_image(b.get("image", p.get("image"))) if not p.get("members") else ""
     folder = clean_folder(b.get("folder", p.get("folder")))
     prefs = dict(p["prefs"])
     for k, v in (b.get("prefs") or {}).items():
@@ -1466,13 +1466,26 @@ async def profile_admin_edit(pid: int, request: Request, admin=Depends(require_a
     b = await request.json()
     if not profile_row(pid):
         raise HTTPException(404, "That profile doesn't exist")
-    db().q("UPDATE profiles SET name = ?, icon = ? WHERE id = ?", (clean_name(b.get("name")), clean_icon(b.get("icon")), pid))
-    if "image" in b:
+    cur = db().q("SELECT icon, members FROM profiles WHERE id = ?", (pid,))[0]
+    joint = bool(members_of(cur))
+    # A joint profile's icon is made from its two people's icons, so it only takes a name, folder and kids
+    db().q("UPDATE profiles SET name = ?, icon = ? WHERE id = ?", (clean_name(b.get("name")), cur["icon"] if joint else clean_icon(b.get("icon")), pid))
+    if "image" in b and not joint:
         db().q("UPDATE profiles SET image = ? WHERE id = ?", (clean_image(b["image"]), pid))
     if "folder" in b:
         db().q("UPDATE profiles SET folder = ? WHERE id = ?", (clean_folder(b["folder"]), pid))
     if "kids" in b:
-        db().q("UPDATE profiles SET kids = ? WHERE id = ?", (1 if b["kids"] else 0, pid))
+        kids = 1 if b["kids"] else 0
+        if joint:
+            # Stays a kids profile while either person in it is one, nothing gets past the kids rules by joining
+            ms = members_of(cur)
+            if db().q(f"SELECT 1 FROM profiles WHERE id IN ({ids_sql(ms)}) AND kids = 1", ms):
+                kids = 1
+        db().q("UPDATE profiles SET kids = ? WHERE id = ?", (kids, pid))
+        if kids and not joint:
+            for r in db().q("SELECT id, members FROM profiles WHERE members IS NOT NULL AND members != ''"):
+                if pid in members_of(r):
+                    db().q("UPDATE profiles SET kids = 1 WHERE id = ?", (r["id"],))
     return {"ok": True}
 
 

@@ -54,6 +54,7 @@ public class MainActivity extends Activity {
     private String parkedUrl;
     private volatile String pendingResult, lastCrash;
     private boolean clearHistoryNext;
+    private long playerClosed;
 
     private boolean lowMemory() {
         android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
@@ -365,6 +366,8 @@ public class MainActivity extends Activity {
             return;
         }
         if (loadFailed) { super.onBackPressed(); return; }
+        // A back that was really for the player that just closed is ignored, otherwise the title page went back to Home
+        if (System.currentTimeMillis() - playerClosed < 700) return;
         web.evaluateJavascript("window.kinoBack ? window.kinoBack() : false", result -> {
             if ("true".equals(result)) return;
             if (web.canGoBack()) web.goBack();
@@ -418,6 +421,7 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (request == PLAYER_REQUEST) {
+            playerClosed = System.currentTimeMillis();
             // Tells the page where the player got to, so it can refresh progress or start the next episode
             String r = data != null ? data.getStringExtra("result") : null;
             if (parkedUrl != null) {

@@ -1055,7 +1055,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     // Are you still watching, pauses and asks after the profile's set time with nobody touching the remote
     // A 30 second clip in place of a whole film or episode, torbox sends one of those (a green screen) when a download
     // didnt really happen. Asks to try the next source, or just does it if the profile turned that on in Settings
-    private boolean fakeAsked;
+    private boolean fakeAsked, backDown;
 
     private void checkFake(double d) {
         if (fakeAsked || loading || !info.optBoolean("checkFake")) return;
@@ -1129,7 +1129,11 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         int k = e.getKeyCode();
         boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
         if (k == KeyEvent.KEYCODE_BACK) {
-            if (down && e.getRepeatCount() == 0) {
+            // Acts when the button comes back up, not when its pressed. Closing on the press left the release going to
+            // the page behind, which took that as a second back and left the title page for Home
+            if (down) { if (e.getRepeatCount() == 0) backDown = true; return true; }
+            if (backDown && !e.isCanceled()) {
+                backDown = false;
                 if (menuWrap.getVisibility() == View.VISIBLE) closeMenu();
                 else if (card != null && !errorShown) { closeDialog(); eng.play(); }
                 else done();

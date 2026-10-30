@@ -1436,3 +1436,13 @@ body.tv .int-chip:focus .int-kind { color: inherit; opacity: 0.7; }
 
 /* why a catalog isnt on home, under the addon in settings */
 .warn-text { color: #ff9f0a; }
+
+/* admin menu on a title page opens upwards when theres no room under the button */
+.menu.drop.flip { top: auto; bottom: 56px; }
+/* tv focus inside scrolling lists (menus, fix match results) stays inside the box instead of growing past it and getting cut off */
+body.tv .menu .mi:focus-visible { transform: none; box-shadow: inset 0 0 0 2px var(--label); background: var(--hover); }
+body.tv .sheet .fm-item:focus, body.tv .sheet .fm-item:focus-visible { outline: none; transform: none; box-shadow: inset 0 0 0 3px var(--label); background: var(--bg-4); }
+body.tv .fm-results { padding: 2px; }
+/* the whole search box lights up on tv, not just the text inside it */
+body.tv .search:focus-within { box-shadow: 0 0 0 3px var(--label); }
+body.tv .search input:focus, body.tv .sheet .search input:focus { outline: none; box-shadow: none; }

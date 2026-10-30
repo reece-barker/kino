@@ -1446,3 +1446,6 @@ body.tv .fm-results { padding: 2px; }
 /* the whole search box lights up on tv, not just the text inside it */
 body.tv .search:focus-within { box-shadow: 0 0 0 3px var(--label); }
 body.tv .search input:focus, body.tv .sheet .search input:focus { outline: none; box-shadow: none; }
+
+/* profile menu lines up with the profile button above it (the generic dropdown rules were pushing it right) */
+.menu.drop.side-menu { left: 0; right: 0; min-width: 0; }

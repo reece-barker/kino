@@ -17,6 +17,7 @@ import hmac
 import html
 import io
 import ipaddress
+import itertools
 import json
 import logging
 import math
@@ -130,6 +131,7 @@ CREATE TABLE IF NOT EXISTS search_recent (profile_id INTEGER, key TEXT, kind TEX
     at REAL, PRIMARY KEY (profile_id, key));
 CREATE TABLE IF NOT EXISTS auto_intros (file_id TEXT PRIMARY KEY, start REAL, end REAL, tried REAL);
 CREATE TABLE IF NOT EXISTS stream_health (id TEXT PRIMARY KEY, good REAL, bad REAL);
+CREATE TABLE IF NOT EXISTS sources_seen (id TEXT PRIMARY KEY, kind TEXT, has INTEGER, checked REAL);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
 """
@@ -1819,7 +1821,11 @@ async def home(request: Request, p=Depends(current_profile)):
             counts[g] = counts.get(g, 0) + 1
     genres = sorted([g for g, n in counts.items() if n >= 3], key=lambda g: (weights.get(g, 0), counts[g]), reverse=True)
     for g in genres[:8]:
+        # Library first, then whatever the addon catalogs already have for that genre, the rest loads as you scroll
         items = sorted([s for s in visible if g in s["genres"]], key=lambda s: s["score"], reverse=True)
+        ids = {s.get("imdb") for s in items}
+        items += [s for s in pool if g in (s.get("genres") or []) and s.get("imdb") not in ids]
+        GENRE_ROWS["g-" + norm(g)] = (g, len([s for s in visible if g in s["genres"]]))
         shelves.append({"id": "g-" + norm(g), "title": g, "style": "poster", "items": items})
 
     unwatched = [s for s in by_score if not s["watched_count"] and not s["last_activity"]]
@@ -1836,7 +1842,7 @@ async def home(request: Request, p=Depends(current_profile)):
         if sh["style"] not in ("poster", "wide") or sh["id"] == "continue":
             continue
         full[sh["id"]] = sh["items"]
-        more = len(sh["items"]) > SHELF_FIRST or sh["id"] in ("movies", "shows") or sh["id"].startswith("addon-")
+        more = len(sh["items"]) > SHELF_FIRST or sh["id"] in ("movies", "shows") or sh["id"].startswith("addon-") or sh["id"].startswith("g-")
         sh["items"] = sh["items"][:SHELF_FIRST]
         sh["next"] = len(sh["items"]) if more else None
     HOME_FULL[p["id"]] = (time.time(), full)
@@ -1845,6 +1851,7 @@ async def home(request: Request, p=Depends(current_profile)):
 
 
 SHELF_FIRST = 24
+GENRE_ROWS = {}  # home genre row id -> (genre, how many library titles start it)
 HOME_FULL = {}
 
 
@@ -1892,7 +1899,7 @@ async def shelf_more(id: str, skip: int = 0, p=Depends(current_profile)):
             return {"items": [], "next": skip, "retry": True}
         summ, _, _ = all_summaries(p["id"])
         have = lib_by_meta_id(summ)
-        items = [have.get(m["id"]) or ext_preview(m, c["type"]) for m in metas]
+        items = drop_empty([have.get(m["id"]) or ext_preview(m, c["type"]) for m in metas])
         if p.get("kids"):
             items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
         return {"items": items, "next": skip + len(metas) if metas else None}
@@ -1900,6 +1907,17 @@ async def shelf_more(id: str, skip: int = 0, p=Depends(current_profile)):
         r = await browse_list(p, "movie" if id == "movies" else "series", skip, take)
         return {"items": r["items"], "next": r["next"]}
     hit = HOME_FULL.get(p["id"])
+    if id.startswith("g-") and id in GENRE_ROWS:
+        # A genre row: what Home already had, then films and shows from the addon catalogs for that genre, half each
+        full = hit[1].get(id, []) if hit else []
+        if skip < len(full):
+            return {"items": full[skip:skip + take], "next": skip + take}
+        g, _ = GENRE_ROWS[id]
+        page = (skip - len(full)) // take
+        have = {x.get("imdb") for x in full}
+        m, sr = await asyncio.gather(browse_list(p, "movie", page * 20, 20, [g], src="ext"), browse_list(p, "series", page * 20, 20, [g], src="ext"))
+        items = [x for pair in itertools.zip_longest(m["items"], sr["items"]) for x in pair if x and x.get("imdb") not in have]
+        return {"items": items, "next": skip + take if (m["next"] or sr["next"]) else None}
     full = hit[1].get(id, []) if hit else []
     items = full[skip:skip + take]
     return {"items": items, "next": skip + take if skip + take < len(full) else None}
@@ -1943,7 +1961,7 @@ async def browse_list(p, kind, skip=0, limit=60, genres=(), decade=0, minr=0.0, 
             cats = [(a, c) for a, c in cats if not catalog_genres(c) or g0 in catalog_genres(c)]
         offs = {i: 0 for i in range(len(cats))}
         live = set(offs)
-        seen = set(have) | {s.get("imdb") for s in lib}
+        seen = set(have) | {s.get("imdb") for s in lib} | empty_ids()
         rounds = 0
         while live and len(ext) < need and rounds < 40:
             rounds += 1
@@ -2029,12 +2047,13 @@ def family_liked(p, summ):
 def addon_pool(pid, have):
     """Catalog titles from addons that have streams, shaped like library titles. added is when Kino first saw them"""
     out, ids = {}, []
+    empty = empty_ids()
     for a, c in home_catalogs():
         if c.get("type") not in ("movie", "series"):
             continue
         for m in (cached_catalog(a, c) or [])[:60]:
             mid = isinstance(m, dict) and m.get("id")
-            if not mid or mid in have or mid in out:
+            if not mid or mid in have or mid in out or mid in empty:
                 continue
             out[mid] = ext_preview(m, c["type"])
             ids.append((mid, out[mid]["kind"]))
@@ -2084,6 +2103,7 @@ def shelf_title(c, a, several):
 
 def addon_shelves(summ, kids=False):
     have = lib_by_meta_id(summ)
+    empty = empty_ids()
     per_addon = {}
     cats = home_catalogs()
     count = {}
@@ -2091,26 +2111,30 @@ def addon_shelves(summ, kids=False):
         count[a["id"]] = count.get(a["id"], 0) + 1
     for a, c in cats:
         metas = cached_catalog(a, c)
-        if not metas:
+        title = shelf_title(c, a, count[a["id"]] > 1)
+        row = {"id": f"addon-{a['id']}-{c['type']}-{c['id']}", "title": title, "style": "wide" if video_type(c.get("type")) else "poster",
+               "source": None if (a["m"].get("name") or "") in title else a["m"].get("name")}
+        if metas is None:
+            # Not loaded yet (Kino just started, or a slow addon like youtubio), the page fills it in when it arrives
+            # instead of the row being left off. Rows that come back empty take themselves off again
+            if catalog_url(a, c) not in CAT_ERR or "too long" in CAT_ERR.get(catalog_url(a, c), ""):
+                per_addon.setdefault(a["id"], []).append({**row, "items": [], "pending": True})
             continue
-        items = [have.get(m.get("id")) or ext_preview(m, c["type"]) for m in metas[:24] if isinstance(m, dict) and m.get("id")]
+        items = drop_empty([have.get(m.get("id")) or ext_preview(m, c["type"]) for m in metas[:24] if isinstance(m, dict) and m.get("id")], empty)
         if kids:
             items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
         if len(items) >= 3:
-            per_addon.setdefault(a["id"], []).append({"id": f"addon-{a['id']}-{c['type']}-{c['id']}", "title": (title := shelf_title(c, a, count[a["id"]] > 1)),
-                                                       "style": "wide" if video_type(c.get("type")) else "poster", "items": items,
-                                                       "source": None if (a["m"].get("name") or "") in title else a["m"].get("name")})
-    # Takes turns between addons so one with loads of catalogs doesnt push the others off home. Youtube style rows
-    # (your own playlists, watch later) dont count towards the 8, they used to lose there turns to cinemeta and kitsu
-    vids = [sh for l in per_addon.values() for sh in l if sh["style"] == "wide"]
+            per_addon.setdefault(a["id"], []).append({**row, "items": items})
+    # Every row thats turned on in Settings shows, taking turns between addons so one with loads of catalogs doesnt
+    # push the others to the bottom. Video rows (youtube) go after the films and shows
     out, lists = [], [[sh for sh in l if sh["style"] != "wide"] for l in per_addon.values()]
     lists = [l for l in lists if l]
-    while lists and len(out) < 8:
+    while lists:
         for l in lists:
-            if l and len(out) < 8:
+            if l:
                 out.append(l.pop(0))
         lists = [l for l in lists if l]
-    return out + vids[:8]
+    return out + [sh for l in per_addon.values() for sh in l if sh["style"] == "wide"]
 
 
 def name_score(q, name):
@@ -2260,6 +2284,7 @@ async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
     if q and addon_rows():
         summ, _, _ = all_summaries(p["id"])
         have = lib_by_meta_id(summ)
+        empty = empty_ids()
         try:
             hits = await asyncio.wait_for(addon_search(None, q, videos=bool(videos)), timeout=27 if videos else 9)
         except asyncio.TimeoutError:
@@ -2267,7 +2292,7 @@ async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
         seen, rank = {}, {}
         for a, c, m in hits:
             mid = m.get("id")
-            if not mid or mid in have:
+            if not mid or mid in have or (mid in empty and not video_type(c.get("type"))):
                 continue
             # Each addon already lists its results most popular first, so the position counts too
             pos = rank[(a["id"], c.get("id"), c.get("type"))] = rank.get((a["id"], c.get("id"), c.get("type")), -1) + 1
@@ -3114,14 +3139,19 @@ async def refresh_catalogs():
         return
     CAT_STATE["refreshing"] = True
     try:
-        for a, c in home_catalogs():
+        # A few at a time, so one slow addon (youtubio can take a minute) doesnt hold every other row up
+        gate = asyncio.Semaphore(4)
+
+        async def one(a, c):
             u = catalog_url(a, c)
-            try:
-                j = await fetch_json(u, ttl=3600, timeout=cat_timeout(c))
-                CAT_ERR.pop(u, None) if (j.get("metas") if isinstance(j, dict) else None) else CAT_ERR.__setitem__(u, "The addon sent an empty list")
-            except Exception as e:
-                CAT_ERR[u] = "Took too long to answer" if isinstance(e, httpx.TimeoutException) else f"Failed: {str(e)[:80] or type(e).__name__}"
-                log.info("catalog %s/%s failed: %s", a["m"].get("name"), c.get("id"), e)
+            async with gate:
+                try:
+                    j = await fetch_json(u, ttl=3600, timeout=cat_timeout(c))
+                    CAT_ERR.pop(u, None) if (j.get("metas") if isinstance(j, dict) else None) else CAT_ERR.__setitem__(u, "The addon sent an empty list")
+                except Exception as e:
+                    CAT_ERR[u] = "Took too long to answer" if isinstance(e, httpx.TimeoutException) else f"Failed: {str(e)[:80] or type(e).__name__}"
+                    log.info("catalog %s/%s failed: %s", a["m"].get("name"), c.get("id"), e)
+        await asyncio.gather(*(one(a, c) for a, c in home_catalogs()))
     finally:
         CAT_STATE["refreshing"] = False
 
@@ -3129,7 +3159,93 @@ async def refresh_catalogs():
 async def catalog_worker():
     while True:
         await refresh_catalogs()
+        try:
+            await check_sources()
+        except Exception as e:
+            log.info("source check failed: %s", e)
         await asyncio.sleep(1800)
+
+
+# ---------------------------------------------------------------- titles with nothing to play
+# Addon catalogs list loads of things none of your stream addons (or TorBox) have a copy of. Those get checked in
+# the background and hidden from Home, Movies, TV Shows and search. Only a clear answer hides anything: every stream
+# addon has to have answered and said nothing. A slow or broken addon means "dont know", which stays visible.
+# A show counts as empty only when its first two episodes both have nothing. Anything opened directly still works,
+# and a title found to have sources later comes straight back
+NOSRC_DAYS = 3
+
+
+def sources_known(mid):
+    r = db().q("SELECT has, checked FROM sources_seen WHERE id = ?", (mid,))
+    return dict(r[0]) if r else None
+
+
+def note_sources(kind, mid, has):
+    db().q("INSERT OR REPLACE INTO sources_seen VALUES (?,?,?,?)", (mid, kind, 1 if has else 0, time.time()))
+
+
+def empty_ids():
+    return {r["id"] for r in db().q("SELECT id FROM sources_seen WHERE has = 0 AND checked > ?", (time.time() - NOSRC_DAYS * 86400,))}
+
+
+def drop_empty(items, empty=None):
+    """Takes out addon titles known to have nothing to play, library titles and youtube style videos always stay"""
+    empty = empty_ids() if empty is None else empty
+    if not empty:
+        return items
+    return [i for i in items if not (i.get("external") and i.get("kind") in ("movie", "series") and i.get("imdb") in empty)]
+
+
+async def has_sources(kind, mid):
+    """True, False, or None when it cant be sure (an addon didnt answer, or theres nothing to ask)"""
+    vids = [mid] if kind == "movie" else [f"{mid}:1:1", f"{mid}:1:2"]
+    rows = [a for a in addon_rows() if supports(a["m"], "stream", kind, vids[0])]
+    if not rows and not TORBOX_KEY:
+        return None
+    meta = await meta_lookup(kind, mid) or {}
+    for vid in vids:
+        try:
+            if await tb_matches(kind, vid, meta):
+                return True
+        except Exception:
+            return None
+        for a in rows:
+            try:
+                j = await addon_call(a, "stream", kind, vid, ttl=3 * 3600, timeout=30)
+            except Exception:
+                return None
+            for st in (j.get("streams") or []) if isinstance(j, dict) else []:
+                if isinstance(st, dict) and st.get("url") and not (st.get("infoHash") or st.get("ytId") or st.get("externalUrl")):
+                    return True
+    return False
+
+
+async def check_sources(limit=300):
+    """Goes through the films and shows on the Home rows, a couple at a time so the stream addons arent hammered"""
+    todo, seen = [], set()
+    for a, c in home_catalogs():
+        if c.get("type") not in ("movie", "series"):
+            continue
+        for m in (cached_catalog(a, c) or [])[:40]:
+            mid = isinstance(m, dict) and m.get("id")
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            k = sources_known(mid)
+            if k and time.time() - k["checked"] < NOSRC_DAYS * 86400:
+                continue
+            todo.append((c["type"], mid))
+    gate = asyncio.Semaphore(2)
+
+    async def one(kind, mid):
+        async with gate:
+            has = await has_sources(kind, mid)
+            if has is not None:
+                note_sources(kind, mid, has)
+            await asyncio.sleep(0.5)
+    await asyncio.gather(*(one(k, m) for k, m in todo[:limit]))
+    if todo:
+        log.info("checked %d addon titles for sources", min(len(todo), limit))
 
 
 def cached_catalog(a, c):
@@ -3520,7 +3636,7 @@ def stream_row(sid):
 
 
 @app.get("/api/streams/{kind}/{vid:path}")
-async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_profile)):
+async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=Depends(current_profile)):
     if not kind_ok(kind):
         raise HTTPException(404, "Unknown type")
     rows = [a for a in addon_rows() if supports(a["m"], "stream", kind, vid)]
@@ -3536,7 +3652,9 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
     async def one(a):
         try:
             # archive.org is slow so these get a bit longer than other addon calls
-            j = await addon_call(a, "stream", kind, vid, ttl=3 * 3600, timeout=45)
+            # quick is the title page's first look: whatever answers in a few seconds, so Play shows straight away. The
+            # full list comes right after, slow addons (archive.org) get there 45 seconds there
+            j = await addon_call(a, "stream", kind, vid, ttl=3 * 3600, timeout=6 if quick else 45)
             return a, j.get("streams") or [], None
         except httpx.TimeoutException:
             return a, [], "took too long to answer"
@@ -3609,7 +3727,15 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
         out = out[:12]
     for x in out:
         x.pop("_url", None)
-    res = {"streams": out, "dropped": dropped, "checked": len(rows)}
+    res = {"streams": out, "dropped": dropped, "checked": len(rows), "partial": bool(quick and any(x["error"] == "took too long to answer" for x in report))}
+    # What this title turned out to have, for hiding ones with nothing. Found something always counts, nothing only
+    # counts for a film when every addon answered (shows get checked by there first episodes in the background)
+    if kind in ("movie", "series") and (rows or TORBOX_KEY) and not inline:
+        sid = show_of(vid) if kind == "series" else vid
+        if out:
+            note_sources(kind, sid, True)
+        elif kind == "movie" and not quick and all(x["error"] is None for x in report):
+            note_sources(kind, sid, False)
     if admin_user(request):
         res["report"] = report
         res["stream_addons"] = [a["m"].get("name") for a in addon_rows() if supports(a["m"], "stream")]

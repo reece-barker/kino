@@ -1240,3 +1240,52 @@ html.lite .pl-bg img { filter: none; }
 .chip.on { background: var(--label); color: var(--page-bg); }
 .chip.on span { color: inherit; opacity: 0.6; }
 body.tv .chip:focus-visible { transform: scale(1.08); box-shadow: 0 0 0 3px var(--label); }
+
+/* ---- v10 fixes */
+/* Shelves dont use content-visibility anymore, it clipped focused cards at the left and right edges on tvs */
+html.lite .shelf { content-visibility: visible; contain-intrinsic-size: none; }
+
+/* Profile picker always fits, fitWho() shrinks the icons when theres a lot of profiles */
+.who .who-av .av.lg { width: var(--who-av, clamp(96px, 12vw, 150px)); height: var(--who-av, clamp(96px, 12vw, 150px)); }
+.who-grid { max-width: min(1240px, 94vw); row-gap: clamp(14px, 3vh, 36px); }
+.who-title { font-size: clamp(26px, min(4vw, 7vh), 52px); }
+.who-name { font-size: clamp(14px, 2.2vh, 17px); }
+.who-tile { gap: clamp(8px, 1.6vh, 14px); }
+
+/* Settings, space around the line under the profile */
+.set-profile { padding-bottom: 16px; }
+.set-profile + .set-row { padding-top: 16px; }
+
+/* Profile sheets fit on short screens and tvs without scrolling */
+.edit-top { margin-bottom: 18px; }
+.edit-top .av.lg { width: 76px; height: 76px; }
+@media (max-height: 760px) {
+  .sheet.wide { width: min(860px, 100%); }
+  .sheet h2 { margin-top: 0; }
+  .icon-grid { grid-template-columns: repeat(auto-fill, minmax(50px, 1fr)); gap: 8px; }
+  .icon-grid .av.md { width: 50px; height: 50px; }
+  .sheet-sub { margin: 12px 0 8px; }
+  .edit-top { margin-bottom: 12px; }
+  .edit-top .av.lg { width: 60px; height: 60px; }
+}
+
+/* View More card at the end of rows on tvs */
+.more-card .art { display: grid; place-items: center; background: var(--fill-2); box-shadow: inset 0 0 0 1px var(--sep); }
+.more-card.poster .art { aspect-ratio: 2 / 3; }
+.more-card.landscape .art { aspect-ratio: 16 / 9; }
+.more-in { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--label); font-size: 15px; }
+.more-in .i { width: 40px; height: 40px; padding: 8px; border-radius: 50%; background: var(--fill-2); }
+
+/* Skeleton while a title page looks for something to play */
+.pd-skel { margin-top: 4px; }
+.sk-btn { display: block; width: 150px; height: 50px; border-radius: 14px; }
+.sk-btn.short { width: 110px; }
+.sk-round { display: block; width: 50px; height: 50px; border-radius: 50%; }
+.pd-skel-line { width: 180px; height: 14px; margin-top: 18px; border-radius: 7px; }
+
+/* No mouse on a tv, so nothing stays lit up from a hover the webview thinks happened */
+body.tv .who-tile:hover:not(:focus-visible) .who-av { transform: none; }
+body.tv .who-tile:hover:not(:focus-visible) .av { box-shadow: none; }
+body.tv .who-tile:hover:not(:focus-visible) { color: var(--label-2); }
+body.tv .tile:hover:not(:focus-visible) .art { transform: none; }
+body.tv .icon-pick:hover:not(:focus-visible) { transform: none; }

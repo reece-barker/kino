@@ -48,6 +48,8 @@ import java.util.ArrayList;
 public class MainActivity extends Activity {
 
     private static final int VOICE_REQUEST = 7;
+
+    private static final int PLAYER_REQUEST = 43;
     private static final String HOME = BuildConfig.KINO_URL;
 
     private FrameLayout root;
@@ -329,6 +331,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == PLAYER_REQUEST) {
+            // Tells the page where the player got to, so it can refresh progress or start the next episode
+            String r = data != null ? data.getStringExtra("result") : null;
+            js("window.kinoNativeDone && window.kinoNativeDone(" + (r != null ? r : "null") + ")");
+            return;
+        }
         if (request != VOICE_REQUEST) return;
         String text = "";
         if (result == RESULT_OK && data != null) {
@@ -380,6 +388,15 @@ public class MainActivity extends Activity {
     class Bridge {
         @JavascriptInterface public boolean isTv() { return isTv; }
         @JavascriptInterface public String version() { return BuildConfig.VERSION_NAME; }
+
+        // Plays a video in the native player (exoplayer) instead of the web one, the page hands over everything it needs
+        @JavascriptInterface
+        public void playNative(String json) {
+            runOnUiThread(() -> {
+                Intent i = new Intent(MainActivity.this, PlayerActivity.class).putExtra(PlayerActivity.EXTRA, json);
+                startActivityForResult(i, PLAYER_REQUEST);
+            });
+        }
 
         @JavascriptInterface
         public boolean hasVoice() {

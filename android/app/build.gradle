@@ -9,8 +9,8 @@ android {
         applicationId "page.reece.kino"
         minSdk 24
         targetSdk 35
-        versionCode 2
-        versionName "1.1"
+        versionCode 3
+        versionName "1.2"
         // The address the app opens, change it here if kino ever moves
         buildConfigField "String", "KINO_URL", "\"https://kino.reece.page/\""
     }
@@ -43,4 +43,12 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    // exoplayer, the same player stremio uses, so videos go straight to the tv's hardware decoder
+    def media3 = "1.4.1"
+    implementation "androidx.media3:media3-exoplayer:$media3"
+    implementation "androidx.media3:media3-exoplayer-hls:$media3"
+    implementation "androidx.media3:media3-ui:$media3"
 }

@@ -360,7 +360,11 @@
 
   function wireSide() {
     const side = $("#side"), b = $("#avatarBtn"), m = $("#avatarMenu");
-    b.onclick = (e) => { e.stopPropagation(); m.hidden = !m.hidden; side.classList.toggle("pinned", !m.hidden); };
+    b.onclick = (e) => {
+      e.stopPropagation(); m.hidden = !m.hidden; side.classList.toggle("pinned", !m.hidden);
+      // With a remote the focus goes into the menu, back closes it again
+      if (TV && !m.hidden) { const f = $(".mi", m); if (f) setTimeout(() => f.focus(), 30); }
+    };
     m.addEventListener("click", (e) => e.stopPropagation());
     $$(".mi", m).forEach((x) => x.addEventListener("click", () => { m.hidden = true; side.classList.remove("pinned"); }));
     wireThemePicker(m);
@@ -472,7 +476,7 @@
         ${!!ME.admin ? `<button class="who-tile add" id="addProfile" aria-label="Add a profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Add Profile</span></button>`
           : manage ? "" : `<button class="who-tile add" id="askProfile" aria-label="Ask for your own profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Ask for a Profile</span></button>`}
       </div>
-      <div class="who-actions">${manage ? `<button class="btn primary" id="doneManage">Done</button>` : `<button class="btn outline" id="manageBtn">Manage Profiles</button>`}</div>
+      <div class="who-actions">${manage ? `<button class="btn primary" id="doneManage">Done</button>` : ME.admin ? `<button class="btn outline" id="manageBtn">Manage Profiles</button>` : ""}</div>
     </main>`;
     $$(".who-tile[data-pid]").forEach((b) => (b.onclick = async () => {
       const p = r.profiles.find((x) => x.id === Number(b.dataset.pid));
@@ -493,7 +497,20 @@
     const ai = $("#adminIn2"); if (ai) ai.onclick = () => adminLogin(() => pageProfiles(manage));
     const ao = $("#adminOut2"); if (ao) ao.onclick = async () => { await api("/api/admin/logout", {}); ME.admin = null; pageProfiles(manage); };
     const first = $(".who-tile"); if (first) first.focus();
+    fitWho();
   }
+  // Shrinks the profile icons until the whole picker fits on screen, so there's never any scrolling on it
+  function fitWho() {
+    const who = $(".who");
+    if (!who) return;
+    who.style.removeProperty("--who-av");
+    let size = Math.min(150, Math.max(96, innerWidth * 0.12));
+    for (let i = 0; i < 20 && document.documentElement.scrollHeight > innerHeight + 1 && size > 52; i++) {
+      size -= 8;
+      who.style.setProperty("--who-av", size + "px");
+    }
+  }
+  addEventListener("resize", () => { if ($(".who")) fitWho(); });
 
   // A 4 digit code pad like the iphone lock screen. check gets the code and returns the result, or throws if wrong
   function pinPad(title, check, sub = "") {
@@ -673,9 +690,9 @@
       <main class="page under-hero" style="padding-top:8px">
         ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
           <div class="row ${s.style === "poster" ? "posters" : "wide"}">${s.items.map((t) => s.style === "poster" ? posterTile(t)
-            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, play: t.file_id, hide: t.file_id, href: t.stream ? extHref(t) : undefined,
+            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: TV ? null : t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
-            : wideTile(t)).join("")}</div></section>`).join("")}
+            : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster") : ""}</div></section>`).join("")}
       </main>`;
     wireTopbar();
     startHero(heroes.length);
@@ -709,6 +726,9 @@
     }));
     if (isAdmin()) startPoll(pollHomeSync, 5000);
   }
+
+  // On a tv the See All link at the top is hard to reach, so rows end with a card that does the same
+  const moreCard = (href, poster, attr = "") => `<a class="tile more-card ${poster ? "poster" : "landscape"}" ${href ? `href="${href}"` : 'href="#" role="button"'} ${attr}><div class="art"><span class="more-in">${ic("chevronR")}<b>View More</b></span></div><div class="cap">&nbsp;</div></a>`;
 
   // Floating back button on title pages, phones dont have the sidebar to get out with
   const backBtn = () => `<button class="page-back glass" data-goback aria-label="Back">${ic("back")}</button>`;
@@ -745,7 +765,7 @@
           ${t.cont ? `<button class="btn primary" data-heroresume="${t.file_id}" data-tid="${t.id || ""}" ${tab}>${ic("play")} ${t.next_episode ? "Play" : "Resume"}${t.season != null ? " " + esc(epLabel(t.season, t.episode)) : ""}</button>`
             : `<button class="btn primary" data-heroplay="${t.id}" ${tab}>${ic("play")} Play</button>`}
           <a class="btn secondary glass-btn-lg" href="${link}" ${tab}>More Info</a>
-          ${t.cont ? `<button class="round-btn" data-hide="${t.file_id}" ${tab} aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
+          ${t.cont && !TV ? `<button class="round-btn" data-hide="${t.file_id}" ${tab} aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
         </div>
       </div></div>`;
   }
@@ -883,7 +903,7 @@
   // into the same rows and sorted by how well they match plus how popular they are, the best row goes first
   const searchRow = (id, title, items, tile, extra = "") => items.length ? `<section class="shelf srow" data-srow="${id}" aria-label="${esc(title)}">
       <h2 class="section-title">${esc(title)} <span class="from">${items.length}</span>${items.length > 6 ? ` <button class="see-all" data-viewall="${id}">View All</button>` : ""}${extra}</h2>
-      <div class="row ${tile === "wide" ? "wide" : "posters"}">${items.map(tile === "wide" ? epTile : tile === "person" ? personTile : posterTile).join("")}</div></section>` : "";
+      <div class="row ${tile === "wide" ? "wide" : "posters"}">${items.map(tile === "wide" ? epTile : tile === "person" ? personTile : posterTile).join("")}${TV && items.length > 6 ? moreCard(null, tile !== "wide", `data-viewall="${id}"`) : ""}</div></section>` : "";
   const epTile = (e) => `<a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail)}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
       <div class="cap">${esc(nice(e.name))}</div><div class="sub">${esc(e.show)} · ${esc(epLabel(e.season, e.episode))}</div></a>`;
   const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" src="${img(p.poster)}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
@@ -934,8 +954,10 @@
       // View All opens a row up into a grid, and back
       const va = e.target.closest("[data-viewall]");
       if (va) {
+        e.preventDefault();
         const sec = va.closest(".srow"), row = $(".row", sec);
         const open = !sec.classList.contains("all");
+        if (va.classList.contains("more-card")) { va.remove(); sec.classList.add("all"); row.classList.add("grid"); const h = $(".see-all", sec); if (h) h.textContent = "Show Less"; const f = $(".tile", row); if (f) f.focus(); return; }
         sec.classList.toggle("all", open);
         row.classList.toggle("grid", open);
         va.textContent = open ? "Show Less" : "View All";
@@ -1097,6 +1119,8 @@
     const playLabel = resume ? `Resume${t.kind === "series" ? " " + epLabel(up.season, up.episode) : ""}` : t.kind === "series" && up ? `Play ${epLabel(up.season, up.episode)}` : "Play";
     const seasons = [...new Set(t.files.map((f) => f.season ?? 0))].sort((a, b) => a - b);
     const curSeason = up ? up.season ?? 0 : seasons[0];
+    // Shows up in Continue Watching when something is half watched, or a show is part way through
+    const inCont = !!up && (t.files.some((f) => f.progress) || (t.kind === "series" && t.files.some((f) => f.watched) && !t.watched));
     const rateBtn = (v, icon, label) => `<button class="round-btn ${t.my_rating === v ? "on" : ""}" data-rate="${v}" aria-pressed="${t.my_rating === v}" aria-label="${label}" title="${label}">${ic(icon)}</button>`;
 
     app.innerHTML = topbar(t.kind === "series" ? "shows" : "movies") + backBtn() + `
@@ -1113,6 +1137,7 @@
             ${listBtn(t.in_list)}
             <button class="round-btn ${t.watched ? "on" : ""}" id="watchedBtn" aria-pressed="${t.watched}" aria-label="${t.watched ? "Mark as unwatched" : "Mark as watched"}" title="${t.watched ? "Watched" : "Mark as Watched"}">${ic(t.watched ? "check" : "eye")}</button>
             <span class="rate-group" role="group" aria-label="Rate this">${rateBtn(-1, "down", "Not for me")}${rateBtn(1, "up", "I like this")}${rateBtn(2, "love", "Love this")}</span>
+            ${inCont ? `<button class="round-btn" id="contHide" aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
             ${t.kind === "movie" && up ? `<button class="round-btn" id="dlMain" aria-label="Download" title="Download">${ic("download")}</button>` : ""}
             ${t.is_admin ? `<div class="menu-wrap"><button class="round-btn" id="adminMore" aria-haspopup="true" aria-label="Admin options" title="Admin options">${ic("more")}</button>
               <div class="menu drop up-left" id="adminMenu" hidden>
@@ -1207,6 +1232,12 @@
       a.click();
       toast("Download started");
     };
+    const ch = $("#contHide");
+    if (ch) ch.onclick = async () => {
+      await api("/api/continue/hide", { file_id: up.id }).catch(() => {});
+      ch.remove();
+      toast("Removed from Continue Watching");
+    };
     const am = $("#adminMore");
     if (am) {
       // The hero gets lifted above the episodes while the menu is open, otherwise the season row paints over it
@@ -1244,7 +1275,7 @@
           ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
           <div class="hero-meta">${facts.map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
           ${t.description ? `<p class="hero-desc" style="-webkit-line-clamp:4">${esc(t.description)}</p>` : ""}
-          <div id="pdBox"><div class="not-lib glass">${ic("info")}<span>Not in Your Library. Looking for a public domain copy…</span></div></div>
+          <div id="pdBox" aria-busy="true"><span class="sr">Looking for a copy to play</span><div class="actions pd-skel" aria-hidden="true"><span class="sk sk-btn"></span><span class="sk sk-btn short"></span><span class="sk sk-round"></span><span class="sk sk-round"></span></div><div class="sk sk-line pd-skel-line" aria-hidden="true"></div></div>
         </div>
       </section>
       <main class="page under-hero" style="padding-top:12px">
@@ -1426,6 +1457,7 @@
       <section class="card set-card">
         <h2 class="set-title">Android App</h2>
         ${ANDROID ? `<div class="set-row"><span><b>Kino for Android ${esc(window.KinoAndroid.version())}</b><span class="secondary">You're using the app${TV ? " on a TV" : ""}. Get updates from the same link below.</span></span></div>` : ""}
+        ${nativeOk() ? `<label class="set-row"><span><b>App Player</b><span class="secondary">Plays videos with the device's own player, smoother and fixes broken colours on some TVs. Turn off to use the web player on this device</span></span><input type="checkbox" class="switch" id="pNative" ${useNative() ? "checked" : ""}></label>` : ""}
         <div class="set-row"><span><b>Phones, Tablets and Android TV</b><span class="secondary">Full screen player, picture in picture, voice search and TV remote support</span></span>
           <a class="btn secondary small" href="/app" download>${ic("download")} Download</a></div>
         <div class="set-row"><span><b>Fire TV</b><span class="secondary">Install the free Downloader app, then type <b class="mono">${esc(location.host)}/app</b> into it</span></span></div>
@@ -1479,6 +1511,7 @@
     };
     ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
+    const nv = $("#pNative"); if (nv) nv.onchange = () => { try { localStorage.setItem(NATIVE_KEY, nv.checked ? "1" : "0"); } catch (_) {} toast(nv.checked ? "Videos play in the app player" : "Videos play in the web player"); };
     if (isAdmin()) drawAdminSettings();
   }
 
@@ -1847,6 +1880,7 @@
     cues: null, subId: null, title: null, saveT: null, idleT: null, dragging: false, upNextT: null, upNextShown: false, introSkipped: false, rate: 1,
   };
   $("#pClose").innerHTML = ic("close");
+  if (ANDROID && TV) $("#pClose").hidden = true;
   $("#pBack").innerHTML = ic("back10");
   $("#pFwd").innerHTML = ic("fwd10");
   $("#pFull").innerHTML = ic("full");
@@ -1914,7 +1948,18 @@
   function drawLoad() {
     if (!LOAD.on || !LOAD.stats) return;
     const now = performance.now();
-    $("#plStats").innerHTML = LOAD.lines.slice(-4).map((l) => `<div class="${l.done ? "done" : "now"}"><span>${esc(l.text)}</span>${l.note ? `<span class="pl-note">${esc(l.note)}</span>` : ""}<b>${((l.done || now) - l.t) / 1000 < 0.1 ? "" : (((l.done || now) - l.t) / 1000).toFixed(1) + " s"}</b></div>`).join("");
+    // Lines are kept and only there text changes, so each one slides in once instead of every half second
+    const box = $("#plStats"), shown = LOAD.lines.slice(-4);
+    while (box.children.length > shown.length || (box.firstElementChild && !shown.some((l) => l.el === box.firstElementChild))) box.firstElementChild.remove();
+    for (const l of shown) {
+      if (!l.el) { l.el = document.createElement("div"); l.el.innerHTML = "<span></span><span class=\"pl-note\"></span><b></b>"; box.appendChild(l.el); }
+      const secs = ((l.done || now) - l.t) / 1000;
+      l.el.className = l.done ? "done" : "now";
+      l.el.children[0].textContent = l.text;
+      l.el.children[1].textContent = l.note || "";
+      l.el.children[1].hidden = !l.note;
+      l.el.children[2].textContent = secs < 0.1 ? "" : secs.toFixed(1) + " s";
+    }
   }
   function loadHide() {
     if (!LOAD.on) return;
@@ -1942,7 +1987,57 @@
     return main ? main.n : info.default_audio;
   }
 
+  // ---------------------------------------------------------- the android app's own player
+  // In the app videos go to exoplayer, the tv's hardware decoder plays them directly. The web player is still there as
+  // a setting on this device, and as the backup if the app player cant play something
+  const NATIVE_KEY = "kino-native";
+  const nativeOk = () => ANDROID && typeof window.KinoAndroid.playNative === "function";
+  const useNative = () => { if (!nativeOk()) return false; try { return localStorage.getItem(NATIVE_KEY) !== "0"; } catch (_) { return true; } };
+  let NATIVE = null;
+
+  async function nativePlay(fid, opts) {
+    let info;
+    try { info = await api(`/api/file/${fid}`); } catch (e) { toast(e.message, 5000); return; }
+    const prefs = info.prefs || {};
+    const t = opts.title;
+    const f = t && t.files && t.files.find((x) => x.id === fid);
+    const audioN = pickAudio(info, prefs.audio_lang);
+    // Subtitle files next to the video and from addons get handed over, the ones inside the file exoplayer finds itself
+    const subs = info.subs.filter((x) => x.kind === "file").map((x) => ({ url: `/api/subs/${fid}/${x.id}`, label: x.label, lang: langCode(x.lang || x.label) }));
+    try {
+      const extra = await Promise.race([api(`/api/addon-subs/${fid}`), new Promise((r) => setTimeout(() => r({ subs: [] }), 2500))]);
+      (extra.subs || []).slice(0, 12).forEach((x) => subs.push({ url: `/api/subs/${fid}/${x.id}`, label: x.label + (x.source ? ` (${x.source})` : ""), lang: langCode(x.lang) }));
+    } catch (_) {}
+    const url = !info.stream ? `/api/stream/${fid}/direct` : info.src || `/api/rstream/${fid}`;
+    const sub = info.stream ? [info.season != null ? epLabel(info.season, info.episode) : "", nice(info.ep_name || "")].filter(Boolean).join("  ")
+      : t && t.kind === "series" && f ? `${epLabel(f.season, f.episode)}${f.ep_name ? "  " + nice(f.ep_name) : ""}` : "";
+    NATIVE = { fid, info, opts };
+    pl.title = t || null;
+    window.KinoAndroid.playNative(JSON.stringify({
+      base: location.origin, ua: navigator.userAgent, fid, url, title: (t && t.name) || info.show || info.name, sub,
+      start: opts.from != null ? opts.from : info.resume || 0, duration: info.duration || 0,
+      audioN, audioChosen: audioN !== info.default_audio, audioLang: langCode(prefs.audio_lang), subLang: langCode(prefs.sub_lang), subs,
+      intro: info.intro, autoSkip: !!prefs.skip_intro, stillMins: Number(prefs.still_watching) || 0, dovi: !!(info.video && info.video.dovi),
+      forceHls: !!(info.video && info.video.codec && !["h264", "hevc", "av1", "vp9", "mpeg4", "mpeg2video", "vp8"].includes(info.video.codec)),
+    }));
+  }
+  // English to en and so on, exoplayer matches tracks by these codes
+  const langCode = (l) => { if (!l) return ""; const c = LANG_CODES[l] || LANG_CODES[String(l).split(" ")[0]]; return c ? c[0] : String(l).length <= 3 ? String(l).toLowerCase() : ""; };
+  window.kinoNativeDone = (r) => {
+    const cur = NATIVE; NATIVE = null;
+    if (!r || !cur) return;
+    if (r.error) {
+      toast(`${r.error}. Trying the web player instead.`, 6000);
+      return playFile(cur.fid, { ...cur.opts, from: r.pos || cur.opts.from, web: true });
+    }
+    const n = cur.info.next, auto = !cur.info.prefs || cur.info.prefs.autoplay !== false;
+    if (r.ended && n && auto) return playNext(n);
+    // Redraws the page so resume bars and watched ticks are right
+    if (ME.profile) setTimeout(route, 300);
+  };
+
   async function playFile(fid, opts = {}) {
+    if (!opts.web && useNative()) return nativePlay(fid, opts);
     closePlayer(true);
     clearInterval(HERO_T);
     pl.el.hidden = false;
@@ -2456,7 +2551,9 @@
     if (cur && cur.id === "scrub" && d[0]) return;   // the timeline seeks with left and right
     const playerOpen = !pl.el.hidden;
     if (playerOpen && (!cur || !pl.el.contains(cur) || cur === pl.v) && d[0]) return;  // left and right seek
-    const scope = sheetClose ? $(".sheet-wrap") : playerOpen ? pl.el : document;
+    // An open dropdown keeps the remote inside it until it's closed, otherwise down could land on the page behind it
+    const openMenu = cur && cur.closest && cur.closest(".menu:not([hidden])");
+    const scope = sheetClose ? $(".sheet-wrap") : openMenu || (playerOpen ? pl.el : document);
     if (playerOpen) wakeUi();
     const items = $$('a[href], button, input, select, [tabindex]:not([tabindex="-1"])', scope).filter((el) => {
       if (el.disabled || el.closest("[hidden]") || el.closest('[aria-hidden="true"]') || el.closest(".hero-dots")) return false;
@@ -2475,9 +2572,12 @@
     // The sidebar is its own column: up and down stay inside it, and things tucked behind it aren't targets
     const side = $("#side"), inSide = !!(side && side.contains(cur));
     const sideRight = side && !playerOpen && !sheetClose ? side.getBoundingClientRect().right : -1;
+    // Right at the end of a row stays put instead of jumping up into whatever row is above
+    const curRow = d[0] > 0 && cur.closest && cur.closest(".row, .episodes, .chips");
     let best = null, bestScore = Infinity;
     for (const el of items) {
       if (el === cur) continue;
+      if (curRow && !curRow.contains(el)) continue;
       const elSide = !!(side && side.contains(el));
       if (d[1] && elSide !== inSide) continue;
       if (d[0] > 0 && inSide && elSide) continue;
@@ -2509,7 +2609,7 @@
     if (!$("#pStill").hidden) { $("#stillYes").click(); return true; }
     if (!pl.el.hidden) { closePlayer(); return true; }
     const am = $("#avatarMenu");
-    if (am && !am.hidden) { am.hidden = true; $("#side").classList.remove("pinned"); return true; }
+    if (am && !am.hidden) { am.hidden = true; $("#side").classList.remove("pinned"); $("#avatarBtn").focus(); return true; }
     const page = (location.hash || "#/home").split("?")[0].split("/")[1] || "home";
     if (page === "title" || page === "discover" || page === "person") { history.length > 1 ? history.back() : (location.hash = "#/home"); return true; }
     if (page !== "home" && page !== "profiles") { location.hash = "#/home"; return true; }

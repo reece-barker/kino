@@ -1021,7 +1021,7 @@ async def unexpected_error(request: Request, exc: Exception):
     return JSONResponse({"detail": f"Something went wrong on the server ({type(exc).__name__}: {str(exc)[:160]})"}, status_code=500)
 
 CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
-       "script-src 'self'; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; "
+       "script-src 'self'; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-src https:; frame-ancestors 'none'; "
        "base-uri 'none'; form-action 'self'")
 
 
@@ -6256,9 +6256,15 @@ def embed_items(j, src):
         got = jpath(j, src["items"])
         j = got if isinstance(got, list) else []
 
-    def absolute(u):
+    def absolute(u, own=False):
         u = str(u or "").strip()
-        return urljoin(base, u) if u else None
+        if not u:
+            return None
+        # A link the admin typed in themselves is used as it is, even without https:// in front. It never gets the
+        # list's own address stuck on the front, only a path starting with / is taken as being on the list's site
+        if own and not u.startswith(("http://", "https://", "/")) and re.match(r"[\w-]+(\.[\w-]+)+(:\d+)?([/?#]|$)", u):
+            return "https://" + u
+        return urljoin(base, u)
 
     def item(it, cat):
         title = str(jpath(it, tkey) or "") if tkey else next((str(it[k]) for k in EMBED_TITLE if it.get(k)), "")
@@ -6272,7 +6278,7 @@ def embed_items(j, src):
             player = fill_template(tmpl, ctx, base)
         else:
             player = next((it[k] for k in EMBED_PLAYER if isinstance(it.get(k), str) and it.get(k)), None)
-        player = absolute(player) if player else None
+        player = absolute(player, own=bool(tmpl)) if player else None
         if not player or urlparse(player).scheme not in ("https", "http"):
             return None
         img_ = (jpath(it, ikey) if ikey else None) or next((it[k] for k in EMBED_IMG if isinstance(it.get(k), str) and it.get(k)), None) or (chans[0].get("logo_url") if chans else None)

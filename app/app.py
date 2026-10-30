@@ -64,7 +64,8 @@ CINEMETA = env("CINEMETA_URL", "https://v3-cinemeta.strem.io")
 OFFLINE_META = env("OFFLINE_META", "0") == "1"  # Only for testing without internet
 ALLOW_ALL = env("ALLOW_ALL", "0") == "1"  # Only for testing, skips the ip check in the app
 ADDON_ALLOW_PRIVATE = env("ADDON_ALLOW_PRIVATE", "0") == "1"  # Only for testing addons running on this machine
-MAX_FFMPEG = int(env("MAX_FFMPEG", "3"))
+MAX_FFMPEG = int(env("MAX_FFMPEG", "20"))
+PROFILE_DEVICES = int(env("PROFILE_DEVICES", "3"))  # converted streams one profile can have going at once, one per device
 RESCAN_MINUTES = int(env("RESCAN_MINUTES", "10"))
 STATIC = Path(__file__).parent / "static"
 
@@ -2574,10 +2575,16 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
         raise HTTPException(415, "This file has no video track")
     owner = f"p{p['id']}"
 
-    # One player per profile, starting a new one stops there old one
+    # One player per device, starting a new one stops that device's old one. A profile can watch on a few devices
+    # at once (PROFILE_DEVICES), different things on each. Players nobody is fetching from go after 90 seconds
+    device = browser_key(request)
+    if device.startswith("|"):
+        device = client_ip(request) + device  # no device cookie (an allow listed network), the address tells them apart
     for sid, s in list(SESS.items()):
-        if s["owner"] == owner:
+        if s["owner"] == owner and s.get("device") == device:
             kill_session(sid)
+    if sum(1 for s in SESS.values() if s["owner"] == owner) >= PROFILE_DEVICES:
+        raise HTTPException(429, f"This profile is already watching on {PROFILE_DEVICES} devices. Stop one of them, or use another profile")
     if len(SESS) >= MAX_FFMPEG:
         raise HTTPException(429, "Too many people are watching right now, try again in a minute")
 
@@ -2619,7 +2626,7 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
              str(out / "index.m3u8")]
     errlog = open(out / "ffmpeg.log", "wb")
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=errlog)
-    SESS[sid] = {"proc": proc, "dir": out, "owner": owner, "fid": fid, "last": time.time(), "offset": t}
+    SESS[sid] = {"proc": proc, "dir": out, "owner": owner, "device": device, "fid": fid, "last": time.time(), "offset": t}
 
     # Waits for the first segment before telling the player to start
     pl = out / "index.m3u8"

@@ -83,6 +83,9 @@ if [ ! -f /etc/kino/kino.env ]; then
   # Random secret for signing download links, made once and kept
   sed "s/REPLACED_BY_INSTALLER/$(openssl rand -hex 32)/" "$HERE/deploy/kino.env.example" > /etc/kino/kino.env
 fi
+# The old default of 3 converted streams gets raised to 20, a number you picked yourself is left alone
+sed -i 's/^MAX_FFMPEG=3$/MAX_FFMPEG=20/' /etc/kino/kino.env
+grep -q '^PROFILE_DEVICES=' /etc/kino/kino.env || echo 'PROFILE_DEVICES=3' >> /etc/kino/kino.env
 chmod 600 /etc/kino/kino.env
 
 step "Updating the torbox sync script (old one is kept as a backup)"

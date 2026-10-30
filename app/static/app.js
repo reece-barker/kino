@@ -656,7 +656,7 @@
     const art = t.poster
       ? `<img loading="lazy" src="${img(t.poster, 0, PW())}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
-    const sub = t.family ? t.family : t.external ? t.releaseInfo || (t.kind === "series" ? "TV Show" : "Movie")
+    const sub = t.family ? t.family : t.external ? t.releaseInfo || (t.kind === "video" ? "Video" : t.kind === "series" ? "TV Show" : "Movie")
       : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
     const mark = (t.watched ? `<span class="tile-check" title="Watched">${ic("check")}</span>` : "") + (t.family ? `<span class="tile-love ${t.loved ? "loved" : ""}" title="${esc(t.family)}">${ic(t.loved ? "love" : "up")}</span>` : "");
     const href = t.external ? extHref(t) : `#/title/${t.id}`;
@@ -673,7 +673,7 @@
     return `<a class="tile landscape" href="${href}" ${opts.play ? `data-play="${opts.play}" data-tid="${t.id}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
       <div class="cap">${esc(t.name)}</div><div class="sub">${esc(opts.sub || t.genres?.slice(0, 2).join(", ") || t.releaseInfo || "")}</div></a>`;
   }
-  const metaLine = (t) => [t.kind === "series" ? "TV Show" : "Movie", t.releaseInfo, t.genres?.slice(0, 2).join(", "), t.runtime, t.rating ? `IMDb ${t.rating}` : ""].filter(Boolean);
+  const metaLine = (t) => [t.kind === "video" ? "" : t.kind === "series" ? "TV Show" : "Movie", t.releaseInfo, t.genres?.slice(0, 2).join(", "), t.runtime, t.rating ? `IMDb ${t.rating}` : ""].filter(Boolean);
 
   // ---------------------------------------------------------- home
   async function pageHome() {
@@ -982,14 +982,15 @@
   // Rows only draw the first few results and add more as you scroll or move along them, so a search with lots of
   // results is quick to show and light on a tv
   const SROWS = {};
+  let HAS_VIDEO_ADDON = true;  // goes false once the server says no addon searches videos
   const SROW_STEP = 14;
-  const tileFor = (tile) => (tile === "wide" ? epTile : tile === "person" ? personTile : posterTile);
+  const tileFor = (tile) => (tile === "wide" ? epTile : tile === "person" ? personTile : tile === "video" ? wideTile : posterTile);
   const searchRow = (id, title, items, tile) => {
     if (!items.length) return "";
     SROWS[id] = { items, tile, shown: Math.min(items.length, SROW_STEP) };
     return `<section class="shelf srow" data-srow="${id}" aria-label="${esc(title)}">
       <h2 class="section-title">${esc(title)} <span class="from">${items.length}</span></h2>
-      <div class="row ${tile === "wide" ? "wide" : "posters"}">${items.slice(0, SROW_STEP).map(tileFor(tile)).join("")}</div></section>`;
+      <div class="row ${tile === "wide" || tile === "video" ? "wide" : "posters"}">${items.slice(0, SROW_STEP).map(tileFor(tile)).join("")}</div></section>`;
   };
   function growRows(box) {
     $$(".srow", box).forEach((sec) => {
@@ -1030,7 +1031,7 @@
       box.innerHTML = `<div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="row posters">${Array.from({ length: 8 }, () => '<div class="sk sk-poster"></div>').join("")}</div>`;
       const r = await api("/api/search?q=" + encodeURIComponent(q));
       if (my !== seq || !$("#sres")) return;
-      let ext = [], extDone = false;
+      let ext = [], extDone = false, vids = [], vidsDone = !HAS_VIDEO_ADDON;
       const draw = () => {
         const all = r.titles.concat(ext).sort((a, b) => (b.score || 0) - (a.score || 0));
         const movies = all.filter((x) => x.kind === "movie"), shows = all.filter((x) => x.kind === "series");
@@ -1042,8 +1043,10 @@
         const people = searchRow("people", "Cast and Crew", r.people || [], "person");
         // Someone typing an actor's name wants the people first
         const peopleFirst = (r.people || []).length && (!all.length || (all[0].score || 0) < 60);
-        box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + searchRow("eps", "Episodes", r.episodes, "wide")
-          + (!extDone ? `<div class="s-more"><span class="spin small"></span>Looking in your addons</div>` : ""))
+        // Youtubio and the like come in last, there own rows with videos and channels kept apart
+        const vrows = searchRow("vids", "Videos", vids.filter((x) => x.shape !== "square"), "video") + searchRow("chans", "Channels", vids.filter((x) => x.shape === "square"), "video");
+        box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + searchRow("eps", "Episodes", r.episodes, "wide") + vrows
+          + (!extDone || !vidsDone ? `<div class="s-more"><span class="spin small"></span>${!extDone ? "Looking in your addons" : "Still looking for videos"}</div>` : ""))
           || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor, director or genre.</p></div>`;
         growRows(box);
         enhanceRows(box);
@@ -1053,6 +1056,8 @@
       draw();
       api("/api/search/addons?q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; ext = x.external; extDone = true; draw(); })
         .catch(() => { extDone = true; if (my === seq && $("#sres")) draw(); });
+      if (HAS_VIDEO_ADDON) api("/api/search/addons?videos=1&q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; vids = x.external; vidsDone = true; if (x.none) HAS_VIDEO_ADDON = false; draw(); })
+        .catch(() => { vidsDone = true; if (my === seq && $("#sres")) draw(); });
     };
     input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(run, TV ? 450 : 220); });
     // Search on the keyboard (the fire tv keyboard's go button, or play pause) searches straight away and closes it
@@ -1366,6 +1371,7 @@
     const q = [location.hash.includes("?all=1") ? "stay=1" : "", nm ? "name=" + encodeURIComponent(nm) : ""].filter(Boolean).join("&");
     const t = await api(`/api/external/${encodeURIComponent(kind)}/${encodeURIComponent(id)}${q ? "?" + q : ""}`);
     if (t.library_id) { location.replace(`#/title/${t.library_id}`); return; }
+    if (kind !== "movie" && kind !== "series") return pageVideo(kind, id, t);
     const facts = metaLine({ ...t, kind });
     app.innerHTML = topbar(kind === "series" ? "shows" : "movies") + backBtn() + `
       <section class="detail-hero">
@@ -1415,11 +1421,52 @@
     drawStreams(kind, target.id, t, target);
   }
 
+  // A video from youtubio or another addon with its own kind of stuff. One video goes straight to its sources like a
+  // film, a channel or playlist lists its videos underneath
+  function pageVideo(kind, id, t) {
+    const facts = [t.channel, t.releaseInfo, t.runtime].filter(Boolean);
+    const list = t.videos || [];
+    app.innerHTML = topbar("home") + backBtn() + `
+      <section class="detail-hero vid-hero">
+        <div class="hero-bg">${heroArt({ ...t, poster: null })}</div>
+        <div class="hero-content" style="z-index:2">
+          <h1 class="hero-name">${esc(t.name)}</h1>
+          ${facts.length ? `<div class="hero-meta">${facts.map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>` : ""}
+          ${t.description ? `<p class="hero-desc" style="-webkit-line-clamp:3">${esc(t.description)}</p>` : ""}
+          <div id="pdBox" aria-busy="true"><span class="sr">Looking for a copy to play</span><div class="actions pd-skel" aria-hidden="true"><span class="sk sk-btn"></span><span class="sk sk-btn short"></span><span class="sk sk-round"></span></div></div>
+        </div>
+      </section>
+      <main class="page under-hero" style="padding-top:12px">
+        ${list.length ? `<section class="section" style="margin-top:0"><h2 class="section-title">Videos <span class="from">${list.length}</span></h2><div class="episodes vid-list" id="eps"></div></section>` : ""}
+        ${t.genres?.length ? `<section class="section"><div class="facts"><div><h4>Tags</h4><p>${esc(t.genres.join(", "))}</p></div></div></section>` : ""}
+      </main>`;
+    wireTopbar();
+    if (t.single) return drawStreams(kind, t.single, t);
+    const lb = listBtn(t.in_list);
+    const started = list.filter((v) => v.progress && !v.progress.watched).sort((a, b) => b.progress.updated - a.progress.updated)[0];
+    const first = started || list[0];
+    $("#pdBox").removeAttribute("aria-busy");
+    $("#pdBox").innerHTML = `<div class="actions">${first ? `<button class="btn primary" id="vPlay">${ic("play")} ${started ? "Resume" : "Play Latest"}</button>` : ""}${lb}</div>`;
+    wireListBtn({ kind, id: t.list_key }, t.list_key);
+    if (first) $("#vPlay").onclick = () => playEpisode(first.id, first, kind);
+    if (TV && (document.activeElement === document.body || document.activeElement === AUTO_FOCUS)) { const f = $("#vPlay") || $("#listBtn"); if (f) f.focus({ preventScroll: true }); }
+    if (!list.length) return;
+    $("#eps").innerHTML = list.map((v) => {
+      const pr = v.progress && v.progress.dur ? v.progress.pos / v.progress.dur : null;
+      const art = v.thumbnail ? `<img loading="lazy" src="${img(v.thumbnail, 0, WW())}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(v.name || t.name)}">${esc(v.name || "")}</div>`;
+      const day = v.released ? new Date(v.released) : null;
+      return `<div class="ep"><button class="tile landscape ${v.progress && v.progress.watched ? "is-watched" : ""}" data-playv="${esc(v.id)}" aria-label="Play ${esc(v.name || "")}"><div class="art">${art}${pr != null ? `<div class="bar"><i style="width:${Math.min(100, pr * 100)}%"></i></div>` : ""}${v.progress && v.progress.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
+        <div class="cap">${esc(nice(v.name) || "Video")}</div>${day && !isNaN(day) && day.getFullYear() > 1971 ? `<div class="ov">${esc(day.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }))}</div>` : ""}</div>`;
+    }).join("");
+    $$("[data-playv]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playv, list.find((v) => v.id === b.dataset.playv), kind)));
+  }
+
   // Finds the public domain copy of one episode and plays it
-  async function playEpisode(vid, v) {
+  async function playEpisode(vid, v, kind = "series") {
     let r;
-    try { r = await api(`/api/streams/series/${encodeURIComponent(vid)}`); } catch (e) { toast(e.message, 5000); return false; }
-    if (!r.streams.length) { toast("There's no public domain copy of this episode"); return false; }
+    toast("Getting it ready", 2500);
+    try { r = await api(`/api/streams/${encodeURIComponent(kind)}/${encodeURIComponent(vid)}`); } catch (e) { toast(e.message, 5000); return false; }
+    if (!r.streams.length) { toast(kind === "series" ? "There's no public domain copy of this episode" : "The addon didn't send anything Kino can play for that"); return false; }
     const s = r.streams[0];
     SOURCES = { list: r.streams, tried: new Set() };
     playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
@@ -1430,13 +1477,13 @@
   // goes to the back of the list next time) and the next one plays straight away, instead of asking about players
   let SOURCES = null;
   const moreSources = (fid) => !!(SOURCES && SOURCES.list.some((x) => x.id !== fid && !SOURCES.tried.has(x.id)));
-  function nextSource(fid, from) {
+  function nextSource(fid, from, why) {
     api(`/api/streams/${fid}/bad`, {}).catch(() => {});
     if (!SOURCES || !SOURCES.list.some((x) => x.id === fid)) return false;
     SOURCES.tried.add(fid);
     const n = SOURCES.list.find((x) => !SOURCES.tried.has(x.id));
     if (!n) { toast("None of the sources for this would play. Try again later, or another player from the player's menu.", 7000); return false; }
-    toast(`That source didn't work, trying ${n.addon ? `one from ${n.addon}` : "another one"}`, 4000);
+    toast(`${why || "That source didn't work"}, trying ${n.addon ? `one from ${n.addon}` : "another one"}`, 4000);
     playFile(n.id, { from: from || 0 });
     return true;
   }
@@ -1451,7 +1498,7 @@
   // Public domain copies from addons, the server only hands back ones that are actually on archive.org
   async function drawStreams(kind, id, t, ep) {
     const box = $("#pdBox");
-    const none = `<div class="not-lib glass" style="margin-top:14px">${ic("info")}<span>Not in Your Library</span></div>`;
+    const none = `<div class="not-lib glass" style="margin-top:14px">${ic("info")}<span>${kind === "movie" || kind === "series" ? "Not in Your Library" : "Nothing Kino Can Play"}</span></div>`;
     let r;
     try { r = await api(`/api/streams/${kind}/${encodeURIComponent(id)}`); } catch (_) { r = { streams: [] }; }
     if (!$("#pdBox")) return;
@@ -1476,7 +1523,7 @@
         <button class="btn primary" id="pdPlay">${ic("play")} ${res ? "Resume" : "Play"}${ep ? " " + esc(epLabel(ep.season, ep.episode)) : ""}</button>
         ${r.streams.length > 1 ? `<button class="btn secondary" id="pdMore">${r.streams.length} Sources</button>` : ""}
         ${lb}
-        ${isAdmin() ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
+        ${isAdmin() && (kind === "movie" || kind === "series") ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
       </div>
       ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
     const play = (s) => { SOURCES = { list: r.streams, tried: new Set() }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
@@ -1605,7 +1652,7 @@
     const entry = (h) => {
       const pct = h.watched ? 1 : h.dur ? Math.min(1, h.pos / h.dur) : 0;
       const pic = h.thumbnail || h.background || h.poster;
-      const what = [h.season != null ? epLabel(h.season, h.episode) : h.kind === "series" ? "TV Show" : "Movie", h.ep_name ? nice(h.ep_name) : ""].filter(Boolean).join(" · ");
+      const what = [h.season != null ? epLabel(h.season, h.episode) : h.kind === "series" ? "TV Show" : h.kind === "movie" ? "Movie" : "Video", h.ep_name ? nice(h.ep_name) : ""].filter(Boolean).join(" · ");
       const state = h.watched ? "Watched" : h.dur ? `${clock(Math.max(0, h.dur - h.pos))} left` : "Started";
       return `<div class="hist" data-fid="${esc(h.file_id)}">
         <a class="hist-art" href="${h.href}" tabindex="-1" aria-hidden="true">${pic ? `<img loading="lazy" src="${img(pic, 0, 480)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(h.name)}">${esc(h.name)}</div>`}
@@ -1713,6 +1760,7 @@
         ${toggle("pAuto", pr.autoplay, "Autoplay Next Episode", "Starts the next episode after a short countdown")}
         ${toggle("pSkip", pr.skip_intro, "Skip Intros Automatically", "Only works where Kino knows the intro")}
         <div class="set-row"><span><b>Are You Still Watching?</b><span class="secondary">Pauses and asks after this long with nobody touching anything</span></span>${sel("pStill", [["0", "Never"], ["30", "30 Minutes"], ["60", "1 Hour"], ["90", "1.5 Hours"], ["120", "2 Hours"], ["180", "3 Hours"], ["240", "4 Hours"]], String(pr.still_watching || 0))}</div>
+        ${toggle("pFake", pr.auto_next_source, "Skip Placeholder Copies", "When a film or episode turns out to be a 30 second clip (TorBox sends one when a download didn't really finish), the next source plays by itself instead of asking")}
         ${toggle("pLoadStats", pr.load_stats !== false, "Loading Details", "Shows what Kino is doing while a video starts, like the speed and audio track")}
         ${toggle("pBlur", pr.blur_watched, "Blur Watched", "Blurs the artwork of films and episodes you've already watched")}
         ${toggle("pShare", pr.share_events, "Share Watch Activity with Addons", "Lets tracking addons like Trakt see what this profile watches")}
@@ -1746,14 +1794,14 @@
     wireThemePicker($("#setTheme"));
     drawInterests();
     const saveP = async () => {
-      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked };
+      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked, auto_next_source: $("#pFake").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
       ME.profile = r.profile;
       applyPrefs();
       $("#prefSaved").textContent = "Saved";
       setTimeout(() => $("#prefSaved") && ($("#prefSaved").textContent = ""), 1800);
     };
-    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats"].forEach((id) => $("#" + id).addEventListener("change", saveP));
+    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats", "pFake"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
     const nv = $("#pNative"); if (nv) nv.onchange = () => { try { localStorage.setItem(NATIVE_KEY, nv.checked ? "1" : "0"); } catch (_) {} toast(nv.checked ? "Videos play in the app player" : "Videos play in the web player"); };
     if (isAdmin()) drawAdminSettings();
@@ -2312,6 +2360,7 @@
       base: location.origin, ua: navigator.userAgent, fid, url, title: (t && t.name) || info.show || info.name, sub,
       start: opts.from != null ? opts.from : info.resume || 0, duration: info.duration || 0,
       audioN, audioChosen: audioN !== info.default_audio, audioLang: langCode(prefs.audio_lang), subLang: langCode(prefs.sub_lang), subs,
+      checkFake: !!(info.stream && (info.kind === "movie" || info.kind === "series")), autoNextSource: !!prefs.auto_next_source,
       intro: info.intro, autoSkip: !!prefs.skip_intro, stillMins: Number(prefs.still_watching) || 0, dovi: !!(info.video && info.video.dovi),
       forceHls: !!(info.video && info.video.codec && !["h264", "hevc", "av1", "vp9", "mpeg4", "mpeg2video", "vp8"].includes(info.video.codec)),
     }));
@@ -2322,7 +2371,7 @@
     const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
     if (!r) return;
     // A broken source: the next one plays straight away
-    if (r.sourceFailed && nextSource(r.fid, r.pos)) return;
+    if (r.sourceFailed && nextSource(r.fid, r.fake ? 0 : r.pos, r.fake ? "That copy was a 30 second placeholder" : null)) return;
     // Otherwise the player only hands back an error when someone picked Web Player in its error box
     if (r.error && !r.sourceFailed) return playFile(r.fid, { ...(cur ? cur.opts : {}), from: r.pos, web: true });
     const n = cur ? cur.info.next : r.next, auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : r.autoplay !== false;
@@ -2380,7 +2429,7 @@
     if (my !== PLAY_N || pl.el.hidden) return;
     loadArt(info.art, (opts.title && opts.title.name) || info.show || info.name);
     if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
-    pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false;
+    pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false; pl.fakeAsked = false; pl.greenChecked = false;
     pl.title = opts.title || null;
     const prefs = info.prefs || {};
     $("#subsLayer").dataset.size = prefs.sub_size || "m";
@@ -2418,7 +2467,7 @@
         // Asks the server what went wrong, so a blocked redirect says where it was going instead of a vague message
         let why = "The source may be slow, or this browser can't play its format. Try another source or save it to the Library.";
         try { const r = await fetch(info.src, { headers: { Range: "bytes=0-0" }, credentials: "same-origin" }); if (!r.ok) { const j = await r.json().catch(() => null); if (j && j.detail) why = j.detail; } } catch (_) {}
-        showMsg("This copy won't play here", why, `<a class="btn secondary small" href="${esc(info.download)}">${ic("download")} Download instead</a>`);
+        showMsg("This copy won't play here", why, info.download ? `<a class="btn secondary small" href="${esc(info.download)}">${ic("download")} Download instead</a>` : "");
       }, { once: true });
       pl.v.play().catch(() => {});
       pl.v.playbackRate = pl.rate;
@@ -2441,8 +2490,8 @@
     setupDeviceButtons();
     const start = opts.from != null ? opts.from : (info.stream && info.resume) || 0;
     const vcodec = info.video && info.video.codec;
-    const dlBtn = `<a class="btn secondary small" href="${esc(info.download)}&save=1">${ic("download")} Download</a>
-      <button class="btn secondary small" id="copyLink">${ic("link")} Copy link for VLC</button>`;
+    const dlBtn = info.download ? `<a class="btn secondary small" href="${esc(info.download)}&save=1">${ic("download")} Download</a>
+      <button class="btn secondary small" id="copyLink">${ic("link")} Copy link for VLC</button>` : "";
 
     if (info.direct && codecOk(vcodec) && pl.audio === info.default_audio) {
       pl.mode = "direct";
@@ -2503,7 +2552,7 @@
     } catch (e) {
       if (my !== PLAY_N || !pl.info) return;
       loadHide();
-      showMsg("Playback couldn't start", e.message, `<a class="btn secondary small" href="${esc(pl.info.download)}&save=1">${ic("download")} Download instead</a>`);
+      showMsg("Playback couldn't start", e.message, pl.info.download ? `<a class="btn secondary small" href="${esc(pl.info.download)}&save=1">${ic("download")} Download instead</a>` : "");
       return;
     }
     if (pl.el.hidden || my !== PLAY_N) { api(`/api/play/${r.sid}/stop`, {}).catch(() => {}); return; }
@@ -2730,6 +2779,43 @@
     }
   }
 
+  // A 30 second clip where a whole film or episode should be. TorBox hands one of these out (a green screen with a
+  // message) when a download didnt really happen, so it gets spotted by its length, or by the picture being mostly
+  // that green, and Kino offers the next source like the up next card. With the setting on it just moves on
+  const isFakeLen = (d) => d >= 27 && d <= 33;
+  function greenFrame() {
+    try {
+      const c = greenFrame.c || (greenFrame.c = document.createElement("canvas"));
+      c.width = 32; c.height = 18;
+      const x = c.getContext("2d", { willReadFrequently: true });
+      x.drawImage(pl.v, 0, 0, 32, 18);
+      const d = x.getImageData(0, 0, 32, 18).data;
+      let g = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 1] > 90 && d[i + 1] > d[i] * 1.6 && d[i + 1] > d[i + 2] * 1.6) g++;
+      return g / (d.length / 4) > 0.55;
+    } catch (_) { return false; }  // a picture from another site cant be read, the length check still works
+  }
+  function checkFake() {
+    const info = pl.info;
+    if (!info || pl.fakeAsked || !info.stream || (info.kind !== "movie" && info.kind !== "series")) return;
+    const p = pos();
+    let fake = isFakeLen(total());
+    if (!fake && p > 1.5 && p < 8 && !pl.v.paused && pl.mode === "direct" && !pl.greenChecked) { pl.greenChecked = true; fake = greenFrame() && (!total() || total() < 120); }
+    if (!fake) return;
+    pl.fakeAsked = true;
+    const fid = info.id, more = moreSources(fid), auto = info.prefs && info.prefs.auto_next_source;
+    if (auto && more) { nextSource(fid, 0, "That copy was a 30 second placeholder"); return; }
+    api(`/api/streams/${fid}/bad`, {}).catch(() => {});
+    pl.v.pause();
+    const box = $("#upNext");
+    box.innerHTML = `<div class="un-body"><div class="lbl">Probably a TorBox placeholder${more ? "" : ", and there's no other source"}</div><div class="nm">This Copy is Only 30 Seconds</div>
+      <div class="actions">${more ? `<button class="btn primary small" id="fkNext">Next Source</button>` : ""}<button class="btn secondary small" id="fkKeep">${more ? "Keep Watching" : "OK"}</button></div></div>`;
+    box.hidden = false;
+    if (more) $("#fkNext").onclick = () => { box.hidden = true; nextSource(fid, 0, "Skipped the placeholder"); };
+    $("#fkKeep").onclick = () => { box.hidden = true; pl.v.play().catch(() => {}); };
+    ($("#fkNext") || $("#fkKeep")).focus();
+  }
+
   // Are you still watching: after the profile's set time with nobody touching anything it pauses and asks, so a
   // show doesnt autoplay all night to an empty room. Off unless the profile turns it on in Settings
   const STILL = { t: null };
@@ -2775,6 +2861,7 @@
     renderSubs();
     checkIntro();
     checkUpNext();
+    checkFake();
   }
   v.addEventListener("timeupdate", drawTime);
   v.addEventListener("progress", drawTime);
@@ -3241,7 +3328,7 @@
         // On a tv the remote lands on the page's main button after picking something in the sidebar
         if (TV) {
           // Goes through these in order, so a title page always starts on Play even if something else comes first on the page
-          const el = [".hero-slide.on [data-heroresume]", ".hero-slide.on [data-heroplay]", "#playMain", "#pdPlay", "#pdBox #listBtn", "#sq", ".tile", "main button", "main a[href]"]
+          const el = [".hero-slide.on [data-heroresume]", ".hero-slide.on [data-heroplay]", "#playMain", "#pdPlay", "#vPlay", "#pdBox #listBtn", "#sq", ".tile", "main button", "main a[href]"]
             .map((q) => $(q, app)).find(Boolean);
           if (el) el.focus({ preventScroll: true });
           AUTO_FOCUS = el || null;

@@ -22,6 +22,8 @@ jobs:
         run: |
           python3 -m py_compile app/app.py sync/sync.py
           node --check app/static/app.js
+          # The version the server tells apps about has to be the one in kino.apk, or apps would keep offering the update
+          python3 -c "import json,re; v=json.load(open('app/static/kino-version.json')); g=open('android/app/build.gradle').read(); c=int(re.search(r'versionCode (\\d+)', g).group(1)); n=re.search(r'versionName \"([^\"]+)\"', g).group(1); assert v['code']==c and v['name']==n, f'kino-version.json says {v} but build.gradle says {c} {n}'"
           bash -n install.sh
           bash -n deploy/update.sh
 

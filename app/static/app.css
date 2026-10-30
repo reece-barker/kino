@@ -1294,3 +1294,84 @@ body.tv .icon-pick:hover:not(:focus-visible) { transform: none; }
 /* The first search row had no gap under the search bar, .shelf:first-child took its margin away */
 #sres > .srow:first-child, #sres > .s-more:first-child { margin-top: 30px; }
 body.tv #sres > .srow:first-child { margin-top: 40px; }
+
+/* ---- v12 history, backups, app updates */
+.hist-day { margin-top: 30px; }
+.hist-list { display: grid; gap: 4px; }
+.hist { display: flex; align-items: center; gap: 16px; padding: 10px; border-radius: 16px; transition: background 0.2s ease; }
+.hist:hover, .hist:focus-within { background: var(--fill-1, rgba(118, 118, 128, 0.12)); }
+.hist-art { position: relative; flex: none; width: clamp(120px, 18vw, 180px); aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: var(--bg-2); }
+.hist-art img, .hist-art .ph { width: 100%; height: 100%; object-fit: cover; }
+.hist-art .bar { position: absolute; left: 8px; right: 8px; bottom: 7px; height: 3px; border-radius: 3px; background: rgba(255, 255, 255, 0.3); overflow: hidden; }
+.hist-art .bar i { display: block; height: 100%; background: #fff; }
+.hist-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.hist-body > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-name { font-size: 17px; font-weight: 600; color: var(--label); text-decoration: none; }
+.hist-body .secondary { font-size: 14px; }
+.hist-body .tertiary { font-size: 13px; color: var(--label-3); }
+.hist-act { display: flex; gap: 8px; flex: none; }
+@media (max-width: 560px) { .hist-art { width: 110px; } .hist { gap: 12px; padding: 8px 0; } }
+.backups { margin-bottom: 18px; padding: 22px; }
+.backups .sr-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.backups .state-line { margin: 6px 0 10px; }
+.bk-list { margin-top: 6px; }
+.upd-bar { height: 5px; border-radius: 5px; background: var(--fill-2); overflow: hidden; margin: 14px 0 4px; }
+.upd-bar i { display: block; height: 100%; width: 0; background: var(--label); transition: width 0.3s ease; }
+
+/* PIN pad: the focused key shows on a tv, and the pad fits short screens without scrolling */
+body.tv .pin-key:focus, body.tv .pin-key:focus-visible { background: var(--label); color: var(--page-bg); transform: scale(1.08); outline: none; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45); }
+body.tv .pin-key.del:focus { background: var(--label); }
+@media (max-height: 700px) {
+  .pin .pin-ic { display: none; }
+  .pin h2 { margin: 0 0 2px; font-size: 20px; }
+  .pin p.secondary { margin: 0; font-size: 13px; }
+  .pin-dots { margin: 10px 0 4px !important; }
+  .pin-err { min-height: 16px !important; font-size: 13px; }
+  .pin-keys { grid-template-columns: repeat(3, 52px) !important; gap: 8px 16px !important; }
+  .pin-key { width: 52px !important; height: 52px !important; font-size: 22px !important; }
+  .pin .actions { margin-top: 8px; }
+}
+
+/* Anything in a popup that has the remote's focus gets a clear ring on a tv */
+body.tv .sheet button:focus, body.tv .sheet a:focus, body.tv .sheet input:focus { outline: 3px solid var(--label); outline-offset: 2px; }
+body.tv .sheet .pin-key:focus { outline: none; }
+body.tv .icon-pick:focus .av { box-shadow: 0 0 0 3px var(--bg-2), 0 0 0 6px var(--label); transform: scale(1.08); }
+
+/* Tv dropdowns, a button like the select it stands in for and a picker sheet */
+.tv-select { display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; height: 38px; padding: 0 14px; border-radius: 10px; background: var(--fill); color: var(--label); font-size: 15px; white-space: nowrap; max-width: 100%; }
+.tv-select .i { width: 14px; height: 14px; opacity: 0.6; flex: none; }
+.tv-select > span { overflow: hidden; text-overflow: ellipsis; }
+.season-pick .tv-select { height: 44px; font-size: 17px; font-weight: 600; padding: 0 16px; }
+body.tv .tv-select:focus { background: var(--label); color: var(--page-bg); outline: none; transform: scale(1.04); }
+.sheet.picker { width: min(420px, 100%); padding: 20px 14px 14px; }
+.pick-title { margin: 0 10px 12px; font-size: 20px; }
+.pick-list { display: grid; gap: 2px; max-height: min(60vh, 420px); overflow-y: auto; padding: 4px; }
+.pick-opt { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 11px 12px; border-radius: 12px; font-size: 16px; color: var(--label); }
+.pick-opt .pick-ck { width: 18px; display: grid; place-items: center; color: var(--blue); }
+.pick-opt.on { font-weight: 600; }
+body.tv .sheet .pick-opt:focus { outline: none; background: var(--label); color: var(--page-bg); }
+body.tv .sheet .pick-opt:focus .pick-ck { color: inherit; }
+
+/* Tvs and low memory devices: cards draw flat, only the focused one gets a shadow and the zoom. Each shadow and
+   animation is extra memory on the graphics side, and a page of 300 cards adds up */
+html.lite .tile .art { box-shadow: none; transition: none; }
+html.lite .tile:focus-visible .art, html.lite .tile:focus .art { transition: transform 0.18s ease; }
+html.lite .who-av, html.lite .icon-pick, html.lite .chip { transition: none; }
+html.lite img { image-rendering: auto; }
+
+/* Short screens (a tv at 1080p is 540 tall after its zoom): the sidebar tightens up, and if it still doesn't fit
+   it scrolls inside itself instead of being cut off */
+@media (max-height: 640px) and (min-width: 761px) {
+  .side { overflow-y: auto; scrollbar-width: none; padding: 6px; }
+  .side::-webkit-scrollbar { display: none; }
+  .side-top { margin-bottom: 8px; }
+  .side-me { height: 48px; }
+  .side-nav, .side-sub-in { gap: 3px; }
+  .side-item { height: 46px; }
+  .side-ic { width: 36px; height: 36px; }
+}
+@media (max-width: 560px) {
+  .hist-act { flex-direction: column; gap: 6px; }
+  .hist-body .hist-name { font-size: 16px; }
+  .history { padding-bottom: 120px; }
+}

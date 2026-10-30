@@ -913,6 +913,7 @@ async def session_reaper():
         voice_unload()
 
 
+
 # ---------------------------------------------------------------- app
 
 STATIC_VERSION = {"v": "1"}
@@ -940,7 +941,7 @@ async def lifespan(app):
             await rescan()
             await asyncio.sleep(RESCAN_MINUTES * 60)
 
-    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker)]
+    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker)]
     yield
     for t in tasks:
         t.cancel()
@@ -980,6 +981,209 @@ async def guard(request: Request, call_next):
 def set_cookie(resp, name, value, max_age):
     resp.set_cookie(name, value, max_age=max_age, httponly=True, secure=COOKIE_SECURE, samesite="lax", path="/")
 
+
+# ---------------------------------------------------------------- database backups
+# Every night a copy of kino.db (profiles, watch history, ratings, addons, devices) goes to the Storage Box. Restoring
+# is done on the server with: sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py restore FILE, see the README
+BACKUP_DIR = Path(env("BACKUP_DIR", str(MEDIA_DIR / "kino-backups")))
+BACKUP_NAME = re.compile(r"^kino-(\d{4}-\d{2}-\d{2})-(\d{4})\.db\.gz$")
+BACKUP_STATE = DATA_DIR / "backup.json"
+
+
+def backup_now():
+    """Copies the live database with sqlite's own backup (safe while kino is running), gzips it onto the storage box"""
+    if not box_mounted():
+        raise RuntimeError("The Storage Box isn't connected, so the backup was skipped")
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    name = time.strftime("kino-%Y-%m-%d-%H%M.db.gz")
+    tmp = DATA_DIR / "backup.tmp.db"
+    tmp.unlink(missing_ok=True)
+    src = sqlite3.connect(str(DATA_DIR / "kino.db"))
+    dst = sqlite3.connect(str(tmp))
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    part = BACKUP_DIR / (name + ".part")
+    with open(tmp, "rb") as fi, gzip.open(part, "wb", compresslevel=6) as fo:
+        shutil.copyfileobj(fi, fo, 1 << 20)
+    part.rename(BACKUP_DIR / name)
+    tmp.unlink(missing_ok=True)
+    prune_backups()
+    return name
+
+
+def backup_list():
+    out = []
+    try:
+        for f in BACKUP_DIR.iterdir():
+            m = BACKUP_NAME.match(f.name)
+            if m:
+                st = f.stat()
+                out.append({"name": f.name, "size": st.st_size, "at": st.st_mtime, "day": m.group(1)})
+    except OSError:
+        pass
+    return sorted(out, key=lambda x: x["name"], reverse=True)
+
+
+def prune_backups():
+    # Keeps the last 14 nights, and the newest one from each of the last 6 months
+    keep, months = set(), []
+    items = backup_list()
+    for b in items[:14]:
+        keep.add(b["name"])
+    for b in items:
+        mon = b["day"][:7]
+        if mon not in months:
+            months.append(mon)
+            if len(months) <= 6:
+                keep.add(b["name"])
+    for b in items:
+        if b["name"] not in keep:
+            (BACKUP_DIR / b["name"]).unlink(missing_ok=True)
+
+
+def backup_state(**kw):
+    st = read_json(str(BACKUP_STATE)) or {}
+    if kw:
+        st.update(kw)
+        BACKUP_STATE.write_text(json.dumps(st))
+    return st
+
+
+async def run_backup():
+    try:
+        name = await asyncio.to_thread(backup_now)
+        backup_state(last=time.time(), last_name=name, error=None)
+        log.info("kino backup saved %s", name)
+        return name
+    except Exception as e:
+        backup_state(error=str(e), error_at=time.time())
+        log.warning("kino backup failed: %s", e)
+        raise
+
+
+async def backup_worker():
+    # Runs once a day, around 4 in the morning when nobody is watching, or straight away if the last one is over a day old
+    await asyncio.sleep(120)
+    while True:
+        st = backup_state()
+        age = time.time() - (st.get("last") or 0)
+        if age > 26 * 3600 or (age > 20 * 3600 and time.localtime().tm_hour == 4):
+            try:
+                await run_backup()
+            except Exception:
+                pass
+        await asyncio.sleep(1800)
+
+
+@app.get("/api/admin/backups")
+async def backups_get(admin=Depends(require_admin)):
+    st = backup_state()
+    return {"last": st.get("last"), "error": st.get("error"), "error_at": st.get("error_at"), "mounted": box_mounted(),
+            "dir": str(BACKUP_DIR), "backups": await asyncio.to_thread(backup_list)}
+
+
+@app.post("/api/admin/backups")
+async def backups_run(admin=Depends(require_admin)):
+    try:
+        name = await run_backup()
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    return {"ok": True, "name": name}
+
+
+@app.get("/api/admin/backups/{name}")
+async def backups_download(name: str, admin=Depends(require_admin)):
+    if not BACKUP_NAME.match(name) or not (BACKUP_DIR / name).exists():
+        raise HTTPException(404, "That backup isn't there")
+    return FileResponse(BACKUP_DIR / name, media_type="application/gzip", filename=name)
+
+
+def restore_backup(path):
+    """Puts a backup back. The current database gets kept next to it first, so a restore can be undone"""
+    src = Path(path)
+    if not src.exists():
+        sys.exit(f"{src} doesn't exist")
+    live = DATA_DIR / "kino.db"
+    tmp = DATA_DIR / "restore.tmp.db"
+    opener = gzip.open if src.name.endswith(".gz") else open
+    with opener(src, "rb") as fi, open(tmp, "wb") as fo:
+        shutil.copyfileobj(fi, fo, 1 << 20)
+    try:
+        chk = sqlite3.connect(str(tmp))
+        ok = chk.execute("PRAGMA integrity_check").fetchone()[0]
+        chk.close()
+    except sqlite3.DatabaseError:
+        ok = "not a database"
+    if ok != "ok":
+        tmp.unlink()
+        sys.exit("That backup is damaged, nothing was changed")
+    keep = DATA_DIR / time.strftime("kino-before-restore-%Y%m%d-%H%M%S.db")
+    had = live.exists()
+    if had:
+        b = sqlite3.connect(str(live)); k = sqlite3.connect(str(keep))
+        b.backup(k); k.close(); b.close()
+    for ext in ("-wal", "-shm"):
+        Path(str(live) + ext).unlink(missing_ok=True)
+    tmp.replace(live)
+    print(f"Restored {src.name}." + (f" The old database was kept as {keep.name}." if had else "") + " Start kino again with: systemctl start kino")
+
+
+# ---------------------------------------------------------------- watch history
+
+def history_item(r):
+    """One row of a profile's watch history, shaped for the History page"""
+    fid = r["file_id"]
+    base = {"file_id": fid, "updated": r["updated"], "pos": r["pos"], "dur": r["dur"], "watched": bool(r["watched"])}
+    if fid.startswith("s"):
+        st = db().q("SELECT * FROM streams WHERE id = ?", (fid,))
+        if not st:
+            return None
+        st = st[0]
+        parts = st["video_id"].split(":")
+        se = (int(parts[-2]), int(parts[-1])) if st["kind"] == "series" and len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit() else (None, None)
+        show = show_of(st["video_id"])
+        prev = ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"])
+        return {**base, "stream": True, "kind": st["kind"], "name": st["name"], "season": se[0], "episode": se[1], "ep_name": None,
+                "poster": prev["poster"], "background": prev["background"], "thumbnail": None, "href": f"#/discover/{st['kind']}/{quote(show, safe='')}"}
+    f = LIB["files"].get(fid)
+    t = LIB["titles"].get(f["title_id"]) if f else None
+    if not t:
+        return None
+    m = meta_for(t) or {}
+    ep = next((v for v in m.get("videos", []) if v.get("season") == f["season"] and v.get("episode") == f["episode"]), {}) if f["season"] is not None else {}
+    return {**base, "stream": False, "kind": m.get("kind") or t["kind"], "name": m.get("name") or t["guess_name"], "title_id": t["id"],
+            "season": f["season"], "episode": f["episode"], "ep_name": ep.get("name"), "poster": m.get("poster"),
+            "background": m.get("background"), "thumbnail": ep.get("thumbnail"), "href": f"#/title/{t['id']}",
+            "genres": m.get("genres") or []}
+
+
+@app.get("/api/history")
+async def history(before: float = 0, p=Depends(current_profile)):
+    rows = db().q("SELECT file_id, pos, dur, watched, updated FROM watch WHERE profile_id = ? AND (? = 0 OR updated < ?) "
+                  "ORDER BY updated DESC LIMIT 80", (p["id"], before, before))
+    items = []
+    for r in rows:
+        it = history_item(r)
+        if not it:
+            continue
+        if p.get("kids") and not it["stream"] and not kids_ok(it.get("genres"), kid_key(None, it.get("title_id"))):
+            continue
+        items.append(it)
+    return {"items": items, "next": rows[-1]["updated"] if len(rows) == 80 else None}
+
+
+@app.delete("/api/history")
+async def history_remove(file_id: str = "", p=Depends(current_profile)):
+    # Taking something out of history also takes away its progress and watched tick
+    if file_id:
+        db().q("DELETE FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], file_id))
+    else:
+        db().q("DELETE FROM watch WHERE profile_id = ?", (p["id"],))
+        db().q("DELETE FROM cont_hidden WHERE profile_id = ?", (p["id"],))
+    return {"ok": True}
 
 # ---- profiles and admin sign in
 
@@ -3802,6 +4006,14 @@ async def android_app():
                         headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/app/version")
+async def android_app_version():
+    # The app asks this when it opens and offers to update when theres a newer one. kino-version.json is written
+    # whenever kino.apk is rebuilt, ci checks they match the version in android/app/build.gradle
+    v = read_json(str(STATIC / "kino-version.json")) or {}
+    return JSONResponse({"code": int(v.get("code") or 0), "name": v.get("name") or "", "url": "/app"}, headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/sw.js")
 async def service_worker():
     js = (STATIC / "sw.js").read_text().replace("__V__", STATIC_VERSION["v"])
@@ -3827,7 +4039,16 @@ def cli():
     sp.add_parser("passwd").add_argument("name")
     sp.add_parser("deluser").add_argument("name")
     sp.add_parser("users")
+    sp.add_parser("backup")
+    sp.add_parser("restore").add_argument("file")
     args = ap.parse_args()
+    if args.cmd == "restore":
+        # Kino has to be stopped first, otherwise it would keep writing to the old database
+        if subprocess.run(["systemctl", "is-active", "--quiet", "kino"], stderr=subprocess.DEVNULL).returncode == 0:
+            sys.exit("Stop kino first: systemctl stop kino")
+        return restore_backup(args.file)
+    if args.cmd == "backup":
+        return print("Saved", backup_now())
     d = db()
     name = getattr(args, "name", "").strip().lower()
 

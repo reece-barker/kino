@@ -52,6 +52,7 @@
     people: "M9 11a4 4 0 110-8 4 4 0 010 8zm8 0a3 3 0 110-6 3 3 0 010 6zM2 20c0-3.3 3.1-6 7-6s7 2.7 7 6v1H2zm15.5-5.9c2.6.4 4.5 2.4 4.5 4.9v1h-4v-1c0-1.9-.2-3.4-.5-4.9z",
     back: "M15.4 4.6L8 12l7.4 7.4 1.4-1.4-6-6 6-6z",
     info: "M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-6h2zm0-8h-2V7h2z",
+    clock: "M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 110 16 8 8 0 010-16zm-1 3v5.4l4.3 2.6 1-1.7-3.3-2V7z",
     person: "M12 12a4.5 4.5 0 100-9 4.5 4.5 0 000 9zm0 2c-4.4 0-8 2.5-8 5.5V21h16v-1.5c0-3-3.6-5.5-8-5.5z",
     chevronR: "M9.2 6.6L13.8 11.2 9.2 15.8 10.6 17.2l6-6-6-6z",
     chevronL: "M14.8 6.6L10.2 11.2l4.6 4.6-1.4 1.4-6-6 6-6z",
@@ -98,6 +99,8 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   // w asks the server for a smaller copy, full size pictures are only used for the big hero
   const img = (u, trim, w) => (u ? "/api/img?u=" + encodeURIComponent(u) + (trim ? "&trim=1" : "") + (w ? "&w=" + w : "") : "");
+  // Tvs get smaller copies again, they hold every picture in memory and run out much sooner than a computer
+  const PW = () => (LITE ? 240 : 342), WW = () => (LITE ? 480 : 640), LW = () => (LITE ? 640 : 0);
   const hue = (s) => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7);
   const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -276,7 +279,7 @@
     try { open = localStorage.getItem(GROUP_KEY) === "1"; } catch (_) {}
     const item = (k, label, icon, extra = "") => `<a class="side-item" href="#/${k}" data-k="${k}"><span class="side-ic">${ic(icon)}</span><span class="side-lbl">${label}</span>${extra}</a>`;
     const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ["mylist", "My List", "bookmark"]];
-    const group = [["settings", "Settings", "gear"]];
+    const group = [["settings", "Settings", "gear"], ["history", "History", "clock"]];
     if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["server", "Server", "server"]);
     chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
       <span class="side-shine" aria-hidden="true"></span>
@@ -310,10 +313,10 @@
   // Moves the highlight pill to the current page with a spring, like the selection on apple tv
   function setActive(active) {
     SIDE_ACTIVE = active;
-    const inGroup = ["settings", "sync", "server"].includes(active);
+    const inGroup = ["settings", "history", "sync", "server"].includes(active);
     if (inGroup) { const g = $("#sideGroup"); if (g && !g.classList.contains("open")) toggleGroup(true, false); }
     $$("#chrome [data-k]").forEach((a) => {
-      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "settings", "sync", "server"].includes(active));
+      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "settings", "history", "sync", "server"].includes(active));
       on ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
     });
     placePill();
@@ -388,7 +391,7 @@
       const p = ME.profile;
       const row = (href, icon, label) => `<a class="more-row" href="${href}" data-close>${ic(icon)}<span>${label}</span>${ic("chevron")}</a>`;
       const sh = sheet(`<div class="more-head">${avatar(p.icon, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
-        <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/settings", "gear", "Settings")}
+        <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
           ${isAdmin() ? row("#/sync", "refresh", "Sync") + row("#/server", "server", "Server") : ""}
           ${row("#/profiles", "people", "Switch Profile")}</div>
         <div class="menu-label">Appearance</div>${themePicker("sheetTheme")}
@@ -647,7 +650,7 @@
   const extHref = (t) => { EXT_NAME.set(t.ext, t.name); return `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}`; };
   function posterTile(t) {
     const art = t.poster
-      ? `<img loading="lazy" src="${img(t.poster, 0, 342)}" alt="${esc(t.name)}" data-fallback="ph">`
+      ? `<img loading="lazy" src="${img(t.poster, 0, PW())}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
     const sub = t.family ? t.family : t.external ? t.releaseInfo || (t.kind === "series" ? "TV Show" : "Movie")
       : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
@@ -657,9 +660,9 @@
   }
   function wideTile(t, opts = {}) {
     const bg = t.background
-      ? `<img loading="lazy" src="${img(t.background, 0, 640)}" alt="${esc(t.name)}" data-fallback="ph">`
+      ? `<img loading="lazy" src="${img(t.background, 0, WW())}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
-    const logo = t.logo && t.background && opts.progress == null ? `<img class="logo-over" loading="lazy" src="${img(t.logo, 1, 480)}" alt="" data-fallback="hide">` : "";
+    const logo = t.logo && t.background && opts.progress == null ? `<img class="logo-over" loading="lazy" src="${img(t.logo, 1, LITE ? 240 : 480)}" alt="" data-fallback="hide">` : "";
     const bar = opts.progress != null && opts.progress > 0 ? `<div class="bar"><i style="width:${Math.min(100, opts.progress * 100)}%"></i></div>` : "";
     const href = opts.href || (t.external ? extHref(t) : `#/title/${t.id}`);
     const x = opts.hide ? `<button class="tile-x" data-hide="${opts.hide}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
@@ -690,7 +693,7 @@
       </section>
       <main class="page under-hero" style="padding-top:8px">
         ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
-          <div class="row ${s.style === "poster" ? "posters" : "wide"}">${s.items.map((t) => s.style === "poster" ? posterTile(t)
+          <div class="row ${s.style === "poster" ? "posters" : "wide"}">${(LITE ? s.items.slice(0, 16) : s.items).map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: TV ? null : t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
             : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster", s.more === "#/shows" ? "All TV Shows" : "All Movies") : ""}</div></section>`).join("")}
@@ -757,7 +760,7 @@
       <div class="hero-bg ${t.poster ? "has-tall" : ""}">${heroArt(t, i > 0)}</div>
       <div class="hero-content">
         ${t.cont ? `<span class="hero-kicker glass">${ic("play")} Continue Watching</span>` : ""}
-        ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
+        ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1, LW())}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
         ${t.cont ? `<div class="hero-meta"><span>${esc(what)}</span></div>
           <div class="hero-prog"><i style="width:${t.dur ? Math.min(100, (t.pos / t.dur) * 100) : 0}%"></i></div>`
           : `<div class="hero-meta">${metaLine(t).map((m, j) => `<span class="${j ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
@@ -778,7 +781,7 @@
         <div class="fresh-bg">${t.thumbnail || t.background ? `<img loading="lazy" src="${img(t.thumbnail || t.background, 0, 640)}" alt="" data-fallback="hide">` : ""}</div>
         <div class="fresh-body">
           <span class="fresh-pill">${t.new_count} New Episode${t.new_count === 1 ? "" : "s"}</span>
-          ${t.logo ? `<img class="fresh-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text" data-cls="fresh-name">` : `<div class="fresh-name">${esc(t.name)}</div>`}
+          ${t.logo ? `<img class="fresh-logo" src="${img(t.logo, 1, LW())}" alt="${esc(t.name)}" data-fallback="text" data-cls="fresh-name">` : `<div class="fresh-name">${esc(t.name)}</div>`}
           <div class="fresh-ep">${esc(epLabel(t.season, t.episode))}${t.ep_name ? ` · ${esc(nice(t.ep_name))}` : ""}</div>
           <span class="btn primary small fresh-play">${ic("play")} Play</span>
         </div></a>`).join("")}</div></section>`;
@@ -842,6 +845,23 @@
   }
 
   // ---------------------------------------------------------- movies and shows
+  // Long grids draw the first batch and add more as you get near the bottom, a few hundred posters at once was too
+  // much for a fire tv
+  const GRID_STEP = 48;
+  function batch(grid, list) {
+    let shown = Math.min(list.length, GRID_STEP);
+    const more = () => {
+      if (!grid.isConnected) { removeEventListener("scroll", more); return; }
+      if (shown >= list.length || grid.getBoundingClientRect().bottom > innerHeight * 2.5) return;
+      grid.insertAdjacentHTML("beforeend", list.slice(shown, shown + GRID_STEP).map(posterTile).join(""));
+      shown = Math.min(list.length, shown + GRID_STEP);
+    };
+    if (grid._more) removeEventListener("scroll", grid._more);
+    grid._more = more;
+    addEventListener("scroll", more, { passive: true });
+    grid.addEventListener("focusin", more);
+  }
+
   async function pageBrowse(kind) {
     const lib = await api("/api/library");
     const list = lib.titles.filter((t) => t.kind === kind);
@@ -876,7 +896,8 @@
         && (!src || (src === "ext") === !!t.external));
       r = r.slice().sort((a, b) => s === "name" ? a.name.localeCompare(b.name) : s === "year" ? yr(b) - yr(a) : s === "old" ? (yr(a) || 9999) - (yr(b) || 9999)
         : s === "rating" ? (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0) : b.added - a.added);
-      $("#grid").innerHTML = r.length ? r.map(posterTile).join("") : `<div class="empty" style="grid-column:1/-1"><h2>No matches</h2><p>Try a different filter or genre.</p></div>`;
+      $("#grid").innerHTML = r.length ? r.slice(0, GRID_STEP).map(posterTile).join("") : `<div class="empty" style="grid-column:1/-1"><h2>No matches</h2><p>Try a different filter or genre.</p></div>`;
+      batch($("#grid"), r);
       $("#count").textContent = `${r.length} ${noun}${r.length === 1 ? "" : "s"}`;
     };
     $$(".chip[data-g]").forEach((c) => (c.onclick = () => {
@@ -928,9 +949,9 @@
       more();
     });
   }
-  const epTile = (e) => `<a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail, 0, 480)}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
+  const epTile = (e) => `<a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail, 0, WW())}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
       <div class="cap">${esc(nice(e.name))}</div><div class="sub">${esc(e.show)} · ${esc(epLabel(e.season, e.episode))}</div></a>`;
-  const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" src="${img(p.poster, 0, 342)}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
+  const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" src="${img(p.poster, 0, PW())}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
       <div class="cap">${esc(p.name)}</div><div class="sub">${esc(p.role)} · ${p.count} title${p.count === 1 ? "" : "s"}</div></a>`;
 
   async function pageSearch() {
@@ -1149,7 +1170,7 @@
       <section class="detail-hero">
         <div class="hero-bg ${t.poster ? "has-tall" : ""}">${heroArt(t)}</div>
         <div class="hero-content" style="z-index:2">
-          ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
+          ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1, LW())}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
           <div class="hero-meta">${metaLine(t).map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
           ${allBadges.length ? `<div class="badges" style="margin-bottom:16px">${allBadges.map((b) => `<span class="badge">${esc(b)}</span>`).join("")}</div>` : ""}
           ${t.description ? `<p class="hero-desc" style="-webkit-line-clamp:4">${esc(t.description)}</p>` : ""}
@@ -1197,7 +1218,7 @@
       const eps = t.files.filter((f) => (f.season ?? 0) === season);
       $("#eps").innerHTML = eps.map((f) => {
         const p = f.progress && f.progress.dur ? f.progress.pos / f.progress.dur : null;
-        const art = f.thumbnail ? `<img loading="lazy" src="${img(f.thumbnail, 0, 480)}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
+        const art = f.thumbnail ? `<img loading="lazy" src="${img(f.thumbnail, 0, WW())}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
         return `<div class="ep"><button class="tile landscape ${f.watched ? "is-watched" : ""}" data-playfile="${f.id}" aria-label="Play ${esc(epLabel(f.season, f.episode))} ${esc(f.ep_name || "")}"><div class="art">${art}${p != null ? `<div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div>` : ""}${f.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(f.season, f.episode) || "Extra")}${f.duration ? ` · ${Math.max(1, Math.round(f.duration / 60))} min` : ""}</div>
             <button class="ep-mark" data-epwatch="${f.id}" data-state="${f.watched ? 1 : 0}" aria-label="${f.watched ? "Mark as unwatched" : "Mark as watched"}" title="${f.watched ? "Watched, click to unmark" : "Mark as watched"}">${ic(f.watched ? "check" : "plus")}</button>
@@ -1294,7 +1315,7 @@
       <section class="detail-hero">
         <div class="hero-bg ${t.poster ? "has-tall" : ""}">${heroArt(t)}</div>
         <div class="hero-content" style="z-index:2">
-          ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1)}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
+          ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1, LW())}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
           <div class="hero-meta">${facts.map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
           ${t.description ? `<p class="hero-desc" style="-webkit-line-clamp:4">${esc(t.description)}</p>` : ""}
           <div id="pdBox" aria-busy="true"><span class="sr">Looking for a copy to play</span><div class="actions pd-skel" aria-hidden="true"><span class="sk sk-btn"></span><span class="sk sk-btn short"></span><span class="sk sk-round"></span><span class="sk sk-round"></span></div><div class="sk sk-line pd-skel-line" aria-hidden="true"></div></div>
@@ -1323,7 +1344,7 @@
     const drawEps = (season) => {
       $("#eps").innerHTML = t.videos.filter((v) => v.season === season).map((v) => {
         const pr = v.progress && v.progress.dur ? v.progress.pos / v.progress.dur : null;
-        const art = v.thumbnail ? `<img loading="lazy" src="${img(v.thumbnail, 0, 480)}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(v.season, v.episode))}</div>`;
+        const art = v.thumbnail ? `<img loading="lazy" src="${img(v.thumbnail, 0, WW())}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(v.season, v.episode))}</div>`;
         return `<div class="ep"><button class="tile landscape ${v.progress && v.progress.watched ? "is-watched" : ""}" data-playep="${esc(v.id)}" aria-label="Play ${esc(epLabel(v.season, v.episode))} ${esc(v.name || "")}"><div class="art">${art}${pr != null ? `<div class="bar"><i style="width:${Math.min(100, pr * 100)}%"></i></div>` : ""}${v.progress && v.progress.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(v.season, v.episode))}</div>
             ${isAdmin() ? `<button class="ep-mark" data-saveep="${esc(v.id)}" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}</div>
@@ -1373,10 +1394,12 @@
       }
       box.innerHTML = `<div class="actions">${lb}</div>` + none + (why ? `<div class="note pd-note">${ic("info")} ${esc(why)}</div>` : "");
       wireListBtn({ kind, id: t.list_key }, t.list_key);
+      if (TV && (document.activeElement === document.body || document.activeElement === AUTO_FOCUS)) { const lbb = $("#listBtn"); if (lbb) lbb.focus({ preventScroll: true }); }
       return;
     }
     const first = r.streams[0];
     const res = first.progress && !first.progress.watched && first.progress.pos > 30 ? first.progress : null;
+    const grabFocus = TV && (document.activeElement === document.body || document.activeElement === AUTO_FOCUS || !document.activeElement);
     box.innerHTML = `<div class="actions">
         <button class="btn primary" id="pdPlay">${ic("play")} ${res ? "Resume" : "Play"}${ep ? " " + esc(epLabel(ep.season, ep.episode)) : ""}</button>
         ${r.streams.length > 1 ? `<button class="btn secondary" id="pdMore">${r.streams.length} Sources</button>` : ""}
@@ -1386,6 +1409,7 @@
       ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
     const play = (s) => playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
     $("#pdPlay").onclick = () => play(first);
+    if (grabFocus) $("#pdPlay").focus({ preventScroll: true });
     wireListBtn({ kind, id: t.list_key }, t.list_key);
     const more = $("#pdMore");
     if (more) more.onclick = () => {
@@ -1451,6 +1475,92 @@
     $("#fmGo", s.el).onclick = go;
     $("#fmq", s.el).addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
     go();
+  }
+
+  // ---------------------------------------------------------- history
+  // Everything this profile has watched, newest first and grouped by day. Removing something takes away its
+  // progress too, like it was never started
+  async function pageHistory() {
+    let items = [], next = null;
+    const r = await api("/api/history");
+    items = r.items; next = r.next;
+    const dayOf = (ts) => {
+      const d = new Date(ts * 1000), now = new Date();
+      const diff = Math.round((new Date(now.toDateString()) - new Date(d.toDateString())) / 86400000);
+      if (diff === 0) return "Today";
+      if (diff === 1) return "Yesterday";
+      if (diff < 7) return d.toLocaleDateString([], { weekday: "long" });
+      return d.toLocaleDateString([], { day: "numeric", month: "long", year: d.getFullYear() === now.getFullYear() ? undefined : "numeric" });
+    };
+    const entry = (h) => {
+      const pct = h.watched ? 1 : h.dur ? Math.min(1, h.pos / h.dur) : 0;
+      const pic = h.thumbnail || h.background || h.poster;
+      const what = [h.season != null ? epLabel(h.season, h.episode) : h.kind === "series" ? "TV Show" : "Movie", h.ep_name ? nice(h.ep_name) : ""].filter(Boolean).join(" · ");
+      const state = h.watched ? "Watched" : h.dur ? `${clock(Math.max(0, h.dur - h.pos))} left` : "Started";
+      return `<div class="hist" data-fid="${esc(h.file_id)}">
+        <a class="hist-art" href="${h.href}" tabindex="-1" aria-hidden="true">${pic ? `<img loading="lazy" src="${img(pic, 0, 480)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(h.name)}">${esc(h.name)}</div>`}
+          ${pct ? `<div class="bar"><i style="width:${pct * 100}%"></i></div>` : ""}</a>
+        <div class="hist-body"><a class="hist-name" href="${h.href}">${esc(h.name)}</a><div class="secondary">${esc(what)}</div>
+          <div class="tertiary">${esc(state)} · ${new Date(h.updated * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}</div></div>
+        <div class="hist-act">
+          <button class="round-btn sm" data-hplay="${esc(h.file_id)}" data-tid="${esc(h.title_id || "")}" data-pos="${h.watched ? 0 : h.pos}" aria-label="Play ${esc(h.name)}" title="${h.watched ? "Play Again" : "Resume"}">${ic("play")}</button>
+          <button class="round-btn sm" data-hdel="${esc(h.file_id)}" aria-label="Remove ${esc(h.name)} from History" title="Remove from History">${ic("trash")}</button>
+        </div></div>`;
+    };
+    const draw = () => {
+      let last = "", html = "";
+      for (const h of items) {
+        const d = dayOf(h.updated);
+        if (d !== last) { html += `${last ? "</div>" : ""}<h2 class="section-title hist-day">${esc(d)}</h2><div class="hist-list">`; last = d; }
+        html += entry(h);
+      }
+      if (last) html += "</div>";
+      return html;
+    };
+    app.innerHTML = topbar("history") + `<main class="page narrow history">
+      <h1 class="large-title">History</h1>
+      <p class="secondary set-hint">Everything ${esc(ME.profile.name)} has watched. Removing something also clears its progress.</p>
+      <div id="histBody">${items.length ? draw() : `<div class="empty"><h2>Nothing watched yet</h2><p>Films and episodes show up here once you start them.</p></div>`}</div>
+      ${next ? `<div class="actions" style="justify-content:center;margin-top:24px"><button class="btn secondary small" id="histMore">Show Older</button></div>` : ""}
+      ${items.length ? `<div class="actions end" style="margin-top:28px"><button class="btn danger small" id="histClear">${ic("trash")} Clear History</button></div>` : ""}
+    </main>`;
+    wireTopbar();
+    const body = $("#histBody");
+    body.addEventListener("click", async (e) => {
+      const del = e.target.closest("[data-hdel]");
+      if (del) {
+        await api("/api/history?file_id=" + encodeURIComponent(del.dataset.hdel), undefined, "DELETE").catch((x) => toast(x.message));
+        const row = del.closest(".hist"), list = row.parentElement;
+        const nextFocus = row.nextElementSibling || row.previousElementSibling;
+        row.remove();
+        items = items.filter((x) => x.file_id !== del.dataset.hdel);
+        if (!list.children.length) { list.previousElementSibling.remove(); list.remove(); }
+        if (nextFocus) $("[data-hdel]", nextFocus).focus();
+        toast("Removed from History");
+        return;
+      }
+      const pb = e.target.closest("[data-hplay]");
+      if (pb) {
+        const fid = pb.dataset.hplay, from = Number(pb.dataset.pos) || 0;
+        if (fid.startsWith("s") || !pb.dataset.tid) return playFile(fid, { from });
+        const t = await api(`/api/title/${pb.dataset.tid}`).catch(() => null);
+        playFile(fid, { title: t, from });
+      }
+    });
+    const more = $("#histMore");
+    if (more) more.onclick = async () => {
+      const r2 = await api("/api/history?before=" + next);
+      items = items.concat(r2.items); next = r2.next;
+      body.innerHTML = draw();
+      if (!next) more.remove();
+    };
+    const clr = $("#histClear");
+    if (clr) clr.onclick = async () => {
+      if (!(await confirmSheet("Clear all of your history?", `Everything ${ME.profile.name} has watched is forgotten, including where you got to and what's marked as watched. This can't be undone.`, "Clear History"))) return;
+      await api("/api/history", undefined, "DELETE");
+      toast("History cleared");
+      route();
+    };
   }
 
   // ---------------------------------------------------------- settings
@@ -1809,10 +1919,36 @@
 
   async function pageServer() {
     app.innerHTML = topbar("server") + `<main class="page"><h1 class="large-title">Server</h1><div id="srvBody"><div class="card skel" style="height:220px"></div></div>
-      <div id="storageReview"></div></main>`;
+      <div id="backups"></div><div id="storageReview"></div></main>`;
     wireTopbar();
     startPoll(drawServer, 3000);
+    drawBackups();
     drawStorageReview();
+  }
+
+  // Nightly copies of the database on the Storage Box
+  async function drawBackups() {
+    const r = await api("/api/admin/backups").catch(() => null);
+    const box = $("#backups");
+    if (!r || !box) return;
+    const okLine = r.error && (!r.last || r.error_at > r.last)
+      ? `<div class="state-line error"><span class="dot"></span>Last backup failed: ${esc(r.error)}</div>`
+      : r.last ? `<div class="state-line running"><span class="dot"></span>Last backup ${esc(when(r.last))}</div>` : `<div class="state-line"><span class="dot"></span>No backup yet, the first one runs a few minutes after Kino starts</div>`;
+    box.innerHTML = `<section class="card backups">
+      <div class="sr-head"><div><h2 class="set-title">Backups</h2>
+        <p class="secondary set-hint">Profiles, watch history, ratings, addons and devices are copied to the Storage Box every night. The last 14 nights and one a month for 6 months are kept.</p></div>
+        <button class="btn secondary small" id="bkNow">${ic("refresh")} Back Up Now</button></div>
+      ${okLine}
+      ${r.backups.length ? `<div class="list bk-list">${r.backups.slice(0, 8).map((b) => `<div class="li"><span class="grow">${esc(when(b.at))}</span><span class="r">${bytes(b.size)}</span>
+        <a class="round-btn sm" href="/api/admin/backups/${encodeURIComponent(b.name)}" download aria-label="Download backup from ${esc(when(b.at))}" title="Download">${ic("download")}</a></div>`).join("")}</div>
+        ${r.backups.length > 8 ? `<p class="secondary sr-empty">${r.backups.length - 8} older backup${r.backups.length - 8 === 1 ? "" : "s"} kept as well.</p>` : ""}` : ""}
+      <p class="secondary sr-empty">To restore one, see Restoring a Backup in the README.</p>
+    </section>`;
+    $("#bkNow").onclick = async (e) => {
+      const b = e.currentTarget; b.disabled = true;
+      try { await api("/api/admin/backups", {}); toast("Backup saved"); } catch (x) { toast(x.message, 6000); }
+      drawBackups();
+    };
   }
 
   // What could be cleared off the Storage Box, things everyone has watched and things nobody started in months
@@ -1820,7 +1956,7 @@
     const r = await api("/api/admin/storage").catch(() => null);
     const box = $("#storageReview");
     if (!r || !box) return;
-    const row = (t, sub) => `<div class="sr-row"><span class="fm-post">${t.poster ? `<img src="${img(t.poster, 0, 342)}" alt="" data-fallback="hide">` : ""}</span>
+    const row = (t, sub) => `<div class="sr-row"><span class="fm-post">${t.poster ? `<img src="${img(t.poster, 0, PW())}" alt="" data-fallback="hide">` : ""}</span>
       <span class="grow"><b>${esc(t.name)}</b><span class="secondary">${esc(sub)}</span></span><span class="secondary sr-size">${bytes(t.size)}</span>
       <button class="round-btn sm" data-clear="${t.id}" data-name="${esc(t.name)}" data-size="${t.size}" aria-label="Delete ${esc(t.name)}" title="Delete from Library">${ic("trash")}</button></div>`;
     const sum = (l) => l.reduce((a, t) => a + t.size, 0);
@@ -1950,7 +2086,7 @@
   }
   function loadLogo(art, name) {
     const box = $("#plLogo");
-    if (art && art.logo) box.innerHTML = `<img src="${img(art.logo, 1)}" alt="${esc(name || "")}" data-fallback="text" data-cls="pl-name">`;
+    if (art && art.logo) box.innerHTML = `<img src="${img(art.logo, 1, LW())}" alt="${esc(name || "")}" data-fallback="text" data-cls="pl-name">`;
     else box.innerHTML = `<div class="pl-name">${esc(name || "")}</div>`;
   }
   function loadArt(art, name) {
@@ -2675,7 +2811,69 @@
     else if (cmd === "back") seekTo(pos() - 10);
     else if (cmd === "stop") closePlayer();
   };
+  // ---------------------------------------------------------- app updates
+  // When the app opens it checks if the server has a newer version, and offers to install it. Never while watching
+  async function checkAppUpdate() {
+    if (!ANDROID) return;
+    let r;
+    try { r = await (await fetch("/app/version", { credentials: "same-origin" })).json(); } catch (_) { return; }
+    const mine = window.KinoAndroid.versionCode ? window.KinoAndroid.versionCode() : 0;
+    if (!r.code || r.code <= mine) return;
+    try { if (localStorage.getItem("kino-update-later") === String(r.code) && Date.now() - Number(localStorage.getItem("kino-update-at") || 0) < 86400000) return; } catch (_) {}
+    const wait = () => (!pl.el.hidden || sheetClose ? setTimeout(wait, 5000) : offer());
+    const offer = () => {
+      const can = typeof window.KinoAndroid.installUpdate === "function";
+      const s = sheet(`<div class="sheet-icon">${ic("download")}</div><h2>Kino ${esc(r.name)} is Ready</h2>
+        <p class="secondary">${can ? "There's a newer version of the app. It downloads in a few seconds, then Android asks you to install it." : `There's a newer version of the app. Open <b class="mono">${esc(location.host)}/app</b> in the Downloader app to install it, after that updates install from here.`}</p>
+        <div class="upd-bar" hidden><i></i></div><div class="form-err" id="updErr" role="alert"></div>
+        <div class="actions end"><button class="btn secondary small" data-close id="updLater">Later</button>${can ? `<button class="btn primary small" id="updGo">Update Now</button>` : ""}</div>`);
+      $("#updLater", s.el).addEventListener("click", () => { try { localStorage.setItem("kino-update-later", String(r.code)); localStorage.setItem("kino-update-at", String(Date.now())); } catch (_) {} });
+      const go = $("#updGo", s.el);
+      if (!go) return;
+      window.kinoUpdate = (u) => {
+        const bar = $(".upd-bar", s.el), err = $("#updErr", s.el);
+        if (!bar) return;
+        if (u.state === "downloading") { bar.hidden = false; $("i", bar).style.width = (u.progress < 0 ? 50 : u.progress) + "%"; go.textContent = u.progress < 0 ? "Downloading…" : `Downloading ${u.progress}%`; }
+        else if (u.state === "permission") { err.textContent = "Turn on \"Allow from this source\" for Kino, then come back here."; go.disabled = false; go.textContent = "Update Now"; }
+        else if (u.state === "denied") { err.textContent = "Kino isn't allowed to install updates yet. Turn it on in the settings that opened, then try again."; go.disabled = false; go.textContent = "Try Again"; }
+        else if (u.state === "installing") { go.textContent = "Installing…"; }
+        else if (u.state === "error") { err.textContent = u.message || "The update didn't download, try again."; go.disabled = false; go.textContent = "Try Again"; }
+      };
+      go.onclick = () => { go.disabled = true; go.textContent = "Starting…"; $("#updErr", s.el).textContent = ""; window.KinoAndroid.installUpdate(r.url || "/app"); };
+    };
+    wait();
+  }
+  if (ANDROID) setTimeout(checkAppUpdate, 4000);
+
   window.kinoPip = (on) => document.body.classList.toggle("pip", !!on);
+
+  // ---------------------------------------------------------- picture recycling on tvs
+  // A fire tv keeps every picture it has shown decoded in memory, and a page with a few hundred posters runs it out
+  // of memory and the page crashes. Pictures more than about a screen away get swapped for an empty one and come
+  // back when you get close again, so only what's around the screen is ever held. Computers and phones skip this
+  const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+  let RECYCLE_T = null;
+  function recycle() {
+    if (!LITE) return;
+    const vw = innerWidth, vh = innerHeight;
+    for (const im of app.getElementsByTagName("img")) {
+      const r = im.getBoundingClientRect();
+      const far = r.bottom < -vh * 1.2 || r.top > vh * 2.2 || r.right < -vw * 0.8 || r.left > vw * 1.8;
+      if (far && !im.dataset.parked && im.complete && im.getAttribute("src") && !im.getAttribute("src").startsWith("data:")) {
+        im.dataset.parked = im.getAttribute("src");
+        im.src = BLANK;
+      } else if (!far && im.dataset.parked) {
+        im.src = im.dataset.parked;
+        delete im.dataset.parked;
+      }
+    }
+  }
+  const recycleSoon = () => { clearTimeout(RECYCLE_T); RECYCLE_T = setTimeout(recycle, 250); };
+  if (LITE) {
+    document.addEventListener("scroll", recycleSoon, { capture: true, passive: true });
+    document.addEventListener("focusin", recycleSoon);
+    setInterval(recycle, 4000);
+  }
 
   // ---------------------------------------------------------- side scrolling rows
   // A mouse without a trackpad cant scroll sideways, so rows get arrow buttons like netflix when you point at them.
@@ -2712,12 +2910,59 @@
     });
   }
 
+  // ---------------------------------------------------------- dropdowns on tvs
+  // The fire tv's own dropdown list is plain grey and sits wherever it wants, so on a tv each dropdown becomes a
+  // button that opens a Kino picker. The real select stays hidden underneath, so the page code works the same
+  function tvSelects(root = app) {
+    if (!TV) return;
+    $$("select", root).forEach((sel) => {
+      if (sel.dataset.tv) return;
+      sel.dataset.tv = "1";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tv-select";
+      btn.id = sel.id ? sel.id + "Btn" : "";
+      const title = sel.getAttribute("aria-label") || (sel.closest("label") && $(".sr", sel.closest("label")) ? $(".sr", sel.closest("label")).textContent : "") || (sel.closest(".set-row") && $("b", sel.closest(".set-row")) ? $("b", sel.closest(".set-row")).textContent : "") || "Choose";
+      const draw = () => { const o = sel.options[sel.selectedIndex]; btn.innerHTML = `<span>${esc(o ? o.text : "")}</span>${ic("chevron")}`; btn.setAttribute("aria-label", `${title}: ${o ? o.text : ""}`); };
+      draw();
+      sel.addEventListener("change", draw);
+      sel.style.display = "none";
+      sel.after(btn);
+      btn.onclick = (e) => {
+        e.preventDefault();
+        const cur = sel.selectedIndex;
+        const s = sheet(`<h2 class="pick-title">${esc(title)}</h2><div class="pick-list" role="listbox" aria-label="${esc(title)}">${[...sel.options].map((o, i) =>
+          `<button class="pick-opt ${i === cur ? "on" : ""}" role="option" aria-selected="${i === cur}" data-i="${i}"><span class="pick-ck">${i === cur ? ic("check") : ""}</span><span>${esc(o.text)}</span></button>`).join("")}</div>`);
+        s.el.classList.add("picker");
+        $$(".pick-opt", s.el).forEach((b) => (b.onclick = () => {
+          const i = Number(b.dataset.i);
+          s.close();
+          if (i !== cur) {
+            sel.selectedIndex = i;
+            sel.dispatchEvent(new Event("input", { bubbles: true }));
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          draw();
+          btn.focus();
+        }));
+        // Starts on whatever is picked now, like apple tv
+        setTimeout(() => { const on = $(".pick-opt.on", s.el) || $(".pick-opt", s.el); if (on) { on.focus({ preventScroll: true }); on.scrollIntoView({ block: "center" }); } }, 60);
+      };
+    });
+  }
+
+  if (TV) {
+    // Parts of pages that load later (the admin bits of Settings, sheets) get there dropdowns swapped too
+    let selT = null;
+    new MutationObserver(() => { clearTimeout(selT); selT = setTimeout(() => tvSelects(document.body), 60); }).observe(document.body, { childList: true, subtree: true });
+  }
+
   // ---------------------------------------------------------- router
   const applyPrefs = () => document.body.classList.toggle("blur-watched", !!(ME.profile && ME.profile.prefs && ME.profile.prefs.blur_watched));
 
   // Which sidebar item a page belongs to
   const sideFor = (page) => ({ title: "", discover: "", person: "search" })[page] ?? (page || "home");
-  let LAST_PAGE = null, ROUTE_N = 0, ENTER_T = null;
+  let LAST_PAGE = null, ROUTE_N = 0, ENTER_T = null, AUTO_FOCUS = null;
 
   // Apple style placeholders that show the shape of the page while it loads
   function skeleton(page) {
@@ -2725,7 +2970,7 @@
     const row = (cls, n) => `<section class="shelf"><div class="sk sk-line" style="width:180px"></div><div class="row posters">${tiles(n, cls)}</div></section>`;
     if (page === "home" || !page) return `<div class="sk sk-hero"></div><main class="page under-hero">${row("sk-wide", 4)}${row("sk-poster", 7)}</main>`;
     if (page === "title" || page === "discover") return `<div class="sk sk-hero short"></div><main class="page under-hero">${row("sk-wide", 4)}</main>`;
-    if (page === "settings" || page === "sync" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
+    if (page === "settings" || page === "history" || page === "sync" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
     if (page === "search") return `<main class="page"><div class="sk sk-search"></div><div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${tiles(12)}</div></main>`;
     return `<main class="page"><div class="sk sk-title"></div><div class="grid">${tiles(14)}</div></main>`;
   }
@@ -2759,19 +3004,23 @@
       else if (page === "person" && arg) await pagePerson(decodeURIComponent(arg));
       else if (page === "mylist") await pageMyList();
       else if (page === "settings") await pageSettings();
+      else if (page === "history") await pageHistory();
       else if (page === "sync" && isAdmin()) await pageSync();
       else if (page === "server" && isAdmin()) await pageServer();
       else await pageHome();
       if (isAdmin() && page !== "sync" && page !== "home") api("/api/admin/sync").then((s) => { SYNC = s; updateSyncChip(); }).catch(() => {});
-      if (n === ROUTE_N) enhanceRows(app);
+      if (n === ROUTE_N) { enhanceRows(app); tvSelects(app); }
       if (changed && n === ROUTE_N) {
         void app.offsetWidth; app.classList.add("enter");
         // Only the first draw of a page animates, pages that refresh themselves every few seconds stay still
         clearTimeout(ENTER_T); ENTER_T = setTimeout(() => app.classList.remove("enter"), 900);
         // On a tv the remote lands on the page's main button after picking something in the sidebar
         if (TV) {
-          const el = $(".hero-slide.on [data-heroresume], .hero-slide.on [data-heroplay], #playMain, #sq, .tile, main button, main a[href]", app);
+          // Goes through these in order, so a title page always starts on Play even if something else comes first on the page
+          const el = [".hero-slide.on [data-heroresume]", ".hero-slide.on [data-heroplay]", "#playMain", "#pdPlay", "#pdBox #listBtn", "#sq", ".tile", "main button", "main a[href]"]
+            .map((q) => $(q, app)).find(Boolean);
           if (el) el.focus({ preventScroll: true });
+          AUTO_FOCUS = el || null;
           const side = $("#side"); if (side) side.classList.remove("open");
         }
       }

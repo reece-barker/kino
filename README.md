@@ -20,7 +20,10 @@ Netflix style family library for the storage box, with the torbox sync, server s
 
 ## Android app
 
-`android/` is a small native app (about 60 KB) for phones, tablets, Android TV and Fire TV. It's the same Kino in a full screen webview, plus the things a browser can't do:
+`android/` is a small native app (about 1 MB) for phones, tablets, Android TV and Fire TV. It's the same Kino in a full screen webview, plus the things a browser can't do:
+
+- Videos play in ExoPlayer (the player Stremio uses on Android TV), straight to the device's hardware decoder. It falls back to the server's converted stream for sound or Dolby Vision the device can't play, and the web player is still there under Settings > App Player
+- It updates itself: when it opens it checks `/app/version`, and if there's a newer one it offers to download it and opens Android's installer. The first time, Android asks to allow Kino to install apps
 
 - Full screen video, picture in picture when you leave the app mid film (phones and tablets), and the screen stays on while playing
 - The back button closes the player or a popup first, then goes back a page
@@ -31,7 +34,23 @@ Netflix style family library for the storage box, with the torbox sync, server s
 
 Download it from Settings > Android App, or `https://kino.reece.page/app` (on a Fire TV type that into the Downloader app). The app counts as its own device for Allowed Devices.
 
-Build it with `cd android && ./gradlew assembleRelease` (needs the Android SDK). To sign with the Kino key set `KINO_KEYSTORE` and `KINO_KEYSTORE_PASSWORD`. Keep that key safe, Android only installs updates signed with the same key. Copy the result to `app/static/kino.apk` so `/app` serves it. The `Android app` workflow builds it on every change to `android/`.
+Build it with `cd android && ./gradlew assembleRelease` (needs the Android SDK). To sign with the Kino key set `KINO_KEYSTORE` and `KINO_KEYSTORE_PASSWORD`. Keep that key safe, Android only installs updates signed with the same key. Copy the result to `app/static/kino.apk` so `/app` serves it, and put the same `versionCode` and `versionName` in `app/static/kino-version.json` (CI checks they match) so the apps offer the update. The `Android app` workflow builds it on every change to `android/`.
+
+## History and backups
+
+Settings > History shows what each profile has watched, grouped by day, with Play and Remove (removing also clears its progress), and Clear History.
+
+Every night around 4 the database (profiles, watch history, ratings, addons, devices) is copied to the Storage Box in `kino-backups/`. The last 14 nights and the newest one of each of the last 6 months are kept. Server > Backups shows the last one, has Back Up Now, and lets the admin download any of them.
+
+### Restoring a backup
+
+```
+systemctl stop kino
+sudo -u kino /opt/kino/venv/bin/python /opt/kino/app.py restore /srv/torbox/kino-backups/kino-2026-10-30-0400.db.gz
+systemctl start kino
+```
+
+It checks the backup isn't damaged first, and keeps the current database next to it as `kino-before-restore-*.db` in `/var/lib/kino`, so a restore can be undone. `app.py backup` makes one by hand.
 
 ## TorBox first
 

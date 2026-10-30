@@ -1449,3 +1449,57 @@ body.tv .search input:focus, body.tv .sheet .search input:focus { outline: none;
 
 /* profile menu lines up with the profile button above it (the generic dropdown rules were pushing it right) */
 .menu.drop.side-menu { left: 0; right: 0; min-width: 0; }
+
+/* ---------- live tv */
+.live-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.live-head .large-title { margin: 0; }
+.live-tabs { display: inline-flex; gap: 4px; padding: 4px; border-radius: 999px; background: var(--fill-2); }
+.live-tabs a { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 16px; border-radius: 999px; font-size: 15px; font-weight: 600; color: var(--label-2); }
+.live-tabs a.on { background: var(--primary-bg); color: var(--primary-fg); }
+.live-chips { margin-bottom: 14px; }
+.chip.on { background: var(--label); color: var(--page-bg); }
+.live-search { max-width: 420px; margin: 4px 0 26px; }
+.ch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.ch-card { display: flex; align-items: center; gap: 14px; padding: 10px; border-radius: 16px; background: var(--bg-3); text-align: left; min-width: 0; transition: background 0.2s ease, transform 0.25s var(--spring); }
+.ch-card:hover { background: var(--bg-4); }
+.ch-logo { position: relative; flex: none; width: 92px; height: 58px; border-radius: 10px; background: #1c1c1e; display: grid; place-items: center; overflow: hidden; }
+.ch-logo img { position: relative; z-index: 1; max-width: 82%; max-height: 80%; object-fit: contain; }
+.ch-ph { position: absolute; font-size: 18px; color: rgba(255, 255, 255, 0.35); text-transform: uppercase; }
+.ch-body { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.ch-name, .ch-now, .ch-next { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ch-name { font-size: 15px; }
+.ch-now { font-size: 13px; color: var(--label-2); }
+.ch-next { font-size: 12px; color: var(--label-3); }
+.ch-bar { height: 3px; border-radius: 2px; background: var(--fill); overflow: hidden; margin: 2px 0; }
+.ch-bar i { display: block; height: 100%; background: var(--label); }
+.tile-live { position: absolute; left: 10px; top: 10px; z-index: 2; padding: 3px 8px; border-radius: 6px; background: #e5383b; color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.ch-tile .art { background: #1c1c1e; }
+.ch-tile .art img { object-fit: contain; padding: 14% 18%; }
+.live-form { display: grid; gap: 8px; margin-top: 14px; }
+.live-form input:not(.switch) { height: 40px; border: 0; border-radius: 10px; background: var(--fill); padding: 0 12px; font-size: 15px; color: var(--label); outline: none; }
+.live-form input:not(.switch):focus { box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.6); }
+/* the tv guide: a column of channels and whats on across the next few hours */
+.guide { --g-ch: 190px; position: relative; display: grid; gap: 6px; }
+.g-times { display: grid; grid-template-columns: var(--g-ch) 1fr; position: sticky; top: 0; z-index: 3; background: var(--page-bg); padding: 6px 0; }
+.g-times div { position: relative; height: 20px; }
+.g-times div span { position: absolute; font-size: 13px; color: var(--label-2); transform: translateX(4px); }
+.g-row { display: grid; grid-template-columns: var(--g-ch) 1fr; gap: 6px; height: 64px; }
+.g-ch { display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 12px; background: var(--bg-3); text-align: left; min-width: 0; }
+.g-ch img { width: 44px; height: 30px; object-fit: contain; flex: none; }
+.g-ch span { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-line { position: relative; border-radius: 12px; background: var(--fill-2); overflow: hidden; }
+.g-prog { position: absolute; top: 0; bottom: 0; display: grid; align-content: center; gap: 2px; padding: 0 10px; text-align: left; border-left: 2px solid var(--page-bg); background: var(--bg-3); min-width: 0; overflow: hidden; }
+.g-prog.on { background: var(--bg-4); }
+.g-prog b, .g-prog span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-prog b { font-size: 14px; }
+.g-prog span { font-size: 12px; color: var(--label-2); }
+.g-prog:hover, .g-ch:hover { filter: brightness(1.25); }
+.g-none { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 13px; color: var(--label-3); }
+.g-now { position: absolute; top: 32px; bottom: 0; width: 2px; background: #e5383b; z-index: 2; pointer-events: none; }
+@media (max-width: 700px) { .guide { --g-ch: 110px; } .g-ch img { display: none; } .ch-grid { grid-template-columns: 1fr; } }
+/* the player for live tv: no timeline, the 10 second buttons change channel */
+.player.live .tl-row { visibility: hidden; }
+.player.live #pSub { color: #ff6b6d; }
+body.tv .ch-card:focus-visible, body.tv .g-ch:focus-visible { outline: none; transform: scale(1.04); box-shadow: 0 0 0 3px #fff, 0 14px 30px rgba(0, 0, 0, 0.5); z-index: 2; }
+body.tv .g-prog:focus-visible { outline: none; box-shadow: inset 0 0 0 3px #fff; background: var(--bg-4); z-index: 2; }
+body.tv .live-tabs a:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; }

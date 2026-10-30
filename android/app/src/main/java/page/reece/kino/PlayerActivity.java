@@ -112,6 +112,9 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         base = info.optString("base").replaceAll("/+$", "");
         ua = info.optString("ua");
         fid = info.optString("fid");
+        live = info.optBoolean("live");
+        liveList = info.optJSONArray("channels");
+        liveIdx = info.optInt("index", 0);
         tv = getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK) || getPackageManager().hasSystemFeature("amazon.hardware.fire_tv");
         ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
         ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
@@ -352,8 +355,16 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         controls.addView(bottom, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
 
         bPlay.setOnClickListener(v -> togglePlay());
-        bBack.setOnClickListener(v -> { seekTo(Math.max(0, pos() - 10)); bump(); });
-        bFwd.setOnClickListener(v -> { seekTo(pos() + 10); bump(); });
+        bBack.setOnClickListener(v -> { if (live) switchChannel(-1); else seekTo(Math.max(0, pos() - 10)); bump(); });
+        bFwd.setOnClickListener(v -> { if (live) switchChannel(1); else seekTo(pos() + 10); bump(); });
+        if (live) {
+            tlRow.setVisibility(View.GONE);
+            bBack.setImageResource(R.drawable.ic_back);
+            bBack.setContentDescription("Previous channel");
+            bFwd.setImageResource(R.drawable.ic_back);
+            bFwd.setRotation(180f);
+            bFwd.setContentDescription("Next channel");
+        }
         bSubs.setOnClickListener(v -> openMenu("subs"));
         bAudio.setOnClickListener(v -> openMenu("audio"));
         bSpeed.setOnClickListener(v -> openMenu("speed"));
@@ -575,6 +586,11 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         }
         JSONObject v = info.optJSONObject("video");
         String what = v == null ? "" : (v.optString("codec").toUpperCase(Locale.ROOT) + (v.optInt("height") >= 2000 ? " 4K" : v.optInt("height") >= 1000 ? " 1080p" : ""));
+        if (live) {
+            step("Tuning in", info.optString("title"));
+            eng.open(base + info.optString("url"), true, -1, subs);
+            return;
+        }
         step(eng.name().equals("exo") ? "Direct play" : "Direct play with the Android player", what.trim());
         eng.open(base + info.optString("url"), false, (long) (at * 1000), subs);
         if (speed != 1f) eng.speed(speed);
@@ -662,6 +678,21 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onError(String msg, boolean codec) {
+        if (live) {
+            // A channel thats down: try the next one or go back, nothing else to switch to
+            errorShown = true;
+            loading = false;
+            loadLayer.setVisibility(View.GONE);
+            new Thread(() -> { try { post("/api/live/" + fid + "/bad", "{}"); } catch (Exception ignored) { } }).start();
+            LinearLayout c = dialog("This channel isn't working", "It might be off air right now, or the link stopped working.");
+            TextView next = pill("Next Channel", true), again = pill("Try Again", false), close = pill("Close", false);
+            next.setOnClickListener(v -> { closeDialog(); relaunchLoading("Tuning in"); switchChannel(1); });
+            again.setOnClickListener(v -> { closeDialog(); errorShown = false; relaunchLoading("Tuning in"); eng.open(base + "/api/live/" + fid + "/index.m3u8", true, -1, new ArrayList<>()); });
+            close.setOnClickListener(v -> { closeDialog(); done(); });
+            if (liveList != null && liveList.length() > 1) buttons(c, next, again, close);
+            else buttons(c, again, close);
+            return;
+        }
         double at = pos();
         boolean exo = eng.name().equals("exo");
         // Direct links from addons that fail are nearly always a broken source, not the player, so the next one gets tried.
@@ -1076,6 +1107,28 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     // A 30 second clip in place of a whole film or episode, torbox sends one of those (a green screen) when a download
     // didnt really happen. Asks to try the next source, or just does it if the profile turned that on in Settings
     private boolean fakeAsked, backDown;
+    // Live tv: no timeline, and the remote's up and down (or channel buttons) flick through the channels it was opened
+    // from without leaving the player, the same player keeps going so switching is quick
+    private boolean live;
+    private JSONArray liveList;
+    private int liveIdx;
+
+    private void switchChannel(int d) {
+        if (liveList == null || liveList.length() < 2) return;
+        liveIdx = (liveIdx + d + liveList.length()) % liveList.length();
+        JSONObject ch = liveList.optJSONObject(liveIdx);
+        if (ch == null) return;
+        fid = ch.optString("id");
+        title.setText(ch.optString("name"));
+        String now = ch.optString("now");
+        sub.setText(now.isEmpty() ? "Live" : "Live  ·  " + now);
+        sub.setVisibility(View.VISIBLE);
+        toast((liveIdx + 1) + "  " + ch.optString("name"));
+        errorShown = false;
+        closeDialog();
+        relaunchLoading("Tuning in");
+        eng.open(base + "/api/live/" + ch.optString("id") + "/index.m3u8", true, -1, new ArrayList<>());
+    }
     // Buffering watch: when this source keeps stopping to load it offers the next one, or moves on by itself
     private long bufStart, lastSeekAt, stallAskedAt, playedAt;
     private int sameRetries;
@@ -1190,8 +1243,14 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                 case KeyEvent.KEYCODE_HEADSETHOOK: togglePlay(); showControls(bPlay); return true;
                 case KeyEvent.KEYCODE_MEDIA_PLAY: eng.play(); return true;
                 case KeyEvent.KEYCODE_MEDIA_PAUSE: eng.pause(); return true;
+                case KeyEvent.KEYCODE_CHANNEL_UP:
+                case KeyEvent.KEYCODE_PAGE_UP: if (live) { switchChannel(-1); return true; } break;
+                case KeyEvent.KEYCODE_CHANNEL_DOWN:
+                case KeyEvent.KEYCODE_PAGE_DOWN: if (live) { switchChannel(1); return true; } break;
+                case KeyEvent.KEYCODE_MEDIA_NEXT: if (live) { switchChannel(1); return true; } break;
+                case KeyEvent.KEYCODE_MEDIA_PREVIOUS: if (live) { switchChannel(-1); return true; } break;
                 case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
-                case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD: seekTo(pos() + 10); showControls(line); return true;
+                case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD: if (live) return true; seekTo(pos() + 10); showControls(line); return true;
                 case KeyEvent.KEYCODE_MEDIA_REWIND:
                 case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD: seekTo(Math.max(0, pos() - 10)); showControls(line); return true;
                 case KeyEvent.KEYCODE_MEDIA_STOP: done(); return true;
@@ -1208,6 +1267,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                 return true;
             }
             if (down && (k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER)) { togglePlay(); showControls(bPlay); return true; }
+            if (down && live && (k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN)) { switchChannel(k == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1); return true; }
+            if (down && live && (k == KeyEvent.KEYCODE_DPAD_LEFT || k == KeyEvent.KEYCODE_DPAD_RIGHT)) { showControls(bPlay); return true; }
             if (down && (k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN)) { showControls(bPlay); return true; }
             if (!down && (k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER || k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN)) return true;
         }
@@ -1231,7 +1292,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     };
 
     private void save() {
-        if (eng == null || loading) return;
+        if (eng == null || loading || live) return;
         postProgress(pos(), dur());
     }
 
@@ -1247,7 +1308,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         if (leaving) return;
         leaving = true;
         double p = eng != null ? pos() : 0, d = dur();
-        if (!loading) postProgress(p, d);
+        if (!loading && !live) postProgress(p, d);
         try {
             JSONObject r = new JSONObject().put("fid", fid).put("pos", p).put("dur", d).put("ended", ended).put("engine", eng != null ? eng.name() : "");
             if (error != null) r.put("error", error);

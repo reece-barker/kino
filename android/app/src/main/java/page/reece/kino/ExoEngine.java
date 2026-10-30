@@ -109,7 +109,9 @@ class ExoEngine implements Engine {
                     .setLanguage(s.lang.isEmpty() ? null : s.lang).setLabel(s.label).build());
         }
         b.setSubtitleConfigurations(sc);
-        player.setMediaItem(b.build(), startMs);
+        // -1 is live tv, it starts at the live edge instead of a position
+        if (startMs < 0) player.setMediaItem(b.build());
+        else player.setMediaItem(b.build(), startMs);
         player.prepare();
         player.play();
     }

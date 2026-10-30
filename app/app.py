@@ -28,6 +28,8 @@ import secrets
 import shutil
 import socket
 import struct
+import base64
+import datetime
 import gzip
 import sqlite3
 import subprocess
@@ -42,7 +44,7 @@ from urllib.parse import quote, urlencode, urljoin, urlparse
 import httpx
 import psutil
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -133,6 +135,13 @@ CREATE TABLE IF NOT EXISTS search_recent (profile_id INTEGER, key TEXT, kind TEX
 CREATE TABLE IF NOT EXISTS auto_intros (file_id TEXT PRIMARY KEY, start REAL, end REAL, tried REAL);
 CREATE TABLE IF NOT EXISTS stream_health (id TEXT PRIMARY KEY, good REAL, bad REAL);
 CREATE TABLE IF NOT EXISTS sources_seen (id TEXT PRIMARY KEY, kind TEXT, has INTEGER, checked REAL);
+CREATE TABLE IF NOT EXISTS iptv_lists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, epg TEXT, local INTEGER DEFAULT 0,
+  enabled INTEGER DEFAULT 1, added REAL, refreshed REAL, count INTEGER DEFAULT 0, error TEXT);
+CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, list_id INTEGER, name TEXT, logo TEXT, grp TEXT, country TEXT, tvg TEXT,
+  url TEXT, headers TEXT, rank INTEGER, ok INTEGER, checked REAL);
+CREATE INDEX IF NOT EXISTS channels_rank ON channels(rank, name);
+CREATE TABLE IF NOT EXISTS epg (tvg TEXT, start REAL, stop REAL, title TEXT, sub TEXT, descr TEXT);
+CREATE INDEX IF NOT EXISTS epg_ch ON epg(tvg, start);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
 """
@@ -945,7 +954,7 @@ async def lifespan(app):
             await rescan()
             await asyncio.sleep(RESCAN_MINUTES * 60)
 
-    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker)]
+    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker)]
     yield
     for t in tasks:
         t.cancel()
@@ -1201,6 +1210,25 @@ async def history_remove(file_id: str = "", p=Depends(current_profile)):
 
 def pub_profile(p):
     return {"id": p["id"], "name": p["name"], "icon": p["icon"]}
+
+
+@app.get("/api/videos")
+async def videos_page(p=Depends(current_profile)):
+    """The Videos section: rows from youtube style addons (youtubio), kept apart from films and shows"""
+    summ, _, _ = all_summaries(p["id"])
+    rows = [sh for sh in addon_shelves(summ, kids=p.get("kids")) if sh["style"] == "wide"]
+    for sh in rows:
+        sh["next"] = len(sh["items"][:SHELF_FIRST])
+        sh["items"] = sh["items"][:SHELF_FIRST]
+    return {"shelves": rows}
+
+
+@app.get("/api/features")
+async def features(p=Depends(current_profile)):
+    """Which sidebar sections have anything in them"""
+    live = bool(db().q("SELECT 1 FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1 LIMIT 1")) or bool(live_catalogs())
+    return {"live": live and (not p.get("kids") or bool(db().q("SELECT 1 FROM channels WHERE grp = 'Kids' LIMIT 1"))),
+            "videos": any(video_type(c.get("type")) for _, c in home_catalogs())}
 
 
 @app.get("/api/me")
@@ -2205,7 +2233,11 @@ async def search(q: str, p=Depends(current_profile)):
                 eps.append({"title_id": t["id"], "file_id": fid, "show": m.get("name"), "name": v["name"],
                             "season": f["season"], "episode": f["episode"], "thumbnail": v.get("thumbnail")})
     ppl = sorted(people.values(), key=lambda x: (norm(x["name"]).startswith(q), x["count"]), reverse=True)
-    return {"titles": [s for _, s in scored[:60]], "episodes": eps[:20], "people": ppl[:12]}
+    # Live channels from the playlists whose name matches, english ones first like on the Live TV page
+    chans = db().q("SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1 AND (c.ok IS NULL OR c.ok = 1) AND c.name LIKE ? "
+                   + ("AND c.grp = 'Kids' " if p.get("kids") else "") + "ORDER BY c.rank, c.name LIMIT 30", (f"%{q}%",))
+    guide = now_next({c["tvg"] for c in chans if c["tvg"]})
+    return {"titles": [s for _, s in scored[:60]], "episodes": eps[:20], "people": ppl[:12], "channels": [chan_out(c, guide) for c in chans]}
 
 
 # ---- voice search for browsers that cant do it themselves (firefox, brave, safari on some macs)
@@ -2708,7 +2740,8 @@ async def hls_file(sid: str, name: str, p=Depends(current_profile)):
     if name.endswith(".m3u8"):
         txt = path.read_text(errors="ignore")
         # Tells players to start at the beginning even tho the playlist is still growing, safari needs this
-        txt = txt.replace("#EXTM3U\n", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", 1)
+        if not s.get("live"):
+            txt = txt.replace("#EXTM3U\n", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", 1)
         return Response(txt, media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
     return FileResponse(path, media_type="video/mp4" if name.endswith(".mp4") else "video/iso.segment",
                         headers={"Cache-Control": "private, max-age=600"})
@@ -3095,6 +3128,8 @@ def ext_preview(m, kind):
     """A catalog item from an addon, shaped like a library tile but marked as not in the library"""
     i = str(m.get("id", ""))
     t = m.get("type")
+    if t == "tv" or (kind == "tv" and t not in ("movie", "series")):
+        return live_preview(m)
     vt = t if video_type(t) else kind if t not in ("movie", "series") and video_type(kind) else None
     if vt:
         # Youtube style stuff, the picture is a thumbnail so it doubles as the background and theres no imdb anything
@@ -4783,6 +4818,619 @@ async def manifest():
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+# ---------------------------------------------------------------- live tv
+# Two places channels come from: IPTV playlists (M3U) the admin adds in Settings, with an XMLTV guide if there is
+# one, and Stremio addons with tv type catalogs. Everything plays as HLS through Kino: playlists that are already HLS
+# get there links rewritten so every request comes back through here (no CORS problems, and links that only work
+# from the server keep working), anything else (a raw MPEG-TS stream from a tuner) gets repackaged by ffmpeg live.
+# English channels go first, the UK before the US, then other english speaking countries, then everything else
+LIVE = {"refreshing": False, "checking": False}
+LP = {}  # proxy token -> (url, headers, local, made)
+LIVE_RESOLVED = {}  # addon channel id -> (when, url, headers)
+M3U_ATTR = re.compile(r'([\w-]+)="([^"]*)"')
+UK_FIRST = ("bbc", "itv", "channel 4", "channel 5", "e4", "more4", "film4", "sky", "dave", "gb news", "tnt sports", "quest",
+            "5usa", "s4c", "u&", "drama", "yesterday", "w ", "talk")
+EN_COUNTRIES = ("ie", "ca", "au", "nz")
+GROUPS = [("News", r"news"), ("Sports", r"sport"), ("Movies", r"movie|film|cinema"), ("Kids", r"kid|animation|cartoon|family"),
+          ("Music", r"music"), ("Documentary", r"documentar|science|education|nature"), ("Entertainment", r"entertain|general|series|comedy|lifestyle|culture|reality|show")]
+
+
+def live_group(raw, name=""):
+    g = f"{raw or ''} {name}".lower()
+    for label, rx in GROUPS:
+        if re.search(rx, g):
+            return label
+    g = (raw or "").split(";")[0].strip()[:30]
+    return "Other" if not g or g.lower() == "undefined" else g
+
+
+def live_country(attrs, name, grp, default):
+    # A country playlist (iptv-org's countries/uk.m3u) says it for every channel in it, ids like 5Cops.us@UK are US
+    # channels on there UK feed
+    if default:
+        return default
+    c = (attrs.get("tvg-country") or "").split(";")[0].strip().lower()
+    if not c:
+        m = re.search(r"\.([a-z]{2})(?:@|$)", (attrs.get("tvg-id") or "").lower())
+        c = m.group(1) if m else ""
+    if not c:
+        t = f"{grp} {name}".lower()
+        c = "uk" if re.search(r"\b(uk|gb|united kingdom|british)\b", t) else "us" if re.search(r"\b(us|usa|united states)\b", t) else default
+    return "uk" if c == "gb" else c
+
+
+def live_rank(name, country, lang):
+    english = (lang or "").lower() in ("", "eng", "english")
+    base = 0 if country == "uk" else 1 if country == "us" else 2 if country in EN_COUNTRIES or (lang or "").lower() in ("eng", "english") else 3
+    if not english and base < 3:
+        base = 3
+    n = norm(name)
+    star = 0 if any(n.startswith(x) for x in UK_FIRST) else 1
+    return base * 10 + star
+
+
+def parse_m3u(text, list_id, default_country=""):
+    """Channels from an M3U playlist, plus the guide link if the playlist names one"""
+    out, cur, hdr, epg = [], None, {}, None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#EXTM3U"):
+            a = dict(M3U_ATTR.findall(line))
+            epg = (a.get("url-tvg") or a.get("x-tvg-url") or "").split(",")[0].strip() or None
+        elif line.startswith("#EXTINF"):
+            attrs = dict(M3U_ATTR.findall(line))
+            name = line.rsplit(",", 1)[-1].strip() if "," in line else attrs.get("tvg-name", "")
+            # iptv-org adds things like (720p) and [Geo-blocked] to names, they come off so the list reads cleanly
+            name = re.sub(r"\s*\((?:\d{3,4}p|\d+k)\)|\s*\[[^\]]*\]", "", unesc(name or attrs.get("tvg-name") or "")).strip() or "Channel"
+            cur, hdr = {"attrs": attrs, "name": name}, {}
+        elif line.startswith("#EXTVLCOPT:") and "=" in line:
+            k, v = line[11:].split("=", 1)
+            k = {"http-user-agent": "User-Agent", "http-referrer": "Referer", "http-referer": "Referer", "http-origin": "Origin"}.get(k.strip().lower())
+            if k:
+                hdr[k] = v.strip()
+        elif line.startswith("#EXTHTTP:"):
+            try:
+                hdr.update({str(k): str(v) for k, v in json.loads(line[9:]).items()})
+            except Exception:
+                pass
+        elif not line.startswith("#") and cur:
+            if re.match(r"^(https?|rtmp|rtsp|udp)://", line, re.I) and line.lower().startswith("http"):
+                a = cur["attrs"]
+                grp = live_group(a.get("group-title"), cur["name"])
+                country = live_country(a, cur["name"], a.get("group-title") or "", default_country)
+                out.append({"id": "c" + hashlib.sha1(f"{list_id}|{line}|{cur['name']}".encode()).hexdigest()[:15], "list_id": list_id,
+                            "name": cur["name"][:120], "logo": a.get("tvg-logo") or None, "grp": grp, "country": country,
+                            "tvg": (a.get("tvg-id") or "").strip() or None, "url": line, "headers": json.dumps(hdr) if hdr else None,
+                            "rank": live_rank(cur["name"], country, a.get("tvg-language"))})
+            cur = None
+    return out, epg
+
+
+async def live_get(url, headers=None, local=False, max_bytes=60 * 1024**2, timeout=60):
+    """Downloads a playlist or guide, following redirects. Private addresses only for playlists marked as on your network"""
+    for _ in range(5):
+        u = urlparse(url)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            raise HTTPException(400, "That isn't an http or https link")
+        if not local:
+            await check_host(u.hostname)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, headers={"User-Agent": "Mozilla/5.0 Kino", **(headers or {})}) as c:
+            async with c.stream("GET", url) as r:
+                if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                    url = urljoin(url, r.headers["location"])
+                    continue
+                if r.status_code != 200:
+                    raise HTTPException(502, f"It answered with an error ({r.status_code})")
+                buf = bytearray()
+                async for chunk in r.aiter_bytes():
+                    buf += chunk
+                    if len(buf) > max_bytes:
+                        raise HTTPException(502, "That's too big")
+                return bytes(buf), url
+    raise HTTPException(502, "Too many redirects")
+
+
+def xmltv_time(t):
+    try:
+        return datetime.datetime.strptime(t[:20].strip(), "%Y%m%d%H%M%S %z").timestamp()
+    except ValueError:
+        try:
+            return datetime.datetime.strptime(t[:14], "%Y%m%d%H%M%S").replace(tzinfo=datetime.timezone.utc).timestamp()
+        except ValueError:
+            return None
+
+
+def parse_epg(raw, want):
+    """Whats on from an XMLTV guide, only for channels Kino has and only from 2 hours ago to 36 hours ahead"""
+    import xml.etree.ElementTree as ET
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    now, rows = time.time(), []
+    lo, hi = now - 7200, now + 36 * 3600
+    for _, el in ET.iterparse(io.BytesIO(raw), events=("end",)):
+        if el.tag != "programme":
+            if el.tag == "channel":
+                el.clear()
+            continue
+        ch = el.get("channel")
+        if ch in want:
+            a, b = xmltv_time(el.get("start") or ""), xmltv_time(el.get("stop") or "")
+            if a and b and b > lo and a < hi:
+                rows.append((ch, a, b, (el.findtext("title") or "")[:200], (el.findtext("sub-title") or "")[:200], (el.findtext("desc") or "")[:600]))
+        el.clear()
+    return rows
+
+
+async def refresh_list(row):
+    lid = row["id"]
+    try:
+        raw, _ = await live_get(row["url"], local=bool(row["local"]))
+        text = raw.decode("utf-8", errors="ignore")
+        if "#EXTINF" not in text:
+            raise HTTPException(400, "That link isn't an M3U playlist")
+        default = ""
+        m = re.search(r"/countries/([a-z]{2})\.m3u", row["url"].lower())
+        if m:
+            default = "uk" if m.group(1) == "gb" else m.group(1)
+        chans, epg = await asyncio.to_thread(parse_m3u, text, lid, default)
+        old = {r["id"]: r for r in db().q("SELECT id, ok, checked FROM channels WHERE list_id = ?", (lid,))}
+        db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
+        db().many("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                  [(c["id"], lid, c["name"], c["logo"], c["grp"], c["country"], c["tvg"], c["url"], c["headers"], c["rank"],
+                    (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked")) for c in chans])
+        guide = row["epg"] or epg
+        err = None
+        if guide:
+            try:
+                graw, _ = await live_get(guide, local=bool(row["local"]), max_bytes=300 * 1024**2, timeout=180)
+                want = {c["tvg"] for c in chans if c["tvg"]}
+                progs = await asyncio.to_thread(parse_epg, graw, want)
+                if want:
+                    for i in range(0, len(want), 500):
+                        part = list(want)[i:i + 500]
+                        db().q("DELETE FROM epg WHERE tvg IN (%s)" % ",".join("?" * len(part)), part)
+                db().many("INSERT INTO epg VALUES (?,?,?,?,?,?)", progs)
+            except Exception as e:
+                err = f"Guide failed: {getattr(e, 'detail', None) or e}"[:200]
+        db().q("UPDATE iptv_lists SET refreshed = ?, count = ?, error = ?, epg = COALESCE(epg, ?) WHERE id = ?", (time.time(), len(chans), err, row["epg"] or None, lid))
+        log.info("live tv list %s: %d channels", row["name"], len(chans))
+    except Exception as e:
+        db().q("UPDATE iptv_lists SET refreshed = ?, error = ? WHERE id = ?", (time.time(), str(getattr(e, "detail", None) or e)[:200], lid))
+        log.info("live tv list %s failed: %s", row["name"], e)
+
+
+async def check_channel(c):
+    """Opens a channel for a moment: a playlist or video coming back counts as working"""
+    hdr = json.loads(c["headers"]) if c["headers"] else {}
+    local = bool(db().q("SELECT local FROM iptv_lists WHERE id = ?", (c["list_id"],))[0]["local"]) if c["list_id"] else False
+    try:
+        if not local:
+            await check_host(urlparse(c["url"]).hostname)
+        async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 Kino", **hdr}) as cl:
+            async with cl.stream("GET", c["url"]) as r:
+                head = b""
+                async for chunk in r.aiter_bytes():
+                    head += chunk
+                    if len(head) > 2048:
+                        break
+                ct = r.headers.get("content-type", "").lower()
+                ok = r.status_code == 200 and (b"#EXTM3U" in head[:200] or "mpegurl" in ct or "video" in ct or "mp2t" in ct or "octet" in ct)
+    except Exception:
+        ok = False
+    db().q("UPDATE channels SET ok = ?, checked = ? WHERE id = ?", (1 if ok else 0, time.time(), c["id"]))
+    return ok
+
+
+async def check_channels(limit=800):
+    if LIVE["checking"]:
+        return
+    LIVE["checking"] = True
+    try:
+        rows = db().q("SELECT * FROM channels WHERE checked IS NULL OR checked < ? ORDER BY rank, name LIMIT ?", (time.time() - 12 * 3600, limit))
+        gate = asyncio.Semaphore(12)
+
+        async def one(c):
+            async with gate:
+                await check_channel(c)
+        await asyncio.gather(*(one(c) for c in rows))
+    finally:
+        LIVE["checking"] = False
+
+
+async def live_worker():
+    await asyncio.sleep(20)
+    while True:
+        try:
+            for row in db().q("SELECT * FROM iptv_lists WHERE enabled = 1 AND (refreshed IS NULL OR refreshed < ?)", (time.time() - 12 * 3600,)):
+                await refresh_list(row)
+            db().q("DELETE FROM epg WHERE stop < ?", (time.time() - 7200,))
+            await check_channels()
+        except Exception as e:
+            log.info("live tv worker: %s", e)
+        await asyncio.sleep(1800)
+
+
+def live_preview(m):
+    """An addon's tv item (a channel or a live event), plays straight away instead of having a title page"""
+    i = str(m.get("id", ""))
+    return {"id": None, "ext": f"tv/{i}", "external": True, "kind": "live", "live_id": "t" + base64.urlsafe_b64encode(i.encode()).decode().rstrip("="),
+            "name": unesc(m.get("name") or "") or "Live", "poster": https_url(m.get("poster")), "background": https_url(m.get("background")) or https_url(m.get("poster")),
+            "logo": https_url(m.get("logo")), "shape": m.get("posterShape") or "landscape", "genres": unesc(m.get("genres") or [])[:4],
+            "description": unesc(m.get("description")), "releaseInfo": None, "rating": None, "imdb": i, "count": 0, "added": 0,
+            "watched": False, "watched_count": 0, "my_rating": 0, "last_activity": 0, "matched": True}
+
+
+def live_kids_ok(grp):
+    return grp == "Kids"
+
+
+def now_next(tvgs):
+    """Whats on now and next for a set of guide ids"""
+    if not tvgs:
+        return {}
+    now, out = time.time(), {}
+    tv = list(tvgs)
+    for i in range(0, len(tv), 500):
+        part = tv[i:i + 500]
+        for r in db().q("SELECT tvg, start, stop, title, sub FROM epg WHERE tvg IN (%s) AND stop > ? AND start < ? ORDER BY start" % ",".join("?" * len(part)), [*part, now, now + 6 * 3600]):
+            l = out.setdefault(r["tvg"], [])
+            if len(l) < 2:
+                l.append({"title": r["title"], "sub": r["sub"], "start": r["start"], "stop": r["stop"]})
+    return out
+
+
+def chan_out(c, guide):
+    g = guide.get(c["tvg"]) or []
+    return {"id": c["id"], "name": c["name"], "logo": https_url(c["logo"]) if c["logo"] else None, "group": c["grp"], "country": c["country"],
+            "ok": c["ok"], "now": g[0] if g and g[0]["start"] <= time.time() else None, "next": g[1] if len(g) > 1 else (g[0] if g and g[0]["start"] > time.time() else None)}
+
+
+def live_catalogs():
+    """tv type catalogs from addons that can be listed without typing a search"""
+    out = []
+    for a in addon_rows():
+        for c in a["m"].get("catalogs") or []:
+            if c.get("type") != "tv" or f"{c.get('type')}/{c.get('id')}" in a["hidden"]:
+                continue
+            extra = {e.get("name"): e for e in c.get("extra") or []}
+            if "search" in extra and extra["search"].get("isRequired"):
+                continue
+            g = extra.get("genre")
+            out.append((a, c, (g.get("options") or [None])[0] if g and g.get("isRequired") else None))
+    return out
+
+
+@app.get("/api/live")
+async def live_list(group: str = "", country: str = "", q: str = "", skip: int = 0, all: int = 0, p=Depends(current_profile)):
+    where, args = ["l.enabled = 1"], []
+    if not all:
+        where.append("(c.ok IS NULL OR c.ok = 1)")
+    if p.get("kids"):
+        where.append("c.grp = 'Kids'")
+    if group:
+        where.append("c.grp = ?"); args.append(group)
+    if country:
+        where.append("c.country = ?"); args.append(country)
+    if q:
+        where.append("c.name LIKE ?"); args.append(f"%{q.strip()[:40]}%")
+    w = " AND ".join(where)
+    rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {w} ORDER BY c.rank, c.ok DESC, c.name LIMIT 120 OFFSET ?", [*args, max(0, skip)])
+    guide = now_next({r["tvg"] for r in rows if r["tvg"]})
+    out = {"channels": [chan_out(r, guide) for r in rows], "next": skip + len(rows) if len(rows) == 120 else None}
+    if skip == 0:
+        base = "FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1" + ("" if all else " AND (c.ok IS NULL OR c.ok = 1)") + (" AND c.grp = 'Kids'" if p.get("kids") else "")
+        out["groups"] = [r["grp"] for r in db().q(f"SELECT c.grp, COUNT(*) n {base} GROUP BY c.grp ORDER BY n DESC LIMIT 30")]
+        cs = [r["country"] for r in db().q(f"SELECT c.country, COUNT(*) n {base} AND c.country != '' GROUP BY c.country ORDER BY n DESC")]
+        lead = [c for c in ("uk", "us") if c in cs]
+        out["countries"] = lead + [c for c in cs if c not in lead]
+        out["total"] = db().q(f"SELECT COUNT(*) n {base}")[0]["n"]
+        out["has_guide"] = bool(db().q("SELECT 1 FROM epg WHERE stop > ? LIMIT 1", (time.time(),)))
+        out["addon_rows"] = [] if p.get("kids") else [{"id": f"{a['id']}|{c['id']}", "title": f"{c.get('name') or c.get('id')}", "source": a["m"].get("name")} for a, c, _ in live_catalogs()]
+    return out
+
+
+@app.get("/api/live/addon")
+async def live_addon_row(id: str, skip: int = 0, p=Depends(current_profile)):
+    if p.get("kids"):
+        return {"items": [], "next": None}
+    aid, _, cid = id.partition("|")
+    for a, c, g in live_catalogs():
+        if str(a["id"]) == aid and c.get("id") == cid:
+            names = {e.get("name") for e in c.get("extra") or []}
+            extra = {k: v for k, v in (("genre", g), ("skip", skip if skip and "skip" in names else None)) if v}
+            if skip and "skip" not in names:
+                return {"items": [], "next": None}
+            try:
+                j = await fetch_json(catalog_url(a, c, extra or None), ttl=300, timeout=20)
+            except Exception:
+                return {"items": [], "next": skip, "retry": True}
+            metas = [m for m in (j.get("metas") or []) if isinstance(m, dict) and m.get("id")]
+            return {"items": [live_preview(m) for m in metas], "next": skip + len(metas) if metas and "skip" in names else None}
+    return {"items": [], "next": None}
+
+
+@app.get("/api/live/guide")
+async def live_guide(start: float = 0, hours: float = 3, group: str = "", country: str = "", skip: int = 0, p=Depends(current_profile)):
+    """The TV Guide: channels with a guide, and whats on each across a few hours"""
+    start = start or (time.time() // 1800) * 1800
+    end = start + min(12, max(1, hours)) * 3600
+    where, args = ["l.enabled = 1", "c.tvg IS NOT NULL", "(c.ok IS NULL OR c.ok = 1)", "EXISTS (SELECT 1 FROM epg e WHERE e.tvg = c.tvg AND e.stop > ?)"], [time.time()]
+    if p.get("kids"):
+        where.append("c.grp = 'Kids'")
+    if group:
+        where.append("c.grp = ?"); args.append(group)
+    if country:
+        where.append("c.country = ?"); args.append(country)
+    rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {' AND '.join(where)} ORDER BY c.rank, c.name LIMIT 60 OFFSET ?", [*args, max(0, skip)])
+    out = []
+    for r in rows:
+        progs = [{"title": x["title"], "sub": x["sub"], "desc": x["descr"], "start": x["start"], "stop": x["stop"]} for x in
+                 db().q("SELECT * FROM epg WHERE tvg = ? AND stop > ? AND start < ? ORDER BY start", (r["tvg"], start, end))]
+        out.append({**chan_out(r, {}), "progs": progs})
+    return {"start": start, "end": end, "channels": out, "next": skip + len(rows) if len(rows) == 60 else None}
+
+
+async def live_source(cid):
+    """Where a channel's video actually is: (url, headers, local)"""
+    if cid.startswith("c"):
+        r = db().q("SELECT c.*, l.local FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE c.id = ?", (cid,))
+        if not r:
+            raise HTTPException(404, "That channel isn't in your playlists anymore")
+        return r[0]["url"], json.loads(r[0]["headers"]) if r[0]["headers"] else {}, bool(r[0]["local"])
+    if cid.startswith("t"):
+        hit = LIVE_RESOLVED.get(cid)
+        if hit and time.time() - hit[0] < 600:
+            return hit[1], hit[2], False
+        try:
+            mid = base64.urlsafe_b64decode(cid[1:] + "=" * (-len(cid[1:]) % 4)).decode()
+        except Exception:
+            raise HTTPException(404, "Unknown channel")
+        for a in addon_rows():
+            if not supports(a["m"], "stream", "tv", mid):
+                continue
+            try:
+                j = await addon_call(a, "stream", "tv", mid, ttl=120, timeout=20)
+            except Exception:
+                continue
+            sts = [x for x in (j.get("streams") or []) if isinstance(x, dict) and str(x.get("url") or "").startswith("http")]
+            sts.sort(key=lambda x: 0 if "m3u8" in str(x["url"]).lower() else 1)
+            if sts:
+                hdr = (((sts[0].get("behaviorHints") or {}).get("proxyHeaders") or {}).get("request") or {})
+                hdr = {str(k): str(v) for k, v in hdr.items()}
+                LIVE_RESOLVED[cid] = (time.time(), sts[0]["url"], hdr)
+                return sts[0]["url"], hdr, False
+        raise HTTPException(404, "Nothing to play for that right now, it may not have started yet")
+    raise HTTPException(404, "Unknown channel")
+
+
+def lp_url(url, headers, local):
+    tok = hashlib.sha1(f"{url}|{json.dumps(headers, sort_keys=True)}".encode()).hexdigest()[:24]
+    if len(LP) > 60000:
+        cut = time.time() - 6 * 3600
+        for k in [k for k, v in LP.items() if v[3] < cut]:
+            LP.pop(k, None)
+    LP[tok] = (url, headers, local, time.time())
+    return f"/api/lp/{tok}"
+
+
+def rewrite_m3u8(text, base, headers, local):
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#"):
+            out.append(lp_url(urljoin(base, s), headers, local))
+        elif 'URI="' in s:
+            out.append(re.sub(r'URI="([^"]+)"', lambda m: f'URI="{lp_url(urljoin(base, m.group(1)), headers, local)}"', s))
+        else:
+            out.append(line)
+    return "\n".join(out) + "\n"
+
+
+async def live_open(url, headers, local):
+    """Opens the source, following redirects, and says if its an HLS playlist"""
+    client = httpx.AsyncClient(timeout=httpx.Timeout(15, read=30), follow_redirects=False, headers={"User-Agent": "Mozilla/5.0 Kino", **headers})
+    try:
+        for _ in range(6):
+            u = urlparse(url)
+            if u.scheme not in ("http", "https"):
+                raise HTTPException(400, "That channel's link isn't http")
+            if not local:
+                await check_host(u.hostname)
+            r = await client.send(client.build_request("GET", url), stream=True)
+            if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                await r.aclose()
+                url = urljoin(url, r.headers["location"])
+                continue
+            return client, r, url
+        raise HTTPException(502, "Too many redirects")
+    except BaseException:
+        await client.aclose()
+        raise
+
+
+@app.get("/api/live/{cid}/index.m3u8")
+async def live_play(cid: str, request: Request, p=Depends(current_profile)):
+    url, headers, local = await live_source(cid)
+    client, r, final = await live_open(url, headers, local)
+    try:
+        if r.status_code != 200:
+            if cid.startswith("c"):
+                db().q("UPDATE channels SET ok = 0, checked = ? WHERE id = ?", (time.time(), cid))
+            raise HTTPException(502, f"The channel isn't working right now (it answered {r.status_code})")
+        # A playlist says so in its first bytes, a raw video stream doesnt (and never ends, so its not read on)
+        it = r.aiter_bytes()
+        body = b""
+        async for chunk in it:
+            body += chunk
+            if len(body) >= 16:
+                break
+        if "mpegurl" in r.headers.get("content-type", "").lower() or body.lstrip()[:7] == b"#EXTM3U":
+            async for chunk in it:
+                body += chunk
+                if len(body) > 5 * 1024**2:
+                    break
+            if cid.startswith("c"):
+                db().q("UPDATE channels SET ok = 1, checked = ? WHERE id = ?", (time.time(), cid))
+            return Response(rewrite_m3u8(body.decode("utf-8", errors="ignore"), final, headers, local), media_type="application/vnd.apple.mpegurl",
+                            headers={"Cache-Control": "no-store"})
+    finally:
+        await r.aclose()
+        await client.aclose()
+    # Not HLS (a tuner or IPTV server sending one long MPEG-TS stream), ffmpeg turns it into HLS live
+    sid = await live_ffmpeg(final, headers, request, p)
+    return RedirectResponse(f"/api/hls/{sid}/index.m3u8", status_code=302)
+
+
+async def live_ffmpeg(url, headers, request, p):
+    owner = f"p{p['id']}"
+    device = browser_key(request)
+    if device.startswith("|"):
+        device = client_ip(request) + device
+    for sid, s in list(SESS.items()):
+        if s["owner"] == owner and s.get("device") == device:
+            kill_session(sid)
+    if sum(1 for s in SESS.values() if s["owner"] == owner) >= PROFILE_DEVICES:
+        raise HTTPException(429, f"This profile is already watching on {PROFILE_DEVICES} devices. Stop one of them, or use another profile")
+    if len(SESS) >= MAX_FFMPEG:
+        raise HTTPException(429, "Too many people are watching right now, try again in a minute")
+    vcodec = None
+    try:
+        pr = await asyncio.wait_for(asyncio.create_subprocess_exec("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name",
+                                                                   "-of", "csv=p=0", *(["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())] if headers else []), url,
+                                                                   stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL), 3)
+        out_, _ = await asyncio.wait_for(pr.communicate(), 10)
+        vcodec = out_.decode().strip().split("\n")[0] or None
+    except Exception:
+        pass
+    vargs = ["-c:v", "copy"] if vcodec in (None, "h264", "hevc") else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-vf", "scale=-2:'min(720,ih)'", "-pix_fmt", "yuv420p", "-g", "50", "-keyint_min", "50", "-sc_threshold", "0"]
+    sid = secrets.token_hex(8)
+    out = HLS_DIR / sid
+    out.mkdir(parents=True)
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-fflags", "+genpts+discardcorrupt", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
+    if FF_INFO["burst"]:
+        args += ["-readrate", "1"]  # real time, a source that sends faster than live (a recording) would run away from the player
+    if headers:
+        args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+    args += ["-i", url, "-map", "0:v:0?", "-map", "0:a:0?", *vargs, "-c:a", "aac", "-ac", "2", "-b:a", "160k", "-sn", "-dn",
+             "-f", "hls", "-hls_time", "2", "-hls_list_size", "12", "-hls_flags", "delete_segments+independent_segments+omit_endlist",
+             "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", str(out / "seg%05d.m4s"), str(out / "index.m3u8")]
+    errlog = open(out / "ffmpeg.log", "wb")
+    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=errlog)
+    SESS[sid] = {"proc": proc, "dir": out, "owner": owner, "device": device, "fid": "live", "last": time.time(), "offset": 0, "live": True}
+    pl = out / "index.m3u8"
+    for _ in range(100):
+        if pl.exists() and "#EXTINF" in pl.read_text(errors="ignore"):
+            return sid
+        if proc.returncode is not None:
+            err = (out / "ffmpeg.log").read_text(errors="ignore")[-300:]
+            kill_session(sid)
+            raise HTTPException(502, f"The channel couldn't be opened: {err or 'ffmpeg stopped'}")
+        await asyncio.sleep(0.2)
+    kill_session(sid)
+    raise HTTPException(504, "The channel took too long to start")
+
+
+@app.get("/api/lp/{tok}")
+async def live_proxy(tok: str, request: Request, p=Depends(current_profile)):
+    hit = LP.get(tok)
+    if not hit:
+        raise HTTPException(404, "That stream link ran out, open the channel again")
+    url, headers, local, _ = hit
+    hdr = dict(headers)
+    if request.headers.get("range"):
+        hdr["Range"] = request.headers["range"]
+    client, r, final = await live_open(url, hdr, local)
+    ct = r.headers.get("content-type", "")
+    if "mpegurl" in ct.lower() or urlparse(final).path.lower().endswith(".m3u8"):
+        try:
+            body = await r.aread()
+        finally:
+            await r.aclose()
+            await client.aclose()
+        if body.lstrip()[:7] == b"#EXTM3U":
+            return Response(rewrite_m3u8(body.decode("utf-8", errors="ignore"), final, headers, local), media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
+        return Response(body, media_type=ct or "application/octet-stream")
+    out = {k: r.headers[k] for k in ("content-length", "content-range", "accept-ranges") if k in r.headers}
+    out["Cache-Control"] = "no-store"
+
+    async def body():
+        try:
+            async for chunk in r.aiter_bytes(128 * 1024):
+                yield chunk
+        finally:
+            await r.aclose()
+            await client.aclose()
+    return StreamingResponse(body(), status_code=r.status_code, headers=out, media_type=ct or "video/mp2t")
+
+
+@app.post("/api/live/{cid}/bad")
+async def live_bad(cid: str, p=Depends(current_profile)):
+    if cid.startswith("c"):
+        db().q("UPDATE channels SET ok = 0, checked = ? WHERE id = ?", (time.time(), cid))
+    LIVE_RESOLVED.pop(cid, None)
+    return {"ok": True}
+
+
+@app.get("/api/admin/live")
+async def live_admin(admin=Depends(require_admin)):
+    rows = db().q("SELECT * FROM iptv_lists ORDER BY id")
+    stats = {r["list_id"]: dict(r) for r in db().q("SELECT list_id, COUNT(*) n, SUM(ok = 1) good, SUM(ok = 0) bad FROM channels GROUP BY list_id")}
+    return {"lists": [{**dict(r), "good": (stats.get(r["id"]) or {}).get("good") or 0, "bad": (stats.get(r["id"]) or {}).get("bad") or 0} for r in rows],
+            "guide_rows": db().q("SELECT COUNT(*) n FROM epg")[0]["n"], "checking": LIVE["checking"]}
+
+
+@app.post("/api/admin/live")
+async def live_admin_add(request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    url = str(b.get("url") or "").strip()
+    epg = str(b.get("epg") or "").strip() or None
+    if not re.match(r"^https?://", url) or (epg and not re.match(r"^https?://", epg)):
+        raise HTTPException(400, "Links have to start with http:// or https://")
+    host = urlparse(url).hostname or ""
+    try:
+        local = bool(b.get("local")) or not ip_is_public(socket.gethostbyname(host))
+    except Exception:
+        local = bool(b.get("local"))
+    name = str(b.get("name") or "").strip()[:60] or host
+    db().q("INSERT INTO iptv_lists (name, url, epg, local, enabled, added) VALUES (?,?,?,?,1,?)", (name, url, epg, 1 if local else 0, time.time()))
+    row = db().q("SELECT * FROM iptv_lists ORDER BY id DESC LIMIT 1")[0]
+    await refresh_list(row)
+    asyncio.create_task(check_channels())
+    r = db().q("SELECT count, error FROM iptv_lists WHERE id = ?", (row["id"],))[0]
+    return {"ok": True, "count": r["count"], "error": r["error"]}
+
+
+@app.post("/api/admin/live/{lid}/refresh")
+async def live_admin_refresh(lid: int, admin=Depends(require_admin)):
+    row = db().q("SELECT * FROM iptv_lists WHERE id = ?", (lid,))
+    if not row:
+        raise HTTPException(404, "Unknown playlist")
+    await refresh_list(row[0])
+    db().q("UPDATE channels SET checked = NULL WHERE list_id = ?", (lid,))
+    asyncio.create_task(check_channels())
+    return {"ok": True}
+
+
+@app.put("/api/admin/live/{lid}")
+async def live_admin_edit(lid: int, request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    if "enabled" in b:
+        db().q("UPDATE iptv_lists SET enabled = ? WHERE id = ?", (1 if b["enabled"] else 0, lid))
+    if "epg" in b:
+        epg = str(b.get("epg") or "").strip() or None
+        db().q("UPDATE iptv_lists SET epg = ?, refreshed = NULL WHERE id = ?", (epg, lid))
+    return {"ok": True}
+
+
+@app.delete("/api/admin/live/{lid}")
+async def live_admin_remove(lid: int, admin=Depends(require_admin)):
+    db().q("DELETE FROM iptv_lists WHERE id = ?", (lid,))
+    db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- cli for admin accounts

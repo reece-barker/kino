@@ -75,6 +75,11 @@ Kino is laid out like the Apple TV app: a floating sidebar on the left (Search, 
 - **Intros are found automatically:** Kino compares the audio at the start of episodes in the same season and finds the bit they share, so Skip Intro works without marking anything. It runs in the background and needs at least two episodes of a season. Chapters in the file and intros the admin marked still win.
 - **Storage:** when the Storage Box is over 90% full (`STORAGE_WARN_PCT` in kino.env), admins get a warning on Home. Server > Free Up Space lists what everyone has watched and what nobody started in 3 months, biggest first, with delete buttons.
 
+## Live TV
+Add IPTV playlists (M3U links) in Settings under Live TV, with an XMLTV guide link if the playlist doesn't name its own. Your own TV server (Tvheadend, Jellyfin Live TV, ErsatzTV, Threadfin, an HDHomeRun) can make both, tick On My Network for one at home. Kino checks the channels in the background and hides the ones that don't work, and puts English channels first: the UK, then the US, then other English speaking countries.
+
+Streams that are already HLS play through Kino's proxy (so the browser and the app don't trip over CORS or links that only work from the server), anything else (MPEG-TS from a tuner) is turned into HLS by ffmpeg live. Addons with `tv` type catalogs show up on the Live TV page too. In the player the remote's up and down (or channel buttons) change channel.
+
 ## Stremio addons
 
 Kino speaks the Stremio addon protocol, so any addon link that works in Stremio can be pasted in under Settings > Addons (admin only). The link ends with `/manifest.json`, `stremio://` links work too.

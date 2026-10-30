@@ -56,6 +56,9 @@
     person: "M12 12a4.5 4.5 0 100-9 4.5 4.5 0 000 9zm0 2c-4.4 0-8 2.5-8 5.5V21h16v-1.5c0-3-3.6-5.5-8-5.5z",
     chevronR: "M9.2 6.6L13.8 11.2 9.2 15.8 10.6 17.2l6-6-6-6z",
     chevronL: "M14.8 6.6L10.2 11.2l4.6 4.6-1.4 1.4-6-6 6-6z",
+    live: "M21 6h-7.6l3.3-3.3-.7-.7L12 6 8 2l-.7.7L10.6 6H3a2 2 0 00-2 2v12a2 2 0 002 2h18a2 2 0 002-2V8a2 2 0 00-2-2zm0 14H3V8h18zM9 10v8l7-4z",
+    guide: "M3 4h18v2H3zm0 4h5v5H3zm7 0h11v5H10zm-7 7h9v5H3zm11 0h7v5h-7z",
+    video: "M4 6h12a2 2 0 012 2v1.5l4-2.5v10l-4-2.5V16a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2z",
     puzzle: "M20.5 11H19V7a2 2 0 00-2-2h-4V3.5a2.5 2.5 0 00-5 0V5H4a2 2 0 00-2 2v3.8h1.5a2.7 2.7 0 010 5.4H2V20a2 2 0 002 2h3.8v-1.5a2.7 2.7 0 015.4 0V22H17a2 2 0 002-2v-4h1.5a2.5 2.5 0 000-5z",
   };
   const ic = (n) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${P[n]}"/></svg>`;
@@ -279,7 +282,7 @@
   function topbar(active) {
     const p = ME.profile;
     if (!p) return "";
-    const key = [p.id, p.name, p.icon, p.kids, isAdmin()].join("|");
+    const key = [p.id, p.name, p.icon, p.kids, isAdmin(), JSON.stringify(ME.features || {})].join("|");
     if (key !== SIDE_KEY) { SIDE_KEY = key; renderSide(); }
     setActive(active);
     return "";
@@ -290,7 +293,9 @@
     let open = false;
     try { open = localStorage.getItem(GROUP_KEY) === "1"; } catch (_) {}
     const item = (k, label, icon, extra = "") => `<a class="side-item" href="#/${k}" data-k="${k}"><span class="side-ic">${ic(icon)}</span><span class="side-lbl">${label}</span>${extra}</a>`;
-    const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ["mylist", "My List", "bookmark"]];
+    const F = ME.features || {};
+    const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"],
+      ...(F.live ? [["live", "Live TV", "live"]] : []), ...(F.videos ? [["videos", "Videos", "video"]] : []), ["mylist", "My List", "bookmark"]];
     const group = [["settings", "Settings", "gear"], ["history", "History", "clock"]];
     if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["server", "Server", "server"]);
     chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
@@ -506,7 +511,7 @@
         res = await pinPad(`Enter ${p.name}'s Code`, (code) => api(`/api/profiles/${p.id}/select`, { pin: code }));
         if (!res) return;
       } else res = await api(`/api/profiles/${p.id}/select`, {});
-      ME.profile = res.profile;
+      ME.profile = res.profile; ME.features = null;
       location.hash = "#/home";
       if (location.hash === "#/home") route();
     }));
@@ -1005,13 +1010,16 @@
   const SROWS = {};
   let HAS_VIDEO_ADDON = true;  // goes false once the server says no addon searches videos
   const SROW_STEP = 14;
-  const tileFor = (tile) => (tile === "wide" ? epTile : tile === "person" ? personTile : tile === "video" ? wideTile : posterTile);
+  // Channels and live events in search, they play straight away
+  const liveSearchTile = (x) => x.live_id ? liveTile(x) : `<a class="tile landscape ch-tile" href="#/live" data-live="${esc(x.id)}" data-name="${esc(x.name)}"><div class="art">${x.logo ? `<img loading="lazy" src="${img(x.logo, 1, 240)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(x.name)}">${esc(x.name)}</div>`}<span class="tile-live">Live</span></div>
+      <div class="cap">${esc(x.name)}</div><div class="sub">${esc(x.now ? x.now.title : [x.group, flag(x.country)].filter(Boolean).join(" · "))}</div></a>`;
+  const tileFor = (tile) => (tile === "wide" ? epTile : tile === "person" ? personTile : tile === "video" ? wideTile : tile === "live" ? liveSearchTile : posterTile);
   const searchRow = (id, title, items, tile) => {
     if (!items.length) return "";
     SROWS[id] = { items, tile, shown: Math.min(items.length, SROW_STEP) };
     return `<section class="shelf srow" data-srow="${id}" aria-label="${esc(title)}">
       <h2 class="section-title">${esc(title)} <span class="from">${items.length}</span></h2>
-      <div class="row ${tile === "wide" || tile === "video" ? "wide" : "posters"}">${items.slice(0, SROW_STEP).map(tileFor(tile)).join("")}</div></section>`;
+      <div class="row ${tile === "wide" || tile === "video" || tile === "live" ? "wide" : "posters"}">${items.slice(0, SROW_STEP).map(tileFor(tile)).join("")}</div></section>`;
   };
   function growRows(box) {
     $$(".srow", box).forEach((sec) => {
@@ -1066,7 +1074,8 @@
         const peopleFirst = (r.people || []).length && (!all.length || (all[0].score || 0) < 60);
         // Youtubio and the like come in last, there own rows with videos and channels kept apart
         const vrows = searchRow("vids", "Videos", vids.filter((x) => x.shape !== "square"), "video") + searchRow("chans", "Channels", vids.filter((x) => x.shape === "square"), "video");
-        box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + searchRow("eps", "Episodes", r.episodes, "wide") + vrows
+        const liveRow = searchRow("live", "Live TV", [...(r.channels || []), ...ext.filter((x) => x.kind === "live")], "live");
+        box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + liveRow + searchRow("eps", "Episodes", r.episodes, "wide") + vrows
           + (!extDone || !vidsDone ? `<div class="s-more"><span class="spin small"></span>${!extDone ? "Looking in your addons" : "Still looking for videos"}</div>` : ""))
           || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor, director or genre.</p></div>`;
         growRows(box);
@@ -1755,6 +1764,191 @@
     };
   }
 
+
+  // ---------------------------------------------------------- live tv
+  // Channels from the IPTV playlists the admin added (english first, the UK then the US), and live rows from addons.
+  // Channels plays straight away, and in the player up and down (or the channel buttons) flick through the ones
+  // around it. The Guide shows whats on over the next few hours for channels that have guide data
+  const LIVE_STATE = { group: "", country: "", q: "" };
+  const hm = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const flag = (c) => ({ uk: "UK", us: "US", ie: "Ireland", ca: "Canada", au: "Australia", nz: "New Zealand" })[c] || (c ? c.toUpperCase() : "");
+  let LIVE_LIST = [];
+  const chanCard = (c, i) => {
+    const pr = c.now ? Math.min(1, Math.max(0, (Date.now() / 1000 - c.now.start) / (c.now.stop - c.now.start))) : null;
+    return `<button class="ch-card" data-ch="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}">
+      <span class="ch-logo">${c.logo ? `<img loading="lazy" src="${img(c.logo, 1, 240)}" alt="" data-fallback="hide">` : ""}<b class="ch-ph">${esc(c.name.slice(0, 2))}</b></span>
+      <span class="ch-body"><b class="ch-name">${esc(c.name)}</b>
+        <span class="ch-now">${c.now ? esc(c.now.title) : esc([c.group, flag(c.country)].filter(Boolean).join(" · "))}</span>
+        ${pr != null ? `<span class="ch-bar"><i style="width:${pr * 100}%"></i></span>` : ""}
+        ${c.next ? `<span class="ch-next">${hm(c.next.start)} ${esc(c.next.title)}</span>` : ""}</span></button>`;
+  };
+
+  async function pageLive(guide) {
+    const st = LIVE_STATE;
+    const qs = () => [st.group && "group=" + encodeURIComponent(st.group), st.country && "country=" + encodeURIComponent(st.country), st.q && "q=" + encodeURIComponent(st.q)].filter(Boolean).join("&");
+    const r = await api("/api/live?" + qs());
+    const chips = (list, key, label) => `<div class="chips live-chips" role="group" aria-label="${label}"><button class="chip ${!st[key] ? "on" : ""}" data-${key}="">All</button>${list.map((x) => `<button class="chip ${st[key] === x ? "on" : ""}" data-${key}="${esc(x)}">${esc(key === "country" ? flag(x) : x)}</button>`).join("")}</div>`;
+    app.innerHTML = topbar("live") + `<main class="page live-page">
+      <div class="live-head"><h1 class="large-title">Live TV</h1>
+        <div class="live-tabs" role="tablist"><a class="${guide ? "" : "on"}" href="#/live" role="tab">${ic("live")} Channels</a>${r.has_guide ? `<a class="${guide ? "on" : ""}" href="#/live/guide" role="tab">${ic("guide")} TV Guide</a>` : ""}</div></div>
+      ${!r.total && !r.addon_rows.length ? `<div class="empty"><h2>No channels yet</h2><p>${isAdmin() ? "Add an IPTV playlist (M3U) in Settings under Live TV, or install an addon with live channels." : "Ask the admin to add some channels."}</p>${isAdmin() ? `<a class="btn secondary small" href="#/settings">Open Settings</a>` : ""}</div>` : `
+      ${r.countries.length > 1 ? chips(r.countries.slice(0, 12), "country", "Country") : ""}
+      ${r.groups.length > 1 ? chips(r.groups, "group", "Category") : ""}
+      ${guide ? `<div id="guide" class="guide"></div>` : `
+      <form class="search live-search" id="lsForm" role="search">${ic("search")}<input id="lsq" type="search" placeholder="Find a channel" value="${esc(st.q)}" autocomplete="off"></form>
+      <div id="liveRows"></div>
+      <section class="section"><h2 class="section-title">${st.group || st.country ? esc([flag(st.country), st.group].filter(Boolean).join(" ")) : "Channels"} <span class="from">${r.total ? r.total + " working" : ""}</span></h2>
+        <div class="ch-grid" id="chGrid">${r.channels.map(chanCard).join("")}</div>
+        <div class="grid-more" id="chMore" ${r.next ? "" : "hidden"}><span class="spin small"></span></div></section>`}`}
+    </main>`;
+    wireTopbar();
+    LIVE_LIST = r.channels.slice();
+    $$("[data-country]").forEach((b) => (b.onclick = () => { st.country = b.dataset.country; route(); }));
+    $$("[data-group]").forEach((b) => (b.onclick = () => { st.group = b.dataset.group; route(); }));
+    if (guide) return drawGuide(qs());
+    const grid = $("#chGrid");
+    if (!grid) return;
+    grid.addEventListener("click", (e) => { const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST); });
+    let t;
+    $("#lsq").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value.trim(); route(); }, 400); });
+    $("#lsForm").onsubmit = (e) => { e.preventDefault(); clearTimeout(t); st.q = $("#lsq").value.trim(); route(); };
+    // More channels as you scroll down
+    let next = r.next, busy = false;
+    const more = async () => {
+      if (!next || busy || !$("#chMore") || $("#chMore").getBoundingClientRect().top > innerHeight * 1.6) return;
+      busy = true;
+      try {
+        const m = await api(`/api/live?${qs()}&skip=${next}`);
+        const from = LIVE_LIST.length;
+        LIVE_LIST.push(...m.channels);
+        grid.insertAdjacentHTML("beforeend", m.channels.map((c, i) => chanCard(c, from + i)).join(""));
+        next = m.next;
+        if (!next) $("#chMore").hidden = true;
+      } catch (_) {}
+      busy = false;
+    };
+    window.addEventListener("scroll", more, { passive: true });
+    grid.addEventListener("focusin", more);
+    // Live rows from addons (events, channels), each filled in when it arrives
+    const rows = $("#liveRows");
+    if (!st.group && !st.country && !st.q) r.addon_rows.forEach(async (row) => {
+      const sec = document.createElement("section");
+      sec.className = "shelf";
+      sec.setAttribute("aria-label", row.title);
+      sec.innerHTML = `<h2 class="section-title">${esc(row.title)} <span class="from">${esc(row.source || "")}</span></h2><div class="row wide">${Array.from({ length: 5 }, () => `<div class="sk sk-wide"></div>`).join("")}</div>`;
+      rows.appendChild(sec);
+      try {
+        const x = await api(`/api/live/addon?id=${encodeURIComponent(row.id)}`);
+        if (!x.items.length) { sec.remove(); return; }
+        $(".row", sec).innerHTML = x.items.map((it) => liveTile(it)).join("");
+      } catch (_) { sec.remove(); }
+    });
+  }
+
+  // An addon's live item (a channel or an event) as a wide card that plays straight away
+  const liveTile = (t) => `<a class="tile landscape" href="#/live" data-live="${esc(t.live_id)}" data-name="${esc(t.name)}"><div class="art">${t.background || t.poster ? `<img loading="lazy" src="${img(t.background || t.poster, 0, WW())}" alt="${esc(t.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`}<span class="tile-live">Live</span></div>
+      <div class="cap">${esc(t.name)}</div><div class="sub">${esc((t.genres || []).slice(0, 2).join(", ") || "Live")}</div></a>`;
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest("[data-live]");
+    if (!a) return;
+    e.preventDefault();
+    playLive({ id: a.dataset.live, name: a.dataset.name || "Live" }, null);
+  });
+
+  async function drawGuide(qs) {
+    const box = $("#guide");
+    const start = Math.floor(Date.now() / 1000 / 1800) * 1800, hours = TV ? 2 : 3, span = hours * 3600;
+    const r = await api(`/api/live/guide?start=${start}&hours=${hours}&${qs}`);
+    if (!$("#guide")) return;
+    if (!r.channels.length) { box.innerHTML = `<div class="empty"><h2>No guide for these channels</h2><p>The playlist didn't come with a guide, the admin can add an XMLTV guide link in Settings.</p></div>`; return; }
+    LIVE_LIST = r.channels;
+    const pct = (t) => Math.max(0, Math.min(100, ((t - start) / span) * 100));
+    const slots = Array.from({ length: hours * 2 }, (_, i) => start + i * 1800);
+    box.innerHTML = `<div class="g-times"><span></span><div>${slots.map((t) => `<span style="left:${pct(t)}%">${hm(t)}</span>`).join("")}</div></div>
+      ${r.channels.map((c, i) => `<div class="g-row"><button class="g-ch" data-ch="${i}" aria-label="${esc(c.name)}">${c.logo ? `<img loading="lazy" src="${img(c.logo, 1, 160)}" alt="" data-fallback="hide">` : ""}<span>${esc(c.name)}</span></button>
+        <div class="g-line">${c.progs.map((p) => { const l = pct(p.start), w = pct(p.stop) - l; const on = p.start <= Date.now() / 1000 && p.stop > Date.now() / 1000;
+          return w > 0.5 ? `<button class="g-prog ${on ? "on" : ""}" data-ch="${i}" style="left:${l}%;width:${w}%" title="${esc(p.title)} ${hm(p.start)} to ${hm(p.stop)}"><b>${esc(p.title)}</b><span>${hm(p.start)}${p.sub ? " · " + esc(p.sub) : ""}</span></button>` : ""; }).join("") || `<span class="g-none">No guide</span>`}</div></div>`).join("")}
+      <div class="g-now" style="left:calc(var(--g-ch) + (100% - var(--g-ch)) * ${pct(Date.now() / 1000) / 100})"></div>`;
+    box.addEventListener("click", (e) => { const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST); });
+  }
+
+  // ---- playing a channel
+  let LIVE_NOW = null;  // { list, i }
+  function playLive(ch, list) {
+    if (!ch) return;
+    list = list && list.length ? list : [ch];
+    const i = Math.max(0, list.findIndex((x) => x.id === ch.id));
+    if (useNative()) {
+      // The app's own player, with the channels around this one so up and down change channel without leaving it
+      const lo = Math.max(0, i - 100), near = list.slice(lo, i + 100);
+      window.KinoAndroid.playNative(JSON.stringify({
+        live: true, fid: ch.id, url: `/api/live/${ch.id}/index.m3u8`, title: ch.name, sub: ch.now ? `Live  ·  ${ch.now.title}` : "Live",
+        channels: near.map((c) => ({ id: c.id, name: c.name, now: c.now ? c.now.title : "" })), index: i - lo,
+        base: location.origin, ua: navigator.userAgent, start: 0, duration: 0, art: { background: null, logo: null }, video: {}, subs: [], audioN: 0,
+        isStream: false, moreSources: false, autoplay: false, loadStats: false, subSize: (ME.profile && ME.profile.prefs && ME.profile.prefs.sub_size) || "m",
+      }));
+      NATIVE = { fid: ch.id, info: { live: true, prefs: {} }, opts: {}, live: { ch, list } };
+      return;
+    }
+    closePlayer(true);
+    clearInterval(HERO_T);
+    pl.el.hidden = false;
+    pl.el.classList.add("live");
+    document.body.style.overflow = "hidden";
+    LIVE_NOW = { list, i };
+    $("#pBack").innerHTML = ic("chevronL"); $("#pBack").setAttribute("aria-label", "Previous channel"); $("#pBack").title = "Previous Channel";
+    $("#pFwd").innerHTML = ic("chevronR"); $("#pFwd").setAttribute("aria-label", "Next channel"); $("#pFwd").title = "Next Channel";
+    tune();
+    wakeUi();
+  }
+  function tune() {
+    const ch = LIVE_NOW.list[LIVE_NOW.i];
+    pl.info = { live: true, id: ch.id, name: ch.name, prefs: (ME.profile && ME.profile.prefs) || {}, subs: [], audio: [], stream: false, duration: 0 };
+    $("#pTitle").textContent = ch.name;
+    $("#pSub").textContent = ch.now ? `Live  ·  ${ch.now.title}` : "Live";
+    $("#pMsg").hidden = true;
+    spinner(true);
+    const url = `/api/live/${ch.id}/index.m3u8`;
+    pl.mode = "live";
+    if (isSafari && pl.v.canPlayType("application/vnd.apple.mpegurl")) { pl.v.src = url; pl.v.play().catch(() => {}); return; }
+    // One hls.js for every channel, switching just loads a new playlist into it which is much quicker than starting over
+    if (!pl.hls) {
+      const h = new Hls({ liveSyncDurationCount: 3, maxBufferLength: 20, backBufferLength: 20, manifestLoadingMaxRetry: 2, levelLoadingMaxRetry: 3, fragLoadingMaxRetry: 3, enableWorker: true });
+      pl.hls = h;
+      h.attachMedia(pl.v);
+      h.on(Hls.Events.ERROR, (_, d) => {
+        if (!d.fatal || !pl.info || !pl.info.live) return;
+        if (d.type === Hls.ErrorTypes.MEDIA_ERROR) { h.recoverMediaError(); return; }
+        spinner(false);
+        api(`/api/live/${pl.info.id}/bad`, {}).catch(() => {});
+        showMsg("This channel isn't working", "It might be off air right now, or the link stopped working.",
+          `${LIVE_NOW.list.length > 1 ? `<button class="btn primary small" id="lvNext">Next Channel</button>` : ""}<button class="btn secondary small" id="lvAgain">Try Again</button>`);
+        const n = $("#lvNext"); if (n) { n.onclick = () => switchLive(1); n.focus(); }
+        $("#lvAgain").onclick = () => tune();
+      });
+      h.on(Hls.Events.MANIFEST_PARSED, () => pl.v.play().catch(() => {}));
+    }
+    pl.hls.loadSource(url);
+  }
+  function switchLive(d) {
+    if (!LIVE_NOW || LIVE_NOW.list.length < 2) return;
+    LIVE_NOW.i = (LIVE_NOW.i + d + LIVE_NOW.list.length) % LIVE_NOW.list.length;
+    tune();
+    toast(LIVE_NOW.list[LIVE_NOW.i].name, 1800);
+  }
+
+  // ---------------------------------------------------------- videos
+  // Youtube style addons (youtubio) get there own section, away from films and shows
+  async function pageVideos() {
+    const r = await api("/api/videos");
+    app.innerHTML = topbar("videos") + `<main class="page"><h1 class="large-title">Videos</h1>
+      ${r.shelves.length ? r.shelves.map((s) => `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}</h2>
+        <div class="row wide" data-shelf="${esc(s.id)}" data-next="${s.next}" data-style="wide" ${s.pending ? "data-pending" : ""}>${s.pending ? Array.from({ length: 6 }, () => `<div class="sk sk-wide"></div>`).join("") : ""}${s.items.map((t) => wideTile(t)).join("")}</div></section>`).join("")
+        : `<div class="empty"><h2>No videos yet</h2><p>Videos come from addons like YouTubio. Their rows show up here once they've loaded.</p></div>`}</main>`;
+    wireTopbar();
+    growShelves(app);
+  }
+
   // ---------------------------------------------------------- settings
   const LANG_OPTS = ["English", "German", "French", "Spanish", "Italian", "Dutch", "Polish", "Portuguese", "Russian", "Japanese", "Korean", "Chinese", "Swedish", "Danish", "Norwegian", "Finnish", "Turkish", "Arabic", "Hindi"];
 
@@ -1873,9 +2067,11 @@
         <div class="form-err" id="ipErr" role="alert"></div>
       </section>
       <section class="card set-card" id="devicesCard"><div class="skel" style="height:80px"></div></section>
-      <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>`;
+      <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>
+      <section class="card set-card" id="liveCard"><div class="skel" style="height:80px"></div></section>`;
     drawDevices();
     drawAddons();
+    drawLiveAdmin();
     $$("[data-editp]", box).forEach((b) => (b.onclick = () => editProfile(pr.profiles.find((x) => x.id === Number(b.dataset.editp)), () => drawAdminSettings())));
     $$("[data-papprove]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/profiles/${b.dataset.papprove}/approve`, {}); toast("Profile approved"); drawAdminSettings(); }));
     $$("[data-pdeny]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/profiles/${b.dataset.pdeny}`, undefined, "DELETE"); toast("Request removed"); drawAdminSettings(); }));
@@ -1936,6 +2132,49 @@
   }
 
   // Stremio addons, installed by pasting the manifest link like in stremio itself
+  // IPTV playlists for Live TV. Kino checks the channels in the background and hides ones that dont work, english
+  // channels (UK, then US) go first. A guide (XMLTV) is optional, lots of playlists name there own
+  async function drawLiveAdmin() {
+    const box = $("#liveCard");
+    if (!box) return;
+    let r;
+    try { r = await api("/api/admin/live"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
+    box.innerHTML = `<h2 class="set-title">Live TV</h2>
+      <p class="secondary set-hint">Add IPTV playlists (an M3U link) to fill Live TV. Your own TV server (Tvheadend, Jellyfin, ErsatzTV, an HDHomeRun) can make one too. Add a guide (XMLTV) link for the TV Guide, if the playlist doesn't name its own. Channels that don't work get hidden automatically.</p>
+      <div class="list">${r.lists.map((l) => `<div class="addon ${l.enabled ? "" : "off"}">
+        <div class="addon-top"><span class="addon-logo">${ic("live")}</span>
+          <span class="grow"><b>${esc(l.name)}</b> <span class="secondary">${l.count} channels${l.good || l.bad ? `, ${l.good} working, ${l.bad} not` : ""}</span>
+            <span class="addon-desc secondary">${esc(l.url)}${l.epg ? `<br>Guide: ${esc(l.epg)}` : ""}</span></span>
+          <input type="checkbox" class="switch" data-lon="${l.id}" ${l.enabled ? "checked" : ""} aria-label="Turn ${esc(l.name)} on or off"></div>
+        ${l.error ? `<div class="note warn-text">${esc(l.error)}</div>` : ""}
+        <div class="addon-foot"><span class="secondary">${l.refreshed ? "Updated " + ago(l.refreshed) : "Loading…"}</span>
+          <div class="actions end"><button class="btn secondary small" data-lref="${l.id}">${ic("refresh")} Refresh</button><button class="btn danger small" data-lrm="${l.id}">${ic("trash")} Remove</button></div></div>
+      </div>`).join("") || `<div class="secondary" style="padding:8px 0">No playlists yet.</div>`}</div>
+      <form class="live-form" id="liveForm">
+        <input id="lvName" placeholder="Name, like UK Freeview" autocomplete="off">
+        <input id="lvUrl" placeholder="Playlist link (.m3u)" required spellcheck="false" autocapitalize="none" inputmode="url">
+        <input id="lvEpg" placeholder="Guide link (XMLTV), optional" spellcheck="false" autocapitalize="none" inputmode="url">
+        <label class="set-row" style="padding:4px 0"><span><b>On My Network</b><span class="secondary">For a TV server at home, lets Kino reach local addresses for this playlist</span></span><input type="checkbox" class="switch" id="lvLocal"></label>
+        <div class="actions end"><button class="btn primary small" type="submit" id="lvGo">${ic("plus")} Add Playlist</button></div>
+      </form><div class="form-err" id="lvErr" role="alert"></div>`;
+    $("#liveForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const go = $("#lvGo"); go.disabled = true; go.innerHTML = `<span class="spin small"></span> Loading channels…`;
+      try {
+        const x = await api("/api/admin/live", { name: $("#lvName").value, url: $("#lvUrl").value, epg: $("#lvEpg").value, local: $("#lvLocal").checked });
+        toast(x.error ? x.error : `${x.count} channels added, checking which work`, 5000);
+        ME.features = null; SIDE_KEY = "";
+        drawLiveAdmin();
+      } catch (er) { $("#lvErr").textContent = er.message; go.disabled = false; go.innerHTML = `${ic("plus")} Add Playlist`; }
+    };
+    $$("[data-lon]", box).forEach((c) => (c.onchange = async () => { await api(`/api/admin/live/${c.dataset.lon}`, { enabled: c.checked }, "PUT").catch(() => {}); ME.features = null; drawLiveAdmin(); }));
+    $$("[data-lref]", box).forEach((b) => (b.onclick = async () => { b.disabled = true; try { await api(`/api/admin/live/${b.dataset.lref}/refresh`, {}); toast("Playlist updated"); } catch (er) { toast(er.message, 5000); } drawLiveAdmin(); }));
+    $$("[data-lrm]", box).forEach((b) => (b.onclick = async () => {
+      if (!(await confirmSheet("Remove this playlist?", "Its channels come off Live TV for everyone.", "Remove"))) return;
+      await api(`/api/admin/live/${b.dataset.lrm}`, undefined, "DELETE").catch(() => {}); ME.features = null; drawLiveAdmin();
+    }));
+  }
+
   async function drawAddons() {
     const box = $("#addonsCard");
     if (!box) return;
@@ -1974,7 +2213,7 @@
     $("#addonForm").onsubmit = async (e) => {
       e.preventDefault();
       const b = $("#addonGo"); b.disabled = true; $("#addonErr").textContent = "";
-      try { const x = await api("/api/admin/addons", { url: $("#addonUrl").value }); toast(`${x.name || "Addon"} installed`); drawAddons(); }
+      try { const x = await api("/api/admin/addons", { url: $("#addonUrl").value }); toast(`${x.name || "Addon"} installed`); ME.features = null; drawAddons(); }
       catch (er) { $("#addonErr").textContent = er.message; b.disabled = false; }
     };
     $$("[data-aon]", box).forEach((c) => (c.onchange = async () => {
@@ -1992,7 +2231,7 @@
     $$("[data-arm]", box).forEach((b) => (b.onclick = async () => {
       const a = r.addons.find((x) => x.id === Number(b.dataset.arm));
       if (!(await confirmSheet(`Remove ${a.name}?`, "Its shelves, subtitles and metadata won't be used anymore. You can install it again later.", "Remove"))) return;
-      try { await api(`/api/admin/addons/${a.id}`, undefined, "DELETE"); toast("Addon removed"); drawAddons(); } catch (er) { toast(er.message, 5000); }
+      try { await api(`/api/admin/addons/${a.id}`, undefined, "DELETE"); toast("Addon removed"); ME.features = null; drawAddons(); } catch (er) { toast(er.message, 5000); }
     }));
   }
 
@@ -2432,6 +2671,8 @@
   window.kinoNativeDone = (r) => {
     const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
     if (!r) return;
+    // Live tv just closes, unless they asked for the web player from its error box
+    if (cur && cur.live) return;
     // A broken source: the next one plays straight away
     if (r.sourceFailed && nextSource(r.fid, r.fake ? 0 : r.pos, r.why || null)) return;
     // Otherwise the player only hands back an error when someone picked Web Player in its error box
@@ -2665,6 +2906,7 @@
   }
 
   function seekTo(target) {
+    if (pl.info && pl.info.live) return;
     pl.lastSeek = Date.now();
     target = Math.max(0, Math.min(target, total() - 1));
     if (pl.mode === "direct") { pl.v.currentTime = target; return; }
@@ -2677,7 +2919,7 @@
   }
 
   function saveProgress() {
-    if (!pl.info || !total()) return;
+    if (!pl.info || pl.info.live || !total()) return;
     api("/api/progress", { file_id: pl.info.id, pos: pos(), dur: total() }).catch(() => {});
   }
 
@@ -2699,6 +2941,11 @@
     pl.v.removeAttribute("src");
     pl.v.load();
     pl.info = null; pl.mode = null;
+    if (pl.el.classList.contains("live")) {
+      pl.el.classList.remove("live"); LIVE_NOW = null;
+      $("#pBack").innerHTML = ic("back10"); $("#pBack").setAttribute("aria-label", "Back 10 seconds"); $("#pBack").title = "Back 10 Seconds";
+      $("#pFwd").innerHTML = ic("fwd10"); $("#pFwd").setAttribute("aria-label", "Forward 10 seconds"); $("#pFwd").title = "Forward 10 Seconds";
+    }
     loadHide(); $("#pStill").hidden = true; clearTimeout(STILL.t);
     if (!keepOpen && wasOpen) {
       pl.el.hidden = true;
@@ -3008,8 +3255,8 @@
 
   const toggle = () => (v.paused ? v.play().catch(() => {}) : v.pause());
   $("#pPlay").onclick = toggle;
-  $("#pBack").onclick = () => seekTo(pos() - 10);
-  $("#pFwd").onclick = () => seekTo(pos() + 10);
+  $("#pBack").onclick = () => (pl.info && pl.info.live ? switchLive(-1) : seekTo(pos() - 10));
+  $("#pFwd").onclick = () => (pl.info && pl.info.live ? switchLive(1) : seekTo(pos() + 10));
   $("#pClose").onclick = () => closePlayer();
   $("#skipIntro").onclick = () => { if (pl.info && pl.info.intro) { pl.introSkipped = true; seekTo(pl.info.intro.end); $("#skipIntro").hidden = true; } };
   $("#pFull").onclick = () => {
@@ -3063,6 +3310,8 @@
     if (pl.el.hidden || e.target.tagName === "INPUT" || sheetClose) return;
     const onControl = TV && e.target.closest && e.target.closest(".player-row, .menu, .up-next, .player-top, .skip-intro");
     if ((e.key === " " || e.key === "k") && !onControl) { e.preventDefault(); toggle(); }
+    else if (pl.info && pl.info.live && ["PageUp", "PageDown", "ChannelUp", "ChannelDown"].includes(e.key)) { e.preventDefault(); switchLive(e.key === "PageUp" || e.key === "ChannelUp" ? -1 : 1); }
+    else if (pl.info && pl.info.live && (e.key === "ArrowUp" || e.key === "ArrowDown") && !onControl && pl.el.classList.contains("idle")) { e.preventDefault(); e.stopImmediatePropagation(); switchLive(e.key === "ArrowUp" ? -1 : 1); }
     else if (e.key === "ArrowLeft" && e.target !== scrub && !onControl) seekTo(pos() - 10);
     else if (e.key === "ArrowRight" && e.target !== scrub && !onControl) seekTo(pos() + 10);
     else if (e.key === "f") $("#pFull").click();
@@ -3223,8 +3472,8 @@
     if (cmd === "playpause") toggle();
     else if (cmd === "play") pl.v.play().catch(() => {});
     else if (cmd === "pause") pl.v.pause();
-    else if (cmd === "forward") seekTo(pos() + 10);
-    else if (cmd === "back") seekTo(pos() - 10);
+    else if (cmd === "forward") pl.info && pl.info.live ? switchLive(1) : seekTo(pos() + 10);
+    else if (cmd === "back") pl.info && pl.info.live ? switchLive(-1) : seekTo(pos() - 10);
     else if (cmd === "stop") closePlayer();
   };
   // ---------------------------------------------------------- app updates
@@ -3424,12 +3673,16 @@
         if (!page) { location.hash = "#/home"; return; }
       }
       applyPrefs();
+      // Which sections the sidebar has (Live TV, Videos), asked once and again after the admin changes addons or playlists
+      if (!ME.features) ME.features = await api("/api/features").catch(() => ({}));
       // The sidebar stays and the page swaps to a skeleton straight away, so nothing jumps while it loads
       topbar(sideFor(page));
       document.body.classList.add("with-side");
       if (changed) { app.innerHTML = skeleton(page); app.classList.remove("enter"); window.scrollTo(0, 0); }
       if (page === "movies") await pageBrowse("movie");
       else if (page === "shows") await pageBrowse("series");
+      else if (page === "live") await pageLive(arg === "guide");
+      else if (page === "videos") await pageVideos();
       else if (page === "title" && arg) await pageTitle(arg);
       else if (page === "discover" && arg) await pageDiscover(decodeURIComponent(arg), decodeURIComponent((location.hash.split("?")[0].split("/")[3] || "")));
       else if (page === "search") await pageSearch();

@@ -25,7 +25,16 @@ def responsive():
 
 def remount():
     subprocess.run(["umount", "-l", MOUNT], capture_output=True, timeout=30)
-    r = subprocess.run(["mount", MOUNT], capture_output=True, text=True, timeout=60)
+    # Through systemd's own mount unit (made from the fstab line), so sshfs belongs to that and not to this short job.
+    # Plain mount is the fallback for a box without one
+    unit = subprocess.run(["systemd-escape", "-p", "--suffix=mount", MOUNT], capture_output=True, text=True).stdout.strip()
+    r = subprocess.run(["systemctl", "restart", unit], capture_output=True, text=True, timeout=90) if unit else None
+    if r is None or r.returncode != 0:
+        r = subprocess.run(["mount", MOUNT], capture_output=True, text=True, timeout=60)
+    # Waits a moment and checks again, so a mount that drops straight away counts as failed instead of "remounted"
+    time.sleep(3)
+    if r.returncode == 0 and not os.path.ismount(MOUNT):
+        return False, "mounted but dropped again straight away"
     return r.returncode == 0, (r.stderr or r.stdout).strip()[:300]
 
 

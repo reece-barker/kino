@@ -995,7 +995,12 @@ def backup_now():
     """Copies the live database with sqlite's own backup (safe while kino is running), gzips it onto the storage box"""
     if not box_mounted():
         raise RuntimeError("The Storage Box isn't connected, so the backup was skipped")
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    # Never makes the backup folder on the vps disk: if the box dropped since the check, writing into the empty mount
+    # folder would leave files there and sshfs then refuses to mount over them
+    if not BACKUP_DIR.exists():
+        if not box_mounted():
+            raise RuntimeError("The Storage Box disconnected, so the backup was skipped")
+        BACKUP_DIR.mkdir(exist_ok=True)
     name = time.strftime("kino-%Y-%m-%d-%H%M.db.gz")
     tmp = DATA_DIR / "backup.tmp.db"
     tmp.unlink(missing_ok=True)
@@ -1006,6 +1011,9 @@ def backup_now():
     finally:
         dst.close()
         src.close()
+    if not box_mounted():
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("The Storage Box disconnected during the backup, it was skipped")
     part = BACKUP_DIR / (name + ".part")
     with open(tmp, "rb") as fi, gzip.open(part, "wb", compresslevel=6) as fo:
         shutil.copyfileobj(fi, fo, 1 << 20)

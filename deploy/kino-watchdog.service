@@ -5,3 +5,7 @@ Description=Kino storage box mount watchdog
 Type=oneshot
 ExecStart=/usr/bin/python3 /opt/kino-tools/kino-watchdog.py
 TimeoutStartSec=3min
+# When this job finishes systemd normally stops everything it started. A remount starts sshfs, the process that
+# keeps the Storage Box connected, and that was being stopped seconds after every remount so it never stayed up.
+# This leaves sshfs running
+KillMode=process

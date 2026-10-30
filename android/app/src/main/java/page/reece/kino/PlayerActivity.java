@@ -616,7 +616,17 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     // ---- what the engine tells us
 
-    @Override public void onBuffering(boolean b) { if (b && loading) note("buffering"); }
+    @Override
+    public void onBuffering(boolean b) {
+        if (b && loading) note("buffering");
+        long now = System.currentTimeMillis();
+        if (b && bufStart == 0) bufStart = now;
+        else if (!b && bufStart > 0) {
+            // Stalls after a seek dont count, jumping somewhere always has to load a bit
+            if (!loading && now - lastSeekAt > 10000) stalls.add(new long[]{now, now - bufStart});
+            bufStart = 0;
+        }
+    }
 
     @Override
     public void onPlaying(boolean p) {
@@ -656,6 +666,14 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         boolean exo = eng.name().equals("exo");
         // Direct links from addons that fail are nearly always a broken source, not the player, so the next one gets tried.
         // TorBox copies go through Kino, those get the converted stream first in case its the format
+        // A source that was playing fine and then errors (nearly always right after a seek) gets another go from the same
+        // spot before anything else, it used to jump straight to the next source and say this one was broken
+        if (playedAt > 0 && sameRetries < 2) {
+            sameRetries++;
+            relaunchLoading("Reconnecting");
+            if (hls) startHls(at); else startEngine(eng.name(), at);
+            return;
+        }
         if (sourceCanMoveOn() && (!info.optBoolean("torbox") || triedHls)) { sourceFailed(msg); return; }
         // Direct play didnt work, the converted stream nearly always does
         boolean canConvert = !info.optBoolean("isStream") || info.optBoolean("torbox");
@@ -710,6 +728,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     }
 
     private void seekTo(double t) {
+        lastSeekAt = System.currentTimeMillis();
         t = Math.max(0, Math.min(t, dur() > 0 ? dur() - 1 : t));
         if (!hls) { eng.seek((long) (t * 1000)); return; }
         double rel = t - offset;
@@ -783,6 +802,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                 checkIntro(p);
                 checkUpNext(p, d);
                 checkFake(d);
+                checkStall(p);
                 int mins = info.optInt("stillMins", 0);
                 if (mins > 0 && card == null && eng.playing() && System.currentTimeMillis() - lastInput > mins * 60000L) askStill();
             }
@@ -1056,6 +1076,29 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     // A 30 second clip in place of a whole film or episode, torbox sends one of those (a green screen) when a download
     // didnt really happen. Asks to try the next source, or just does it if the profile turned that on in Settings
     private boolean fakeAsked, backDown;
+    // Buffering watch: when this source keeps stopping to load it offers the next one, or moves on by itself
+    private long bufStart, lastSeekAt, stallAskedAt, playedAt;
+    private int sameRetries;
+    private final java.util.ArrayDeque<long[]> stalls = new java.util.ArrayDeque<>();
+
+    private void checkStall(double p) {
+        long now = System.currentTimeMillis();
+        if (!loading && p > 5 && playedAt == 0) playedAt = now;
+        if (loading || card != null || errorShown || !sourceCanMoveOn() || playedAt == 0) return;
+        if (now - stallAskedAt < 180000 || now - lastSeekAt < 10000) return;
+        while (!stalls.isEmpty() && now - stalls.peekFirst()[0] > 120000) stalls.pollFirst();
+        long total = 0;
+        for (long[] x : stalls) total += x[1];
+        long cur = bufStart > 0 ? now - bufStart : 0;
+        if (cur < 12000 && total + cur < 25000) return;
+        stallAskedAt = now;
+        if (info.optBoolean("autoNextSource")) { moveOn("That source kept buffering", pos(), false); return; }
+        LinearLayout c = dialog("This source keeps buffering", "Another source might play smoother. Kino can switch and carry on from " + clock(pos()) + ".");
+        TextView next = pill("Next Source", true), keep = pill("Keep Waiting", false);
+        next.setOnClickListener(v -> { closeDialog(); moveOn("Switched sources", pos(), false); });
+        keep.setOnClickListener(v -> { closeDialog(); stalls.clear(); });
+        buttons(c, next, keep);
+    }
 
     private void checkFake(double d) {
         if (fakeAsked || loading || !info.optBoolean("checkFake")) return;
@@ -1063,22 +1106,22 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         if (len < 27 || len > 33) return;
         fakeAsked = true;
         boolean more = sourceCanMoveOn();
-        if (more && info.optBoolean("autoNextSource")) { fakeSource(); return; }
+        if (more && info.optBoolean("autoNextSource")) { moveOn("That copy was a 30 second placeholder", 0, true); return; }
         eng.pause();
         LinearLayout c = dialog("This copy is only 30 seconds long", "It's probably a placeholder, the download didn't really finish on TorBox."
                 + (more ? "" : " There aren't any other sources to try right now."));
         TextView next = pill("Next Source", true), keep = pill(more ? "Keep Watching" : "OK", !more);
-        next.setOnClickListener(v -> { closeDialog(); fakeSource(); });
+        next.setOnClickListener(v -> { closeDialog(); moveOn("Skipped the placeholder", 0, true); });
         keep.setOnClickListener(v -> { closeDialog(); eng.play(); });
         if (more) buttons(c, next, keep);
         else buttons(c, keep);
     }
 
-    private void fakeSource() {
+    private void moveOn(String why, double at, boolean fake) {
         if (leaving) return;
         leaving = true;
         try {
-            JSONObject r = new JSONObject().put("fid", fid).put("pos", 0).put("dur", dur()).put("sourceFailed", true).put("fake", true).put("error", "30 second placeholder");
+            JSONObject r = new JSONObject().put("fid", fid).put("pos", at).put("dur", dur()).put("sourceFailed", true).put("fake", fake).put("why", why).put("error", why);
             setResult(RESULT_OK, new Intent().putExtra("result", r.toString()));
         } catch (Exception ignored) { }
         finish();

@@ -709,7 +709,7 @@
       </section>
       <main class="page under-hero" style="padding-top:8px">
         ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
-          <div class="row ${s.style === "poster" ? "posters" : "wide"}" ${s.next ? `data-shelf="${esc(s.id)}" data-next="${s.next}" data-style="${s.style}"` : ""}>${s.items.map((t) => s.style === "poster" ? posterTile(t)
+          <div class="row ${s.style === "poster" ? "posters" : "wide"}" ${s.next != null ? `data-shelf="${esc(s.id)}" data-next="${s.next}" data-style="${s.style}"` : ""} ${s.pending ? "data-pending" : ""}>${s.pending ? Array.from({ length: 8 }, () => `<div class="sk ${s.style === "poster" ? "sk-poster" : "sk-wide"}"></div>`).join("") : ""}${s.items.map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: TV ? null : t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
             : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster", s.more === "#/shows" ? "All TV Shows" : "All Movies") : ""}</div></section>`).join("")}
@@ -762,6 +762,13 @@
         busy = true;
         try {
           const r = await api(`/api/shelf?id=${encodeURIComponent(row.dataset.shelf)}&skip=${row.dataset.next}`);
+          if (row.hasAttribute("data-pending")) {
+            // A row that was still loading when Home opened: in it goes, or off it comes if the addon had nothing
+            if (r.retry) { busy = false; setTimeout(more, 8000); return; }
+            if (r.items.length < 3) { row.closest("section").remove(); return; }
+            row.removeAttribute("data-pending");
+            $$(".sk", row).forEach((x) => x.remove());
+          }
           const html = r.items.map((t) => (row.dataset.style === "wide" ? wideTile(t) : posterTile(t))).join("");
           const card = $(".more-card", row);
           if (card) card.insertAdjacentHTML("beforebegin", html); else row.insertAdjacentHTML("beforeend", html);
@@ -771,6 +778,8 @@
       };
       row.addEventListener("scroll", more, { passive: true });
       row.addEventListener("focusin", more);
+      // Rows still loading, and short ones that cant be scrolled yet, ask for more straight away
+      if (row.hasAttribute("data-pending") || row.scrollWidth <= row.clientWidth * 1.5) more();
     });
   }
 
@@ -1515,12 +1524,19 @@
   }
 
   // Public domain copies from addons, the server only hands back ones that are actually on archive.org
-  async function drawStreams(kind, id, t, ep) {
+  async function drawStreams(kind, id, t, ep, got) {
     const box = $("#pdBox");
     const none = `<div class="not-lib glass" style="margin-top:14px">${ic("info")}<span>${kind === "movie" || kind === "series" ? "Not in Your Library" : "Nothing Kino Can Play"}</span></div>`;
-    let r;
-    try { r = await api(`/api/streams/${kind}/${encodeURIComponent(id)}`); } catch (_) { r = { streams: [] }; }
-    if (!$("#pdBox")) return;
+    const url = `/api/streams/${kind}/${encodeURIComponent(id)}`;
+    let r = got;
+    // First whatever answers in a few seconds (TorBox and the quick addons) so Play shows straight away, then the
+    // slow addons fill in the rest of the sources behind it
+    if (!r) { try { r = await api(url + "?quick=1"); } catch (_) { r = { streams: [] }; } }
+    if (!$("#pdBox") || $("#pdBox") !== box) return;
+    if (r.partial) {
+      if (!r.streams.length) { try { r = await api(url); } catch (_) {} if (!$("#pdBox") || $("#pdBox") !== box) return; }
+      else api(url).then((r2) => { if ($("#pdBox") === box && r2.streams.length > r.streams.length && !sheetClose) drawStreams(kind, id, t, ep, r2); }).catch(() => {});
+    }
     const lb = listBtn(t.in_list);
     if (!r.streams.length) {
       // Admins get told why nothing can play, so a missing addon or a slow archive.org is easy to spot
@@ -1779,7 +1795,7 @@
         ${toggle("pAuto", pr.autoplay, "Autoplay Next Episode", "Starts the next episode after a short countdown")}
         ${toggle("pSkip", pr.skip_intro, "Skip Intros Automatically", "Only works where Kino knows the intro")}
         <div class="set-row"><span><b>Are You Still Watching?</b><span class="secondary">Pauses and asks after this long with nobody touching anything</span></span>${sel("pStill", [["0", "Never"], ["30", "30 Minutes"], ["60", "1 Hour"], ["90", "1.5 Hours"], ["120", "2 Hours"], ["180", "3 Hours"], ["240", "4 Hours"]], String(pr.still_watching || 0))}</div>
-        ${toggle("pFake", pr.auto_next_source, "Skip Placeholder Copies", "When a film or episode turns out to be a 30 second clip (TorBox sends one when a download didn't really finish), the next source plays by itself instead of asking")}
+        ${toggle("pFake", pr.auto_next_source, "Switch Sources Automatically", "When a copy turns out to be a 30 second placeholder (TorBox sends one when a download didn't really finish) or keeps buffering, the next source plays by itself instead of asking")}
         ${toggle("pLoadStats", pr.load_stats !== false, "Loading Details", "Shows what Kino is doing while a video starts, like the speed and audio track")}
         ${toggle("pBlur", pr.blur_watched, "Blur Watched", "Blurs the artwork of films and episodes you've already watched")}
         ${toggle("pShare", pr.share_events, "Share Watch Activity with Addons", "Lets tracking addons like Trakt see what this profile watches")}
@@ -2417,7 +2433,7 @@
     const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
     if (!r) return;
     // A broken source: the next one plays straight away
-    if (r.sourceFailed && nextSource(r.fid, r.fake ? 0 : r.pos, r.fake ? "That copy was a 30 second placeholder" : null)) return;
+    if (r.sourceFailed && nextSource(r.fid, r.fake ? 0 : r.pos, r.why || null)) return;
     // Otherwise the player only hands back an error when someone picked Web Player in its error box
     if (r.error && !r.sourceFailed) return playFile(r.fid, { ...(cur ? cur.opts : {}), from: r.pos, web: true });
     const n = cur ? cur.info.next : r.next, auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : r.autoplay !== false;
@@ -2477,6 +2493,7 @@
     loadArt(info.art, (opts.title && opts.title.name) || info.show || info.name);
     if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
     pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false; pl.fakeAsked = false; pl.greenChecked = false;
+    pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0;
     pl.title = opts.title || null;
     const prefs = info.prefs || {};
     $("#subsLayer").dataset.size = prefs.sub_size || "m";
@@ -2501,6 +2518,18 @@
         if (code === 1) { pl.v.addEventListener("error", onErr, { once: true }); return; }   // aborted on purpose, not a real problem
         // Online sources often stall on the first try, one more go before saying it won't play
         // A format this browser can't play, or still failing after the retry: the next source if there is one
+        // It was playing fine and then broke, nearly always right after a seek: the same source gets another go from
+        // there instead of being called broken and swapped out
+        if (pl.playedAt && pl.sameRetries < 2) {
+          pl.sameRetries++;
+          const at = pl.v.currentTime || 0;
+          pl.v.addEventListener("error", onErr, { once: true });
+          spinner(true);
+          pl.v.src = info.src;
+          pl.v.addEventListener("loadedmetadata", () => { if (at) pl.v.currentTime = at; }, { once: true });
+          pl.v.play().catch(() => {});
+          return;
+        }
         if ((retried || code !== 2) && moreSources(info.id)) { closePlayer(true); if (nextSource(info.id, opts.from)) return; }
         if (!retried && code === 2) {
           retried = true;
@@ -2636,6 +2665,7 @@
   }
 
   function seekTo(target) {
+    pl.lastSeek = Date.now();
     target = Math.max(0, Math.min(target, total() - 1));
     if (pl.mode === "direct") { pl.v.currentTime = target; return; }
     const rel = target - pl.offset;
@@ -2912,7 +2942,34 @@
   }
   v.addEventListener("timeupdate", drawTime);
   v.addEventListener("progress", drawTime);
-  v.addEventListener("waiting", () => { if (!LOAD.on) spinner(true); });
+  v.addEventListener("waiting", () => { if (!LOAD.on) spinner(true); if (!pl.bufStart) pl.bufStart = Date.now(); });
+  v.addEventListener("playing", () => {
+    // How long that stall was, the buffering watch below adds them up. Stalls right after a seek dont count
+    if (pl.bufStart && pl.playedAt && Date.now() - (pl.lastSeek || 0) > 10000) pl.stalls.push([Date.now(), Date.now() - pl.bufStart]);
+    pl.bufStart = 0;
+  });
+  // A source that keeps stopping to load: 12 seconds stuck in one go, or 25 seconds over two minutes. Asks to swap
+  // to the next source like the placeholder card does, or just swaps with the setting on
+  setInterval(() => {
+    const info = pl.info;
+    if (!info || pl.el.hidden || !info.stream) return;
+    const now = Date.now();
+    if (!pl.playedAt && pos() > 5 && !pl.v.paused) pl.playedAt = now;
+    if (!pl.playedAt || now - pl.stallAskedAt < 180000 || now - (pl.lastSeek || 0) < 10000 || !moreSources(info.id)) return;
+    pl.stalls = pl.stalls.filter((x) => now - x[0] < 120000);
+    const cur = pl.bufStart && !pl.v.paused ? now - pl.bufStart : 0;
+    if (cur < 12000 && pl.stalls.reduce((a, x) => a + x[1], 0) + cur < 25000) return;
+    pl.stallAskedAt = now;
+    const at = pos();
+    if (info.prefs && info.prefs.auto_next_source) { nextSource(info.id, at, "That source kept buffering"); return; }
+    const box = $("#upNext");
+    box.innerHTML = `<div class="un-body"><div class="lbl">Another source might play smoother</div><div class="nm">This Source Keeps Buffering</div>
+      <div class="actions"><button class="btn primary small" id="stNext">Next Source</button><button class="btn secondary small" id="stKeep">Keep Waiting</button></div></div>`;
+    box.hidden = false;
+    $("#stNext").onclick = () => { box.hidden = true; nextSource(info.id, pos(), "Switched sources"); };
+    $("#stKeep").onclick = () => { box.hidden = true; pl.stalls = []; };
+    $("#stNext").focus();
+  }, 1000);
   v.addEventListener("playing", () => {
     spinner(false); $("#pMsg").hidden = true; loadHide(); stillReset();
     if (pl.info && (!pl.evStarted || pl.evPaused)) { pl.evStarted = true; pl.evPaused = false; sendEvent("start"); }
@@ -3055,10 +3112,16 @@
     const curRow = d[0] > 0 && cur.closest && cur.closest(".row, .episodes, .chips");
     // Two steps like a tv's own focus engine: first the nearest line of things in that direction, then on that line the
     // one closest to where you are. Measured edge to edge, so a tall card further away never beats a button right next to you
+    // Sideways along a row of cards only ever lands on another card, the little buttons under episodes (mark as
+    // watched) used to catch the remote at the end of a season so it looked like the selection got lost
+    const tileRow = d[0] && cur.classList && cur.classList.contains("tile") && cur.closest(".row, .episodes");
+    const rowTiles = tileRow ? items.filter((el) => el !== cur && el.classList.contains("tile") && tileRow.contains(el) && (el.getBoundingClientRect().left - a.left) * d[0] > 0) : [];
     const cands = [];
     for (const el of items) {
       if (el === cur) continue;
       if (curRow && !curRow.contains(el)) continue;
+      if (rowTiles.length && !rowTiles.includes(el)) continue;
+      if (tileRow && d[0] > 0 && !el.classList.contains("tile")) continue;
       const elSide = !!(side && side.contains(el));
       if (d[1] && elSide !== inSide) continue;
       // Right stays out of the sidebar's own items, but works inside its profile menu (the Appearance buttons)

@@ -227,6 +227,12 @@
       s.textContent = el.alt;
       el.replaceWith(s);
     } else if (el.dataset.fallback === "hide") el.remove();
+    else if (el.dataset.fallback === "initials") {
+      // A channel logo that wouldn't load: the first letters of the name instead
+      const b = document.createElement("b");
+      b.className = "ch-ph"; b.textContent = el.dataset.ini || "";
+      el.replaceWith(b);
+    }
     else if (el.dataset.fallback === "ph") {
       const d = document.createElement("div");
       d.className = "ph"; d.style.setProperty("--h", hue(el.alt)); d.textContent = el.alt;
@@ -1958,16 +1964,17 @@
   // around it. The Guide shows whats on over the next few hours for channels that have guide data
   const LIVE_STATE = { group: "", country: "", q: "", fav: false };
   const hm = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-  const flag = (c) => ({ uk: "UK", us: "US", ie: "Ireland", ca: "Canada", au: "Australia", nz: "New Zealand" })[c] || (c ? c.toUpperCase() : "");
+  const flag = (c) => ({ uk: "UK", us: "US", fr: "France", de: "Germany", ie: "Ireland", ca: "Canada", au: "Australia", nz: "New Zealand" })[c] || (c ? c.toUpperCase() : "");
   let LIVE_LIST = [];
   const chanCard = (c, i) => {
     const pr = c.now ? Math.min(1, Math.max(0, (Date.now() / 1000 - c.now.start) / (c.now.stop - c.now.start))) : null;
     return `<div class="ch-cell"><button class="ch-card" data-ch="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}">
-      <span class="ch-logo">${c.logo ? `<img loading="lazy" src="${img(c.logo, 1, 240)}" alt="" data-fallback="hide">` : ""}<b class="ch-ph">${esc(c.name.slice(0, 2))}</b></span>
+      <span class="ch-logo">${c.logo ? `<img loading="lazy" src="${img(c.logo, 1, 240)}" alt="" data-fallback="initials" data-ini="${esc(c.name.slice(0, 2))}">` : `<b class="ch-ph">${esc(c.name.slice(0, 2))}</b>`}</span>
       <span class="ch-body"><b class="ch-name">${esc(c.name)}</b>
         <span class="ch-now">${c.now ? esc(c.now.title) : esc([c.group, flag(c.country)].filter(Boolean).join(" · "))}</span>
         ${pr != null ? `<span class="ch-bar"><i style="width:${pr * 100}%"></i></span>` : ""}
-        ${c.next ? `<span class="ch-next">${hm(c.next.start)} ${esc(c.next.title)}</span>` : ""}</span>${c.fav ? `<span class="ch-fav" aria-hidden="true">★</span>` : ""}</button>
+        ${c.next ? `<span class="ch-next">${hm(c.next.start)} ${esc(c.next.title)}</span>` : ""}</span></button>
+      ${c.fav ? `<button class="ch-fav" data-unfav="${i}" aria-label="Remove ${esc(c.name)} from Favourites" title="Remove from Favourites">★</button>` : ""}
       <button class="ch-opt" data-opt="${i}" aria-label="More for ${esc(c.name)}" title="Favourite, Record">${ic("more")}</button></div>`;
   };
 
@@ -2006,7 +2013,9 @@
     if (!grid) return;
     grid.addEventListener("click", (e) => {
       const o = e.target.closest("[data-opt]");
-      if (o) return liveOptions(LIVE_LIST[Number(o.dataset.opt)]);
+      if (o) return liveOptions(LIVE_LIST[Number(o.dataset.opt)], null, o);
+      const u = e.target.closest("[data-unfav]");
+      if (u) return setFav(LIVE_LIST[Number(u.dataset.unfav)], false);
       const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST);
     });
     let next = r.next, busy = false, t, qn = 0;
@@ -2100,7 +2109,7 @@
       <div class="g-now" style="left:calc(var(--g-ch) + (100% - var(--g-ch)) * ${pct(Date.now() / 1000) / 100})"></div>`;
     box.addEventListener("click", (e) => {
       const g = e.target.closest("[data-gp]");
-      if (g) { const [ci, pi] = g.dataset.gp.split(":").map(Number); return liveOptions(LIVE_LIST[ci], LIVE_LIST[ci].progs[pi]); }
+      if (g) { const [ci, pi] = g.dataset.gp.split(":").map(Number); return liveOptions(LIVE_LIST[ci], LIVE_LIST[ci].progs[pi], g); }
       const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST);
     });
   }
@@ -2110,21 +2119,28 @@
   async function drawFavRow() {
     const box = $("#favRow");
     const m = await api("/api/live?fav=1").catch(() => null);
-    if (!m || !m.channels.length || !$("#favRow")) return;
+    if (!m || !$("#favRow")) return;
+    if (!m.channels.length) { box.innerHTML = ""; return; }
     const favs = m.channels;
     const shot = (c) => `/api/live/${c.id}/thumb.jpg?m=${Math.floor(Date.now() / 60000)}`;
+    // The star and the ··· sit on top of the picture as their own buttons (a button can't hold buttons)
     box.innerHTML = `<section class="shelf" aria-label="Favourites"><h2 class="section-title">★ Favourites</h2><div class="row wide fav-row">${favs.map((c, i) => {
       const pr = c.now ? Math.min(1, Math.max(0, (Date.now() / 1000 - c.now.start) / (c.now.stop - c.now.start))) : null;
-      return `<button class="tile landscape fav-tile" data-fv="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}"><div class="art">
+      return `<div class="fav-cell"><button class="tile landscape fav-tile" data-fv="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}"><div class="art">
           <img class="fav-shot" src="${shot(c)}" alt="" data-fallback="hide">${c.logo ? `<img class="fav-logo" src="${img(c.logo, 1, 160)}" alt="" data-fallback="hide">` : ""}
-          <span class="tile-live">Live</span><span class="fav-star" aria-hidden="true">★</span>${pr != null ? `<div class="bar"><i style="width:${pr * 100}%"></i></div>` : ""}</div>
-        <div class="cap">${esc(c.name)}</div><div class="sub">${esc(c.now ? c.now.title : c.group || "")}</div></button>`;
+          <span class="tile-live">Live</span>${pr != null ? `<div class="bar"><i style="width:${pr * 100}%"></i></div>` : ""}</div>
+        <div class="cap">${esc(c.name)}</div><div class="sub">${esc(c.now ? c.now.title : c.group || "")}</div></button>
+        <div class="fav-btns"><button class="fav-btn fav-star" data-fstar="${i}" aria-label="Remove ${esc(c.name)} from Favourites" title="Remove from Favourites">★</button><button class="fav-btn fav-dots" data-fopt="${i}" aria-label="More for ${esc(c.name)}" title="Record, Favourite">${ic("more")}</button></div></div>`;
     }).join("")}</div></section>`;
     const row = $(".fav-row", box);
-    row.addEventListener("click", (e) => { const b = e.target.closest("[data-fv]"); if (b) playLive(favs[Number(b.dataset.fv)], favs); });
+    row.addEventListener("click", (e) => {
+      const st = e.target.closest("[data-fstar]"); if (st) return setFav(favs[Number(st.dataset.fstar)], false);
+      const o = e.target.closest("[data-fopt]"); if (o) return liveOptions(favs[Number(o.dataset.fopt)], null, o);
+      const b = e.target.closest("[data-fv]"); if (b) playLive(favs[Number(b.dataset.fv)], favs);
+    });
     const t = setInterval(() => {
       if (!$("#favRow") || $("#favRow") !== box) return clearInterval(t);
-      $$(".fav-shot", box).forEach((im, i) => (im.src = shot(favs[i])));
+      $$(".fav-shot", box).forEach((im, i) => favs[i] && (im.src = shot(favs[i])));
     }, 60000);
     if (TV || !window.Hls || !Hls.isSupported()) return;
     let pv = null;
@@ -2144,36 +2160,101 @@
     row.addEventListener("mouseleave", stop);
   }
 
+  // Adds or removes a favourite and updates what's on screen without redrawing the whole page
+  async function setFav(ch, on) {
+    try { await api(`/api/live/fav/${ch.id}`, on ? {} : undefined, on ? "POST" : "DELETE"); }
+    catch (e) { return toast(e.message, 4000); }
+    ch.fav = on;
+    LIVE_LIST.forEach((c) => { if (c.id === ch.id) c.fav = on; });
+    toast(on ? "Added to Favourites" : "Removed from Favourites");
+    if (!location.hash.startsWith("#/live") || location.hash.includes("guide")) return;
+    if (LIVE_STATE.fav && !on) return route();
+    $$(".ch-cell").forEach((cell) => {
+      const b = $("[data-ch]", cell); if (!b || LIVE_LIST[Number(b.dataset.ch)].id !== ch.id) return;
+      const old = $(".ch-fav", cell); if (old) old.remove();
+      if (on) { const n = document.createElement("button"); n.className = "ch-fav"; n.textContent = "★"; n.dataset.unfav = b.dataset.ch; n.title = "Remove from Favourites"; n.setAttribute("aria-label", `Remove ${ch.name} from Favourites`); cell.insertBefore(n, $(".ch-opt", cell)); }
+    });
+    const hadFocus = document.activeElement && document.activeElement.closest && document.activeElement.closest("#favRow");
+    await drawFavRow();
+    if (hadFocus) { const f = $("#favRow .fav-tile") || $("#chGrid .ch-card"); if (f) f.focus(); }
+  }
+
+  // A small menu that opens right next to the button it came from (not a full screen sheet), moves up or left when it would
+  // run off the screen, and closes on a tap outside, Back or Escape. Focus goes to the first item for the remote
+  let POP = null;
+  function closePop(refocus = true) {
+    if (!POP) return false;
+    const { el, anchor, off } = POP;
+    POP = null;
+    el.remove(); off();
+    if (refocus && anchor && anchor.isConnected && anchor.focus) anchor.focus({ preventScroll: true });
+    return true;
+  }
+  function popMenu(anchor, html) {
+    closePop(false);
+    const el = document.createElement("div");
+    el.className = "menu drop pop"; el.setAttribute("role", "menu"); el.innerHTML = html;
+    document.body.appendChild(el);
+    const place = () => {
+      const r = anchor.getBoundingClientRect(), vw = innerWidth, vh = innerHeight, m = 8;
+      el.style.maxWidth = Math.min(320, vw - 2 * m) + "px";
+      const w = el.offsetWidth, h = el.offsetHeight;
+      let left = r.right - w;                       // lines up with the button's right edge
+      if (r.width > 160) left = r.left;             // a wide thing (a programme), lines up with its left edge
+      left = Math.max(m, Math.min(left, vw - w - m));
+      const below = vh - r.bottom - m, above = r.top - m;
+      let top = h <= below || below >= above ? r.bottom + 6 : r.top - h - 6;
+      top = Math.max(m, Math.min(top, vh - Math.min(h, vh - 2 * m) - m));
+      el.style.left = left + "px"; el.style.top = top + "px";
+      el.style.maxHeight = vh - 2 * m + "px";
+    };
+    place();
+    const away = (e) => { if (!el.contains(e.target) && e.target !== anchor && !anchor.contains(e.target)) closePop(false); };
+    const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); closePop(); } };
+    // Scrolling or resizing moves the menu with its button (it only closes if the button scrolled out of sight)
+    const gone = (e) => {
+      if (e && e.target && el.contains(e.target)) return;
+      const r = anchor.getBoundingClientRect();
+      if (!anchor.isConnected || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) return closePop(false);
+      place();
+    };
+    document.addEventListener("pointerdown", away, true);
+    document.addEventListener("keydown", key, true);
+    addEventListener("resize", gone);
+    addEventListener("scroll", gone, true);
+    POP = { el, anchor, off: () => { document.removeEventListener("pointerdown", away, true); document.removeEventListener("keydown", key, true); removeEventListener("resize", gone); removeEventListener("scroll", gone, true); } };
+    anchor.setAttribute("aria-haspopup", "true");
+    setTimeout(() => { const f = $(".mi", el); if (f) f.focus({ preventScroll: true }); }, 30);
+    return el;
+  }
+
   // A channel's options (or a programme's, from the guide): watch, favourite, record
-  function liveOptions(ch, prog) {
+  function liveOptions(ch, prog, anchor) {
     if (!ch) return;
     const now = Date.now() / 1000, on = prog && prog.start <= now && prog.stop > now, later = prog && prog.start > now;
     const isChan = String(ch.id).startsWith("c");
     const cur = !prog && ch.now ? ch.now : null;
-    const sh = sheet(`<div class="src-head"><div><h2>${esc(prog ? prog.title : ch.name)}</h2><p class="secondary">${esc(prog ? `${ch.name} · ${hm(prog.start)} to ${hm(prog.stop)}` : cur ? `Now: ${cur.title}, until ${hm(cur.stop)}` : ch.group || "Live")}</p>
-        ${prog && prog.desc ? `<p class="secondary" style="margin-top:8px">${esc(prog.desc.slice(0, 260))}</p>` : ""}</div></div>
-      <div class="opt-list">
-        ${!later ? `<button class="mi" data-o="watch">${ic("play")} Watch ${esc(ch.name)}</button>` : ""}
-        ${!kidsMode() ? (prog ? `<button class="mi" data-o="recprog">${ic("download")} Record ${on ? "the Rest of This" : "This Programme"}</button>`
-          : `${cur ? `<button class="mi" data-o="reccur">${ic("download")} Record ${esc(cur.title)}</button>` : ""}<button class="mi" data-o="rec60">${ic("download")} Record the Next Hour</button><button class="mi" data-o="rec120">${ic("download")} Record the Next 2 Hours</button>`) : ""}
-        ${isChan ? `<button class="mi" data-o="fav">${ch.fav ? "★ Remove from Favourites" : "☆ Add to Favourites"}</button>` : ""}
-      </div>`);
-    const rec = async (body) => {
-      try { const r = await api("/api/live/record", { cid: ch.id, channel: ch.name, ...body }); sh.close(); toast(r.now ? "Recording to the Storage Box" : "Recording scheduled", 3500); }
+    const head = `<div class="pop-head"><b>${esc(prog ? prog.title : ch.name)}</b><span class="secondary">${esc(prog ? `${ch.name} · ${hm(prog.start)} to ${hm(prog.stop)}` : cur ? `Now: ${cur.title}, until ${hm(cur.stop)}` : ch.group || "Live")}</span>
+        ${prog && prog.desc ? `<span class="secondary pop-desc">${esc(prog.desc.slice(0, 140))}</span>` : ""}</div>`;
+    const body = `${!later ? `<button class="mi" role="menuitem" data-o="watch">${ic("play")} Watch</button>` : ""}
+        ${!kidsMode() ? (prog ? `<button class="mi" role="menuitem" data-o="recprog">${ic("download")} Record ${on ? "the Rest of This" : "This Programme"}</button>`
+          : `${cur ? `<button class="mi" role="menuitem" data-o="reccur">${ic("download")} Record ${esc(cur.title.slice(0, 40))}</button>` : ""}<button class="mi" role="menuitem" data-o="rec60">${ic("download")} Record the Next Hour</button><button class="mi" role="menuitem" data-o="rec120">${ic("download")} Record the Next 2 Hours</button>`) : ""}
+        ${isChan ? `<button class="mi" role="menuitem" data-o="fav">${ch.fav ? "★ Remove from Favourites" : "☆ Add to Favourites"}</button>` : ""}`;
+    const el = anchor ? popMenu(anchor, head + body) : null;
+    const root = el || sheet(`<div class="src-head"><div><h2>${esc(prog ? prog.title : ch.name)}</h2></div></div><div class="opt-list">${body}</div>`).el;
+    const done = () => (el ? closePop(false) : closeSheet());
+    const rec = async (b) => {
+      try { const r = await api("/api/live/record", { cid: ch.id, channel: ch.name, ...b }); done(); toast(r.now ? "Recording to the Storage Box" : "Recording scheduled", 3500); }
       catch (e) { toast(e.message, 5000); }
     };
-    $$("[data-o]", sh.el).forEach((b) => (b.onclick = async () => {
+    $$("[data-o]", root).forEach((b) => (b.onclick = async () => {
       const o = b.dataset.o;
-      if (o === "watch") { sh.close(); playLive(ch, LIVE_LIST.includes(ch) ? LIVE_LIST : [ch]); }
+      if (o === "watch") { done(); playLive(ch, LIVE_LIST.includes(ch) ? LIVE_LIST : [ch]); }
       else if (o === "recprog") rec({ title: prog.title, start: prog.start, stop: prog.stop });
       else if (o === "reccur") rec({ title: cur.title, start: cur.start, stop: cur.stop });
       else if (o === "rec60") rec({ minutes: 60 });
       else if (o === "rec120") rec({ minutes: 120 });
-      else if (o === "fav") {
-        await api(`/api/live/fav/${ch.id}`, ch.fav ? undefined : {}, ch.fav ? "DELETE" : "POST").catch(() => {});
-        ch.fav = !ch.fav; sh.close(); toast(ch.fav ? "Added to Favourites" : "Removed from Favourites");
-        if (location.hash.startsWith("#/live") && !location.hash.includes("guide")) route();
-      }
+      else if (o === "fav") { done(); setFav(ch, !ch.fav); }
     }));
   }
 
@@ -2384,6 +2465,7 @@
         ${toggle("pAuto", pr.autoplay, "Autoplay Next Episode", "Starts the next episode after a short countdown")}
         ${toggle("pSkip", pr.skip_intro, "Skip Intros Automatically", "Only works where Kino knows the intro")}
         <div class="set-row"><span><b>Are You Still Watching?</b><span class="secondary">Pauses and asks after this long with nobody touching anything</span></span>${sel("pStill", [["0", "Never"], ["30", "30 Minutes"], ["60", "1 Hour"], ["90", "1.5 Hours"], ["120", "2 Hours"], ["180", "3 Hours"], ["240", "4 Hours"]], String(pr.still_watching || 0))}</div>
+        ${toggle("pLiveAll", pr.live_all_countries, "Show All Countries in Live TV", "Live TV only lists the UK, US, France and Germany. Turn this on to see channels from every other country too")}
         ${toggle("pFake", pr.auto_next_source, "Switch Sources Automatically", "When a copy turns out to be a 30 second placeholder (TorBox sends one when a download didn't really finish) or keeps buffering, the next source plays by itself instead of asking")}
         ${toggle("pLoadStats", pr.load_stats !== false, "Loading Details", "Shows what Kino is doing while a video starts, like the speed and audio track")}
         ${toggle("pBlur", pr.blur_watched, "Blur Watched", "Blurs the artwork of films and episodes you've already watched")}
@@ -2419,7 +2501,7 @@
     wireThemePicker($("#setTheme"));
     drawInterests();
     const saveP = async () => {
-      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked, auto_next_source: $("#pFake").checked };
+      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked, auto_next_source: $("#pFake").checked, live_all_countries: $("#pLiveAll").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
       ME.profile = r.profile;
       applyPrefs();
@@ -3879,6 +3961,15 @@
       first.focus({ preventScroll: false });
       return;
     }
+    // A favourite's star and dots sit on top of its picture so sideways keeps going tile to tile. Down from the tile steps
+    // onto them (left and right swap between the two), up steps back to the tile, and down from them carries on below
+    const fc = !openMenu && cur.closest && cur.closest(".fav-cell");
+    if (fc) {
+      const btns = $$(".fav-btn", fc), at = btns.indexOf(cur);
+      if (at < 0 && cur.classList.contains("fav-tile") && d[1] > 0 && btns.length) return void btns[0].focus();
+      if (at >= 0 && d[0]) return void (btns[Math.max(0, Math.min(btns.length - 1, at + d[0]))].focus());
+      if (at >= 0 && d[1] < 0) return void $(".fav-tile", fc).focus();
+    }
     const a = cur.getBoundingClientRect();
     const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
     // The sidebar is its own column: up and down stay inside it, and things tucked behind it aren't targets
@@ -3965,6 +4056,7 @@
   // Back on a remote or phone closes whatever is on top first, the app goes back a page when this says no
   window.kinoBack = () => {
     if (closeEmbed()) return true;
+    if (closePop()) return true;
     // An open dropdown on the page (the ... on a title) closes first and the remote goes back to its button
     const dd = $$(".menu.drop:not([hidden])", app)[0];
     if (dd) {

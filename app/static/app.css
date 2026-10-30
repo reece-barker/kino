@@ -1543,8 +1543,26 @@ body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none
 .fav-tile .art { background: #111; }
 .fav-shot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .fav-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; background: transparent; }
-.fav-logo { position: absolute; left: 10px; bottom: 12px; z-index: 2; max-width: 30%; max-height: 28%; object-fit: contain; filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.8)); }
-.fav-star { position: absolute; right: 10px; top: 8px; z-index: 2; color: #ffd60a; font-size: 16px; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); }
+/* the global ".tile .art img" rule fills the whole picture, so the logo needs a more specific one to stay small and uncropped */
+.fav-tile .art img.fav-logo { position: absolute; left: 10px; bottom: 12px; z-index: 2; width: auto; height: auto; max-width: 30%; max-height: 28%; object-fit: contain; filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.8)); }
+.fav-cell { position: relative; min-width: 0; }
+.fav-cell .fav-tile { width: 100%; }
+.fav-btns { position: absolute; top: 8px; right: 8px; z-index: 4; display: flex; gap: 6px; }
+.fav-btn { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, 0.55); color: #fff; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); font-size: 16px; line-height: 1; transition: background 0.15s, transform 0.15s; }
+.fav-btn .i { width: 18px; height: 18px; }
+.fav-btn:hover { background: rgba(0, 0, 0, 0.8); }
+.fav-btn.fav-star { color: #ffd60a; }
+body.tv .fav-btn:focus-visible { outline: none; background: #fff; color: #000; transform: scale(1.12); }
+body.tv .fav-btn.fav-star:focus-visible { color: #b8860b; }
+/* the star on a channel card is a button now, tap it to unfavourite */
+button.ch-fav { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; font-size: 15px; line-height: 1; }
+button.ch-fav:hover { background: var(--hover); }
+body.tv button.ch-fav:focus-visible { outline: none; background: #fff; color: #b8860b; transform: scale(1.12); }
+/* options popup, sits right next to the button it opened from instead of a full screen sheet */
+.menu.drop.pop { position: fixed; z-index: 400; right: auto; bottom: auto; min-width: 230px; overflow-y: auto; overscroll-behavior: contain; padding: 6px; }
+.pop-head { display: grid; gap: 2px; padding: 8px 12px 10px; margin-bottom: 4px; border-bottom: 0.5px solid var(--glass-edge, rgba(255, 255, 255, 0.12)); }
+.pop-head b { font-size: 15px; overflow-wrap: anywhere; }
+.pop-head .secondary { font-size: 13px; overflow-wrap: anywhere; }
 .fav-tile .tile-live, .fav-tile .bar { z-index: 2; }
 .emb-adv { margin: 4px 0; }
 .emb-adv summary { cursor: pointer; color: var(--label-2); padding: 6px 0; }

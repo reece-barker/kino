@@ -83,7 +83,7 @@ IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.spa
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
 AVATAR_COUNT = 36  # Has to match the AVATARS list in app.js
-DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False}
+DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("kino")
@@ -1440,7 +1440,7 @@ async def profile_update(request: Request, p=Depends(current_profile)):
             prefs[k] = str(v or "")[:30]
         elif k == "sub_size" and v in ("s", "m", "l"):
             prefs[k] = v
-        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source"):
+        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source", "live_all_countries"):
             prefs[k] = bool(v)
         elif k == "still_watching":
             # Minutes without touching anything before the player asks if anyones still there, 0 is off
@@ -2565,8 +2565,10 @@ async def search(q: str, p=Depends(current_profile)):
                             "season": f["season"], "episode": f["episode"], "thumbnail": v.get("thumbnail")})
     ppl = sorted(people.values(), key=lambda x: (norm(x["name"]).startswith(q), x["count"]), reverse=True)
     # Live channels from the playlists whose name matches, english ones first like on the Live TV page
+    cw = live_country_where(p)
     chans = db().q("SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1 AND (c.ok IS NULL OR c.ok = 1) AND c.name LIKE ? "
-                   + ("AND c.grp = 'Kids' " if p.get("kids") else "") + "ORDER BY c.rank, c.name LIMIT 30", (f"%{q}%",))
+                   + ("AND c.grp = 'Kids' " if p.get("kids") else "") + (f"AND {cw} " if cw else "") + "ORDER BY c.rank, c.name LIMIT 30",
+                   (f"%{q}%", *(LIVE_HOME_COUNTRIES if cw else ())))
     guide = now_next({c["tvg"] for c in chans if c["tvg"]})
     embeds = []
     if not p.get("kids"):
@@ -5714,6 +5716,16 @@ def live_catalogs():
     return out
 
 
+LIVE_HOME_COUNTRIES = ("uk", "us", "fr", "de")
+
+
+def live_country_where(p):
+    """Live TV only lists the UK, US, France and Germany unless the profile turned on Show All Countries in Settings"""
+    if (p.get("prefs") or {}).get("live_all_countries"):
+        return None
+    return "(c.country IN (%s) OR c.country = '' OR c.country IS NULL)" % ",".join("?" * len(LIVE_HOME_COUNTRIES))
+
+
 @app.get("/api/live")
 async def live_list(group: str = "", country: str = "", q: str = "", skip: int = 0, all: int = 0, fav: int = 0, p=Depends(current_profile)):
     where, args = ["l.enabled = 1"], []
@@ -5723,6 +5735,9 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
         where.append("(c.ok IS NULL OR c.ok = 1)")
     if p.get("kids"):
         where.append("c.grp = 'Kids'")
+    cw = live_country_where(p)
+    if cw:
+        where.append(cw); args.extend(LIVE_HOME_COUNTRIES)
     if group:
         where.append("c.grp = ?"); args.append(group)
     if country:
@@ -5738,12 +5753,14 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
     if skip == 0:
         out["fav_count"] = len(favs)
         out["recordings"] = db().q("SELECT COUNT(*) n FROM recordings WHERE state != 'cancelled'")[0]["n"]
-        base = "FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1" + ("" if all else " AND (c.ok IS NULL OR c.ok = 1)") + (" AND c.grp = 'Kids'" if p.get("kids") else "")
-        out["groups"] = [r["grp"] for r in db().q(f"SELECT c.grp, COUNT(*) n {base} GROUP BY c.grp ORDER BY n DESC LIMIT 30")]
-        cs = [r["country"] for r in db().q(f"SELECT c.country, COUNT(*) n {base} AND c.country != '' GROUP BY c.country ORDER BY n DESC")]
-        lead = [c for c in ("uk", "us") if c in cs]
+        base = "FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1" + ("" if all else " AND (c.ok IS NULL OR c.ok = 1)") + (" AND c.grp = 'Kids'" if p.get("kids") else "") + (f" AND {cw}" if cw else "")
+        bargs = list(LIVE_HOME_COUNTRIES) if cw else []
+        out["groups"] = [r["grp"] for r in db().q(f"SELECT c.grp, COUNT(*) n {base} GROUP BY c.grp ORDER BY n DESC LIMIT 30", bargs)]
+        cs = [r["country"] for r in db().q(f"SELECT c.country, COUNT(*) n {base} AND c.country != '' GROUP BY c.country ORDER BY n DESC", bargs)]
+        lead = [c for c in ("uk", "us", "fr", "de") if c in cs]
         out["countries"] = lead + [c for c in cs if c not in lead]
-        out["total"] = db().q(f"SELECT COUNT(*) n {base}")[0]["n"]
+        out["all_countries"] = not cw
+        out["total"] = db().q(f"SELECT COUNT(*) n {base}", bargs)[0]["n"]
         out["has_guide"] = bool(db().q("SELECT 1 FROM epg WHERE stop > ? LIMIT 1", (time.time(),)))
         out["embeds"] = [] if p.get("kids") else [{"id": r["id"], "name": r["name"]} for r in db().q("SELECT id, name FROM embed_sources WHERE enabled = 1 ORDER BY id")]
         out["addon_rows"] = [] if p.get("kids") else [{"id": f"{a['id']}|{c['id']}", "title": f"{c.get('name') or c.get('id')}", "source": a["m"].get("name")} for a, c, _ in live_catalogs()]
@@ -5778,6 +5795,9 @@ async def live_guide(start: float = 0, hours: float = 3, group: str = "", countr
     where, args = ["l.enabled = 1", "c.tvg IS NOT NULL", "(c.ok IS NULL OR c.ok = 1)", "EXISTS (SELECT 1 FROM epg e WHERE e.tvg = c.tvg AND e.stop > ?)"], [time.time()]
     if p.get("kids"):
         where.append("c.grp = 'Kids'")
+    cw = live_country_where(p)
+    if cw:
+        where.append(cw); args.extend(LIVE_HOME_COUNTRIES)
     if group:
         where.append("c.grp = ?"); args.append(group)
     if country:

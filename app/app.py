@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, code TEXT, name TEXT, u
 CREATE TABLE IF NOT EXISTS search_recent (profile_id INTEGER, key TEXT, kind TEXT, title_id TEXT, name TEXT, poster TEXT,
     at REAL, PRIMARY KEY (profile_id, key));
 CREATE TABLE IF NOT EXISTS auto_intros (file_id TEXT PRIMARY KEY, start REAL, end REAL, tried REAL);
+CREATE TABLE IF NOT EXISTS online_intros (key TEXT PRIMARY KEY, intro_s REAL, intro_e REAL, outro_s REAL, fetched REAL);
 CREATE TABLE IF NOT EXISTS stream_health (id TEXT PRIMARY KEY, good REAL, bad REAL);
 CREATE TABLE IF NOT EXISTS sources_seen (id TEXT PRIMARY KEY, kind TEXT, has INTEGER, checked REAL);
 CREATE TABLE IF NOT EXISTS iptv_lists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, epg TEXT, local INTEGER DEFAULT 0,
@@ -769,6 +770,60 @@ async def probe_worker():
         except Exception as e:
             log.warning("probe worker: %s", e)
         await asyncio.sleep(60)
+
+
+# ---------------------------------------------------------------- intro times from the internet
+
+# IntroDB is a free community database of intro and credits times, looked up by the imdb id plus season and episode, its
+# the fallback when the file has no chapters and nobody marked the season and the audio matching found nothing, and its the
+# only thing streams from addons get cause theres no file to compare. Set INTRODB_URL to nothing to turn it off
+INTRODB_URL = env("INTRODB_URL", "https://api.introdb.app").rstrip("/")
+
+
+async def online_segments(imdb, season, episode):
+    """{"intro": (start, end) or None, "outro": start or None} for an episode, or None when we couldn't ask"""
+    if not INTRODB_URL or not str(imdb or "").startswith("tt") or season is None or episode is None:
+        return None
+    key = f"{imdb}:{season}:{episode}"
+    row = db().q("SELECT * FROM online_intros WHERE key = ?", (key,))
+    now = time.time()
+
+    def out(r):
+        return {"intro": (r["intro_s"], r["intro_e"]) if r["intro_s"] is not None else None, "outro": r["outro_s"]}
+    if row:
+        found = row[0]["intro_s"] is not None or row[0]["outro_s"] is not None
+        if now - row[0]["fetched"] < (30 if found else 3) * 86400:
+            return out(row[0])
+    try:
+        async with httpx.AsyncClient(timeout=4) as c:
+            r = await c.get(f"{INTRODB_URL}/segments", params={"imdb_id": imdb, "season": int(season), "episode": int(episode)})
+    except Exception:
+        return out(row[0]) if row else None  # cant reach it right now an old answer is better then none
+    if r.status_code == 429 or r.status_code >= 500:
+        return out(row[0]) if row else None
+    j = {}
+    if r.status_code == 200:
+        try:
+            j = r.json()
+        except ValueError:
+            j = {}
+    intro = outro = None
+    seg = j.get("intro") if isinstance(j, dict) else None
+    if isinstance(seg, dict) and not j.get("no_intro"):
+        try:
+            a, b = float(seg["start_sec"]), float(seg["end_sec"])
+            if 0 <= a and 5 <= b - a <= 180:
+                intro = (a, b)
+        except (KeyError, TypeError, ValueError):
+            pass
+    seg = j.get("outro") if isinstance(j, dict) else None
+    if isinstance(seg, dict) and not j.get("no_outro"):
+        try:
+            outro = float(seg["start_sec"])
+        except (KeyError, TypeError, ValueError):
+            pass
+    db().q("INSERT OR REPLACE INTO online_intros VALUES (?,?,?,?,?)", (key, intro[0] if intro else None, intro[1] if intro else None, outro, now))
+    return {"intro": intro, "outro": outro}
 
 
 # ---------------------------------------------------------------- automatic intro detection
@@ -2866,6 +2921,14 @@ async def file_info(fid: str, request: Request, p=Depends(current_profile)):
     credits = cc["start"] if cc and cc["start"] > pr["duration"] * 0.6 else None
 
     t = LIB["titles"].get(f["title_id"])
+    if (intro is None or credits is None) and t and f["season"] is not None:
+        # Nothing in the file or from the audio matching so the community database might know
+        on = await online_segments((meta_for(t) or {}).get("id"), f["season"], f["episode"])
+        if on:
+            if intro is None and on["intro"] and on["intro"][1] < (pr["duration"] or 1e9):
+                intro = {"start": on["intro"][0], "end": on["intro"][1], "source": "online"}
+            if credits is None and on["outro"] and pr["duration"] and pr["duration"] * 0.6 < on["outro"] < pr["duration"] - 5:
+                credits = on["outro"]
     nxt = None
     if t and f["season"] is not None:
         i = t["files"].index(fid)
@@ -2956,12 +3019,12 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     t = max(0.0, float(body.get("t") or 0))
     a = int(body.get("audio") or 0)
     # Audio sync: aresample keeps the sound matched to the video's timestamps (files with gaps or drift go out of
-    # sync slowly otherwise), and the player's Audio Sync setting can shift it by hand, positive is later
+    # sync slowly otherwise), and the player's Audio Sync setting can shift it by hand, positive is later. The filter
+    # itself gets made further down once we know where the video starts
     try:
         ad = max(-5.0, min(5.0, float(body.get("ad") or 0)))
     except (TypeError, ValueError):
         ad = 0.0
-    afilter = "aresample=async=1000" + (f",asetpts=PTS{ad:+.3f}/TB" if ad else "")
     if fid.startswith("s"):
         r = stream_row(fid)
         if r["url"].startswith("torbox:"):
@@ -3009,10 +3072,25 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     else:
         raise HTTPException(415, f"{codec} video above 1080p can't be converted on this server, use Download instead")
 
-    if t > 0 and vargs[:2] == ["-c:v", "copy"]:
-        # Copied video can only start on a keyframe but the audio starts exactly where you asked, so seeking used to put
-        # the sound a few seconds out. Starting both on the keyframe keeps them together and the player gets the real start
-        t = await keyframe_before(f["path"], t)
+    # Copied video can only start on a keyframe but the audio starts exactly where you asked, so after a skip the two begin
+    # at diferent times. The mp4 muxer writes that gap as an empty edit in the header and chrome, hls.js and exoplayer all
+    # ignore those so the sound played early by however far the keyframe was (that was the desync after skipping and why
+    # resync never helped, it just made the same stream again). So we ask ffmpeg where the video realy starts first
+    offset = t
+    if t > 0 and vargs[:2] == ["-c:v", "copy"] and Path(f["path"]).suffix.lower() not in (".ts", ".m2ts", ".mts"):
+        # A bit past where you asked cause ffmpeg lands on the keyframe before a point with some room, a keyframe sitting
+        # right on the spot gets skiped for the one before it otherwise
+        v0 = await video_start(f["path"], t + 0.6)
+        if v0 is not None and v0 <= 0:
+            # Start BOTH of them on that keyframe and drop anything the copy would put before it so theres no gap at the
+            # start for a player to ignore, the sound before the keyframe comes along as well. A millisecond under it so
+            # rounding cant drop the keyframe its self
+            offset = max(0.0, t + 0.6 + v0)
+            t = max(0.0, math.floor(offset * 1000 - 1) / 1000)
+            vargs += ["-copypriorss:v", "0"]
+    # first_pts 0 puts silence in front if the sound starts a bit after the picture (and cuts it if it starts before), a few
+    # files have the sound starting late even without skipping. 48000 first so everything after it is in a known unit
+    afilter = "aresample=48000,aresample=async=1000:first_pts=0" + (f",asetpts=PTS{ad:+.3f}/TB" if ad else "")
 
     sid = secrets.token_hex(8)
     out = HLS_DIR / sid
@@ -3030,7 +3108,7 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
              str(out / "index.m3u8")]
     errlog = open(out / "ffmpeg.log", "wb")
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=errlog)
-    SESS[sid] = {"proc": proc, "dir": out, "owner": owner, "device": device, "fid": fid, "last": time.time(), "offset": t}
+    SESS[sid] = {"proc": proc, "dir": out, "owner": owner, "device": device, "fid": fid, "last": time.time(), "offset": offset}
 
     # Waits for the first segment before telling the player to start
     pl = out / "index.m3u8"
@@ -3045,27 +3123,37 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     else:
         kill_session(sid)
         raise HTTPException(504, "The Storage Box took too long to respond, try again")
-    return {"sid": sid, "url": f"/api/hls/{sid}/index.m3u8", "offset": t}
+    return {"sid": sid, "url": f"/api/hls/{sid}/index.m3u8", "offset": offset}
 
 
-async def keyframe_before(path, t):
-    """The keyframe at or just before t, ffprobe seeks there and reads one packet so its quick even over the network"""
+async def video_start(path, t):
+    """Where the copied video really begins when ffmpeg is told to seek to t: seconds from t, negative when the keyframe
+    is earlier (the usual) and positive when it had to go on to the next one. Runs the same seek ffmpeg will do and reads
+    the first video packet, so it lands on the same keyframe whatever the file is (mkv with few seek points, mp4, ts).
+    None when it can't tell, then it just starts where it was asked like it always did"""
+    proc = None
     try:
-        proc = await asyncio.create_subprocess_exec("ffprobe", "-v", "error", "-select_streams", "v:0", "-read_intervals", f"{t:.3f}%+#1",
-                                                    "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", path,
+        proc = await asyncio.create_subprocess_exec("ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{t:.3f}", "-i", path,
+                                                    "-map", "0:v:0", "-c", "copy", "-frames:v", "1", "-f", "framecrc", "-",
                                                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+        tb = None
         for line in out.decode(errors="ignore").splitlines():
-            pts, _, flags = line.partition(",")
-            k = float(pts)
-            if "K" in flags and t - 30 <= k <= t + 0.01:
-                return max(0.0, k)
-    except (asyncio.TimeoutError, ValueError, OSError):
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    return t
+            if line.startswith("#tb 0:"):
+                a, _, b = line.split(":", 1)[1].strip().partition("/")
+                tb = int(a) / int(b)
+            elif line and line[0] == "0" and tb:
+                # stream, dts, pts, duration, size, crc
+                v = float(line.split(",")[2]) * tb
+                # a keyframe more than 90 seconds off means somthing odd (a bad index) so better to leave the audio alone
+                return v if abs(v) <= 90 else None
+    except (asyncio.TimeoutError, ValueError, IndexError, ZeroDivisionError, OSError):
+        if proc and proc.returncode is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    return None
 
 
 HLS_NAME = re.compile(r"^(index\.m3u8|init\.mp4|seg\d{5}\.m4s)$")
@@ -4203,14 +4291,20 @@ async def stream_file_info(sid, p, request):
         if not kids_ok((m or {}).get("genres"), show_of(r["video_id"])):
             raise HTTPException(404, "That title isn't available on this profile")
     w = watch_row(p["id"], sid, "pos, watched")
+    # Streams have no file to compare so the intro (and where the credits start) can only come from the comunity database
+    on = await online_segments(show_of(r["video_id"]), cur["season"], cur["episode"]) if cur else None
+    s_intro = {"start": on["intro"][0], "end": on["intro"][1], "source": "online"} if on and on["intro"] else None
     common = {"resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
               "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
               "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
-              "title_id": None, "intro": None, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"],
+              "title_id": None, "intro": s_intro, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"],
               "prefs": p["prefs"], "is_admin": bool(admin_user(request)), "art": art_for_id(show_of(r["video_id"]), r["poster"])}
     if r["url"].startswith("torbox:") or is_hls(r["url"]):
         _, pr = await (tb_probe(r) if r["url"].startswith("torbox:") else hls_probe(r))
         a = next((x for x in pr["audio"] if x.get("default")), pr["audio"][0] if pr["audio"] else None)
+        dur = pr.get("duration")
+        if on and on["outro"] and dur and dur * 0.6 < on["outro"] < dur - 5:
+            common["credits"] = on["outro"]
         return {"id": sid, "stream": True, "name": r["name"], "src": None, "direct": False, "video": pr.get("video") or {},
                 "audio": [{"n": x["n"], "lang": lang_name(x["lang"]) if x.get("lang") else "",
                            "label": " ".join(str(y) for y in (x.get("title") or lang_name(x.get("lang")), x.get("codec", "").upper(), f"{x.get('channels')}ch") if y)}
@@ -4223,7 +4317,7 @@ async def stream_file_info(sid, p, request):
             "download": f"/api/rstream/{sid}?dl=1", "resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
             "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
             "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
-            "title_id": None, "intro": None, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"], "ext": ext, "prefs": p["prefs"], "is_admin": bool(admin_user(request)),
+            "title_id": None, "intro": s_intro, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"], "ext": ext, "prefs": p["prefs"], "is_admin": bool(admin_user(request)),
             "art": common["art"]}
 
 

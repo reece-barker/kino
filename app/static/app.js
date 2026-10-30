@@ -295,7 +295,7 @@
     const item = (k, label, icon, extra = "") => `<a class="side-item" href="#/${k}" data-k="${k}"><span class="side-ic">${ic(icon)}</span><span class="side-lbl">${label}</span>${extra}</a>`;
     const F = ME.features || {};
     const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"],
-      ...(F.live ? [["live", "Live TV", "live"]] : []), ...(F.videos ? [["videos", "Videos", "video"]] : []), ["mylist", "My List", "bookmark"]];
+      ...(F.live ? [["live", "Live TV", "live"]] : []), ["mylist", "My List", "bookmark"]];
     const group = [["settings", "Settings", "gear"], ["history", "History", "clock"]];
     if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["server", "Server", "server"]);
     chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
@@ -490,9 +490,6 @@
     const r = await api("/api/profiles");
     ME.admin = r.admin;
     app.innerHTML = `<main class="who">
-      <div class="who-corner">${!!ME.admin
-        ? `<span class="secondary">Signed in as ${esc(ME.admin)}</span><button class="btn secondary small" id="adminOut2">Sign Out</button>`
-        : `<button class="btn secondary small" id="adminIn2">${ic("lock")} Admin</button>`}</div>
       <h1 class="who-title">${manage ? "Manage Profiles" : "Who's Watching?"}</h1>
       <div class="who-grid ${manage ? "managing" : ""}">
         ${r.profiles.map((p) => `<button class="who-tile" data-pid="${p.id}" aria-label="${manage ? "Edit" : "Watch as"} ${esc(p.name)}">
@@ -1769,51 +1766,73 @@
   // Channels from the IPTV playlists the admin added (english first, the UK then the US), and live rows from addons.
   // Channels plays straight away, and in the player up and down (or the channel buttons) flick through the ones
   // around it. The Guide shows whats on over the next few hours for channels that have guide data
-  const LIVE_STATE = { group: "", country: "", q: "" };
+  const LIVE_STATE = { group: "", country: "", q: "", fav: false };
   const hm = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const flag = (c) => ({ uk: "UK", us: "US", ie: "Ireland", ca: "Canada", au: "Australia", nz: "New Zealand" })[c] || (c ? c.toUpperCase() : "");
   let LIVE_LIST = [];
   const chanCard = (c, i) => {
     const pr = c.now ? Math.min(1, Math.max(0, (Date.now() / 1000 - c.now.start) / (c.now.stop - c.now.start))) : null;
-    return `<button class="ch-card" data-ch="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}">
+    return `<div class="ch-cell"><button class="ch-card" data-ch="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}">
       <span class="ch-logo">${c.logo ? `<img loading="lazy" src="${img(c.logo, 1, 240)}" alt="" data-fallback="hide">` : ""}<b class="ch-ph">${esc(c.name.slice(0, 2))}</b></span>
       <span class="ch-body"><b class="ch-name">${esc(c.name)}</b>
         <span class="ch-now">${c.now ? esc(c.now.title) : esc([c.group, flag(c.country)].filter(Boolean).join(" · "))}</span>
         ${pr != null ? `<span class="ch-bar"><i style="width:${pr * 100}%"></i></span>` : ""}
-        ${c.next ? `<span class="ch-next">${hm(c.next.start)} ${esc(c.next.title)}</span>` : ""}</span></button>`;
+        ${c.next ? `<span class="ch-next">${hm(c.next.start)} ${esc(c.next.title)}</span>` : ""}</span>${c.fav ? `<span class="ch-fav" aria-hidden="true">★</span>` : ""}</button>
+      <button class="ch-opt" data-opt="${i}" aria-label="More for ${esc(c.name)}" title="Favourite, Record">${ic("more")}</button></div>`;
   };
 
-  async function pageLive(guide) {
-    const st = LIVE_STATE;
-    const qs = () => [st.group && "group=" + encodeURIComponent(st.group), st.country && "country=" + encodeURIComponent(st.country), st.q && "q=" + encodeURIComponent(st.q)].filter(Boolean).join("&");
+  async function pageLive(mode) {
+    const st = LIVE_STATE, guide = mode === "guide";
+    const qs = () => [st.fav && "fav=1", st.group && "group=" + encodeURIComponent(st.group), st.country && "country=" + encodeURIComponent(st.country), st.q && "q=" + encodeURIComponent(st.q)].filter(Boolean).join("&");
     const r = await api("/api/live?" + qs());
-    const chips = (list, key, label) => `<div class="chips live-chips" role="group" aria-label="${label}"><button class="chip ${!st[key] ? "on" : ""}" data-${key}="">All</button>${list.map((x) => `<button class="chip ${st[key] === x ? "on" : ""}" data-${key}="${esc(x)}">${esc(key === "country" ? flag(x) : x)}</button>`).join("")}</div>`;
+    const chips = (list, key, label) => `<div class="chips live-chips" role="group" aria-label="${label}"><button class="chip ${!st[key] && !(key === "group" && st.fav) ? "on" : ""}" data-${key}="">All</button>${key === "group" && r.fav_count ? `<button class="chip ${st.fav ? "on" : ""}" data-fav="1">★ Favourites</button>` : ""}${list.map((x) => `<button class="chip ${st[key] === x && !st.fav ? "on" : ""}" data-${key}="${esc(x)}">${esc(key === "country" ? flag(x) : x)}</button>`).join("")}</div>`;
+    const tabs = `<div class="live-tabs" role="tablist"><a class="${!mode ? "on" : ""}" href="#/live" role="tab">${ic("live")} Channels</a><a class="${guide ? "on" : ""}" href="#/live/guide" role="tab">${ic("guide")} TV Guide</a>${!kidsMode() ? `<a class="${mode === "rec" ? "on" : ""}" href="#/live/rec" role="tab">${ic("download")} Recordings</a>` : ""}</div>`;
+    if (mode === "rec") {
+      app.innerHTML = topbar("live") + `<main class="page live-page"><div class="live-head"><h1 class="large-title">Live TV</h1>${tabs}</div><div id="recList"></div></main>`;
+      wireTopbar();
+      return drawRecordings();
+    }
     app.innerHTML = topbar("live") + `<main class="page live-page">
-      <div class="live-head"><h1 class="large-title">Live TV</h1>
-        <div class="live-tabs" role="tablist"><a class="${guide ? "" : "on"}" href="#/live" role="tab">${ic("live")} Channels</a>${r.has_guide ? `<a class="${guide ? "on" : ""}" href="#/live/guide" role="tab">${ic("guide")} TV Guide</a>` : ""}</div></div>
-      ${!r.total && !r.addon_rows.length && !r.embeds.length ? `<div class="empty"><h2>No channels yet</h2><p>${isAdmin() ? "Add an IPTV playlist (M3U) in Settings under Live TV, or install an addon with live channels." : "Ask the admin to add some channels."}</p>${isAdmin() ? `<a class="btn secondary small" href="#/settings">Open Settings</a>` : ""}</div>` : `
+      <div class="live-head"><h1 class="large-title">Live TV</h1>${tabs}</div>
+      ${!r.total && !r.addon_rows.length && !r.embeds.length && !st.fav && !st.q ? `<div class="empty"><h2>No channels yet</h2><p>${isAdmin() ? "Add an IPTV playlist (M3U) in Settings under Live TV, or install an addon with live channels." : "Ask the admin to add some channels."}</p>${isAdmin() ? `<a class="btn secondary small" href="#/settings">Open Settings</a>` : ""}</div>` : `
       ${r.countries.length > 1 ? chips(r.countries.slice(0, 12), "country", "Country") : ""}
-      ${r.groups.length > 1 ? chips(r.groups, "group", "Category") : ""}
+      ${r.groups.length > 1 || r.fav_count ? chips(r.groups, "group", "Category") : ""}
       ${guide ? `<div id="guide" class="guide"></div>` : `
       <form class="search live-search" id="lsForm" role="search">${ic("search")}<input id="lsq" type="search" placeholder="Find a channel" value="${esc(st.q)}" autocomplete="off"></form>
       <div id="liveRows"></div>
-      <section class="section"><h2 class="section-title">${st.group || st.country ? esc([flag(st.country), st.group].filter(Boolean).join(" ")) : "Channels"} <span class="from">${r.total ? r.total + " working" : ""}</span></h2>
+      <section class="section"><h2 class="section-title">${st.fav ? "Favourites" : st.group || st.country ? esc([flag(st.country), st.group].filter(Boolean).join(" ")) : "Channels"} <span class="from" id="chCount">${r.total ? r.total + " working" : ""}</span></h2>
         <div class="ch-grid" id="chGrid">${r.channels.map(chanCard).join("")}</div>
         <div class="grid-more" id="chMore" ${r.next ? "" : "hidden"}><span class="spin small"></span></div></section>`}`}
     </main>`;
     wireTopbar();
     LIVE_LIST = r.channels.slice();
     $$("[data-country]").forEach((b) => (b.onclick = () => { st.country = b.dataset.country; route(); }));
-    $$("[data-group]").forEach((b) => (b.onclick = () => { st.group = b.dataset.group; route(); }));
+    $$("[data-group]").forEach((b) => (b.onclick = () => { st.group = b.dataset.group; st.fav = false; route(); }));
+    $$("[data-fav]").forEach((b) => (b.onclick = () => { st.fav = true; st.group = ""; route(); }));
     if (guide) return drawGuide(qs());
     const grid = $("#chGrid");
     if (!grid) return;
-    grid.addEventListener("click", (e) => { const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST); });
-    let t;
-    $("#lsq").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value.trim(); route(); }, 400); });
-    $("#lsForm").onsubmit = (e) => { e.preventDefault(); clearTimeout(t); st.q = $("#lsq").value.trim(); route(); };
+    grid.addEventListener("click", (e) => {
+      const o = e.target.closest("[data-opt]");
+      if (o) return liveOptions(LIVE_LIST[Number(o.dataset.opt)]);
+      const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST);
+    });
+    let next = r.next, busy = false, t, qn = 0;
+    // Searching only redraws the channels, so the box keeps focus while you type
+    const find = async () => {
+      const my = ++qn;
+      const m = await api("/api/live?" + qs()).catch(() => null);
+      if (!m || my !== qn || !$("#chGrid")) return;
+      LIVE_LIST = m.channels.slice();
+      grid.innerHTML = m.channels.map(chanCard).join("") || `<p class="secondary">No channels called that.</p>`;
+      next = m.next;
+      $("#chMore").hidden = !next;
+      $("#chCount").textContent = m.total ? `${m.total} working` : "";
+      $("#liveRows").hidden = !!st.q;
+    };
+    $("#lsq").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value.trim(); find(); }, 300); });
+    $("#lsForm").onsubmit = (e) => { e.preventDefault(); clearTimeout(t); st.q = $("#lsq").value.trim(); find(); };
     // More channels as you scroll down
-    let next = r.next, busy = false;
     const more = async () => {
       if (!next || busy || !$("#chMore") || $("#chMore").getBoundingClientRect().top > innerHeight * 1.6) return;
       busy = true;
@@ -1832,7 +1851,7 @@
     // Live rows from addons (events, channels), each filled in when it arrives
     const rows = $("#liveRows");
     // Embed sources (a service's own player pages), a row each, live ones first
-    if (!st.group && !st.country && !st.q) r.embeds.forEach(async (src) => {
+    if (!st.group && !st.country && !st.q && !st.fav) r.embeds.forEach(async (src) => {
       const sec = document.createElement("section");
       sec.className = "shelf";
       sec.setAttribute("aria-label", src.name);
@@ -1846,7 +1865,7 @@
         $(".row", sec).addEventListener("click", (e) => { const a = e.target.closest("[data-emb]"); if (!a) return; e.preventDefault(); openEmbed(x.items, Number(a.dataset.emb), src.name); });
       } catch (_) { sec.remove(); }
     });
-    if (!st.group && !st.country && !st.q) r.addon_rows.forEach(async (row) => {
+    if (!st.group && !st.country && !st.q && !st.fav) r.addon_rows.forEach(async (row) => {
       const sec = document.createElement("section");
       sec.className = "shelf";
       sec.setAttribute("aria-label", row.title);
@@ -1882,9 +1901,91 @@
     box.innerHTML = `<div class="g-times"><span></span><div>${slots.map((t) => `<span style="left:${pct(t)}%">${hm(t)}</span>`).join("")}</div></div>
       ${r.channels.map((c, i) => `<div class="g-row"><button class="g-ch" data-ch="${i}" aria-label="${esc(c.name)}">${c.logo ? `<img loading="lazy" src="${img(c.logo, 1, 160)}" alt="" data-fallback="hide">` : ""}<span>${esc(c.name)}</span></button>
         <div class="g-line">${c.progs.map((p) => { const l = pct(p.start), w = pct(p.stop) - l; const on = p.start <= Date.now() / 1000 && p.stop > Date.now() / 1000;
-          return w > 0.5 ? `<button class="g-prog ${on ? "on" : ""}" data-ch="${i}" style="left:${l}%;width:${w}%" title="${esc(p.title)} ${hm(p.start)} to ${hm(p.stop)}"><b>${esc(p.title)}</b><span>${hm(p.start)}${p.sub ? " · " + esc(p.sub) : ""}</span></button>` : ""; }).join("") || `<span class="g-none">No guide</span>`}</div></div>`).join("")}
+          return w > 0.5 ? `<button class="g-prog ${on ? "on" : ""}" data-gp="${i}:${c.progs.indexOf(p)}" style="left:${l}%;width:${w}%" title="${esc(p.title)} ${hm(p.start)} to ${hm(p.stop)}"><b>${esc(p.title)}</b><span>${hm(p.start)}${p.sub ? " · " + esc(p.sub) : ""}</span></button>` : ""; }).join("") || `<span class="g-none">No guide</span>`}</div></div>`).join("")}
       <div class="g-now" style="left:calc(var(--g-ch) + (100% - var(--g-ch)) * ${pct(Date.now() / 1000) / 100})"></div>`;
-    box.addEventListener("click", (e) => { const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST); });
+    box.addEventListener("click", (e) => {
+      const g = e.target.closest("[data-gp]");
+      if (g) { const [ci, pi] = g.dataset.gp.split(":").map(Number); return liveOptions(LIVE_LIST[ci], LIVE_LIST[ci].progs[pi]); }
+      const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST);
+    });
+  }
+
+  // A channel's options (or a programme's, from the guide): watch, favourite, record
+  function liveOptions(ch, prog) {
+    if (!ch) return;
+    const now = Date.now() / 1000, on = prog && prog.start <= now && prog.stop > now, later = prog && prog.start > now;
+    const isChan = String(ch.id).startsWith("c");
+    const cur = !prog && ch.now ? ch.now : null;
+    const sh = sheet(`<div class="src-head"><div><h2>${esc(prog ? prog.title : ch.name)}</h2><p class="secondary">${esc(prog ? `${ch.name} · ${hm(prog.start)} to ${hm(prog.stop)}` : cur ? `Now: ${cur.title}, until ${hm(cur.stop)}` : ch.group || "Live")}</p>
+        ${prog && prog.desc ? `<p class="secondary" style="margin-top:8px">${esc(prog.desc.slice(0, 260))}</p>` : ""}</div></div>
+      <div class="opt-list">
+        ${!later ? `<button class="mi" data-o="watch">${ic("play")} Watch ${esc(ch.name)}</button>` : ""}
+        ${!kidsMode() ? (prog ? `<button class="mi" data-o="recprog">${ic("download")} Record ${on ? "the Rest of This" : "This Programme"}</button>`
+          : `${cur ? `<button class="mi" data-o="reccur">${ic("download")} Record ${esc(cur.title)}</button>` : ""}<button class="mi" data-o="rec60">${ic("download")} Record the Next Hour</button><button class="mi" data-o="rec120">${ic("download")} Record the Next 2 Hours</button>`) : ""}
+        ${isChan ? `<button class="mi" data-o="fav">${ch.fav ? "★ Remove from Favourites" : "☆ Add to Favourites"}</button>` : ""}
+      </div>`);
+    const rec = async (body) => {
+      try { const r = await api("/api/live/record", { cid: ch.id, channel: ch.name, ...body }); sh.close(); toast(r.now ? "Recording to the Storage Box" : "Recording scheduled", 3500); }
+      catch (e) { toast(e.message, 5000); }
+    };
+    $$("[data-o]", sh.el).forEach((b) => (b.onclick = async () => {
+      const o = b.dataset.o;
+      if (o === "watch") { sh.close(); playLive(ch, LIVE_LIST.includes(ch) ? LIVE_LIST : [ch]); }
+      else if (o === "recprog") rec({ title: prog.title, start: prog.start, stop: prog.stop });
+      else if (o === "reccur") rec({ title: cur.title, start: cur.start, stop: cur.stop });
+      else if (o === "rec60") rec({ minutes: 60 });
+      else if (o === "rec120") rec({ minutes: 120 });
+      else if (o === "fav") {
+        await api(`/api/live/fav/${ch.id}`, ch.fav ? undefined : {}, ch.fav ? "DELETE" : "POST").catch(() => {});
+        ch.fav = !ch.fav; sh.close(); toast(ch.fav ? "Added to Favourites" : "Removed from Favourites");
+        if (location.hash.startsWith("#/live") && !location.hash.includes("guide")) route();
+      }
+    }));
+  }
+
+  // Recordings on the Storage Box: whats recording, whats coming up, and what's done
+  async function drawRecordings() {
+    const box = $("#recList");
+    const r = await api("/api/live/recordings").catch(() => ({ recordings: [] }));
+    if (!$("#recList")) return;
+    const label = { recording: "Recording", scheduled: "Scheduled", done: "", stopped: "Stopped early", failed: "Failed" };
+    box.innerHTML = r.recordings.length ? `<div class="list rec-list">${r.recordings.map((x) => `<div class="li rec">
+        <span class="grow"><b>${esc(x.title)}</b>${label[x.state] ? ` <span class="badge ${x.state === "recording" ? "rec-on" : x.state === "failed" ? "warn" : ""}">${label[x.state]}</span>` : ""}<br>
+          <span class="secondary">${esc(x.channel)} · ${esc(new Date(x.start * 1000).toLocaleDateString([], { day: "numeric", month: "short" }))} ${hm(x.start)} to ${hm(x.stop)}${x.size ? " · " + bytes(x.size) : ""}${x.error ? " · " + esc(x.error) : ""}</span></span>
+        ${x.playable ? `<button class="round-btn sm" data-rplay="${x.id}" aria-label="Play ${esc(x.title)}">${ic("play")}</button>` : ""}
+        ${x.state === "recording" || x.state === "scheduled" ? `<button class="btn secondary small" data-rstop="${x.id}">${x.state === "recording" ? "Stop" : "Cancel"}</button>` : ""}
+        <button class="round-btn sm" data-rdel="${x.id}" aria-label="Delete ${esc(x.title)}">${ic("trash")}</button></div>`).join("")}</div>`
+      : `<div class="empty"><h2>No recordings yet</h2><p>Open a channel's options (the ··· next to it) or pick a programme in the TV Guide to record it to the Storage Box.</p></div>`;
+    $$("[data-rplay]", box).forEach((b) => (b.onclick = () => playRecording(r.recordings.find((x) => String(x.id) === b.dataset.rplay))));
+    $$("[data-rstop]", box).forEach((b) => (b.onclick = async () => { await api(`/api/live/recordings/${b.dataset.rstop}/stop`, {}).catch((e) => toast(e.message)); drawRecordings(); }));
+    $$("[data-rdel]", box).forEach((b) => (b.onclick = async () => {
+      if (!(await confirmSheet("Delete this recording?", "It's removed from the Storage Box.", "Delete"))) return;
+      await api(`/api/live/recordings/${b.dataset.rdel}`, undefined, "DELETE").catch((e) => toast(e.message)); drawRecordings();
+    }));
+    if (r.recordings.some((x) => x.state === "recording" || x.state === "scheduled")) setTimeout(() => { if ($("#recList") === box) drawRecordings(); }, 15000);
+  }
+
+  function playRecording(x) {
+    if (!x) return;
+    const url = `/api/live/recordings/${x.id}/file`;
+    if (useNative()) {
+      window.KinoAndroid.playNative(JSON.stringify({ fid: "r" + x.id, url, title: x.title, sub: x.channel, base: location.origin, ua: navigator.userAgent, start: 0, duration: 0,
+        art: { background: null, logo: null }, video: {}, subs: [], audioN: 0, isStream: false, moreSources: false, autoplay: false, loadStats: false, subSize: "m" }));
+      NATIVE = { fid: "r" + x.id, info: { recording: true, prefs: {} }, opts: {}, live: { rec: true } };
+      return;
+    }
+    closePlayer(true);
+    clearInterval(HERO_T);
+    pl.el.hidden = false;
+    document.body.style.overflow = "hidden";
+    pl.info = { recording: true, id: "r" + x.id, name: x.title, prefs: (ME.profile && ME.profile.prefs) || {}, subs: [], audio: [], stream: false, duration: 0 };
+    $("#pTitle").textContent = x.title;
+    $("#pSub").textContent = x.channel;
+    pl.mode = "direct";
+    spinner(true);
+    pl.v.src = url;
+    pl.v.play().catch(() => {});
+    wakeUi();
   }
 
   // ---- embed player: the service's own player page in a locked down frame (no popups, cant navigate Kino away),
@@ -1998,18 +2099,6 @@
     LIVE_NOW.i = (LIVE_NOW.i + d + LIVE_NOW.list.length) % LIVE_NOW.list.length;
     tune();
     toast(LIVE_NOW.list[LIVE_NOW.i].name, 1800);
-  }
-
-  // ---------------------------------------------------------- videos
-  // Youtube style addons (youtubio) get there own section, away from films and shows
-  async function pageVideos() {
-    const r = await api("/api/videos");
-    app.innerHTML = topbar("videos") + `<main class="page"><h1 class="large-title">Videos</h1>
-      ${r.shelves.length ? r.shelves.map((s) => `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}</h2>
-        <div class="row wide" data-shelf="${esc(s.id)}" data-next="${s.next}" data-style="wide" ${s.pending ? "data-pending" : ""}>${s.pending ? Array.from({ length: 6 }, () => `<div class="sk sk-wide"></div>`).join("") : ""}${s.items.map((t) => wideTile(t)).join("")}</div></section>`).join("")
-        : `<div class="empty"><h2>No videos yet</h2><p>Videos come from addons like YouTubio. Their rows show up here once they've loaded.</p></div>`}</main>`;
-    wireTopbar();
-    growShelves(app);
   }
 
   // ---------------------------------------------------------- settings
@@ -2131,7 +2220,8 @@
       </section>
       <section class="card set-card" id="devicesCard"><div class="skel" style="height:80px"></div></section>
       <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>
-      <section class="card set-card" id="liveCard"><div class="skel" style="height:80px"></div></section>`;
+      <section class="card set-card" id="liveCard"><div class="skel" style="height:80px"></div></section>
+      <section class="card set-card" id="embedCard"></section>`;
     drawDevices();
     drawAddons();
     drawLiveAdmin();
@@ -2219,8 +2309,10 @@
         <input id="lvEpg" placeholder="Guide link (XMLTV), optional" spellcheck="false" autocapitalize="none" inputmode="url">
         <label class="set-row" style="padding:4px 0"><span><b>On My Network</b><span class="secondary">For a TV server at home, lets Kino reach local addresses for this playlist</span></span><input type="checkbox" class="switch" id="lvLocal"></label>
         <div class="actions end"><button class="btn primary small" type="submit" id="lvGo">${ic("plus")} Add Playlist</button></div>
-      </form><div class="form-err" id="lvErr" role="alert"></div>
-      <h3 class="set-sub">Embed Sources</h3>
+      </form><div class="form-err" id="lvErr" role="alert"></div>`;
+    // Embed sources get there own card underneath so they're easy to find
+    const ebox = $("#embedCard") || box;
+    ebox.innerHTML = `<h2 class="set-title">Live TV Embed Sources</h2>
       <p class="secondary set-hint">For services that give you a JSON list of channels or events with a player page for each. Kino shows them on Live TV and opens their player in a locked down frame. If the list only has ids, add the player link with {id} where the id goes, like https://example.com/embed/{id}.</p>
       <div class="list">${(r.embeds || []).map((x) => `<div class="addon ${x.enabled ? "" : "off"}"><div class="addon-top"><span class="addon-logo">${ic("link")}</span>
           <span class="grow"><b>${esc(x.name)}</b><span class="addon-desc secondary">${esc(x.url)}${x.player ? `<br>Player: ${esc(x.player)}` : ""}</span></span>
@@ -2242,8 +2334,8 @@
         ME.features = null; drawLiveAdmin();
       } catch (er) { $("#emErr").textContent = er.message; go.disabled = false; }
     };
-    $$("[data-eon]", box).forEach((c) => (c.onchange = async () => { await api(`/api/admin/embeds/${c.dataset.eon}`, { enabled: c.checked }, "PUT").catch(() => {}); ME.features = null; drawLiveAdmin(); }));
-    $$("[data-erm]", box).forEach((b) => (b.onclick = async () => {
+    $$("[data-eon]", ebox).forEach((c) => (c.onchange = async () => { await api(`/api/admin/embeds/${c.dataset.eon}`, { enabled: c.checked }, "PUT").catch(() => {}); ME.features = null; drawLiveAdmin(); }));
+    $$("[data-erm]", ebox).forEach((b) => (b.onclick = async () => {
       if (!(await confirmSheet("Remove this source?", "Its row comes off Live TV for everyone.", "Remove"))) return;
       await api(`/api/admin/embeds/${b.dataset.erm}`, undefined, "DELETE").catch(() => {}); ME.features = null; drawLiveAdmin();
     }));
@@ -2762,7 +2854,7 @@
     const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
     if (!r) return;
     // Live tv just closes, unless they asked for the web player from its error box
-    if (cur && cur.live) return;
+    if (cur && cur.live) { if (cur.live.rec && location.hash.startsWith("#/live/rec")) setTimeout(softRoute, 300); return; }
     // A broken source: the next one plays straight away
     if (r.sourceFailed && nextSource(r.fid, r.fake ? 0 : r.pos, r.why || null)) return;
     // Otherwise the player only hands back an error when someone picked Web Player in its error box
@@ -2824,7 +2916,7 @@
     loadArt(info.art, (opts.title && opts.title.name) || info.show || info.name);
     if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
     pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false; pl.fakeAsked = false; pl.greenChecked = false;
-    pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0;
+    pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0; pl.ad = 0;
     pl.title = opts.title || null;
     const prefs = info.prefs || {};
     $("#subsLayer").dataset.size = prefs.sub_size || "m";
@@ -2955,7 +3047,7 @@
     const au = (pl.info.audio || []).find((x) => x.n === pl.audio);
     loadNote([au && au.label, vc.dovi ? "Dolby Vision to HDR" : "", t > 1 ? `from ${clock(t)}` : ""].filter(Boolean).join(" · "));
     try {
-      r = await api(`/api/play/${pl.info.id}`, { t, audio: pl.audio, hevc: codecOk("hevc") });
+      r = await api(`/api/play/${pl.info.id}`, { t, audio: pl.audio, hevc: codecOk("hevc"), ad: pl.ad || 0 });
     } catch (e) {
       if (my !== PLAY_N || !pl.info) return;
       loadHide();
@@ -3009,13 +3101,13 @@
   }
 
   function saveProgress() {
-    if (!pl.info || pl.info.live || !total()) return;
+    if (!pl.info || pl.info.live || pl.info.recording || !total()) return;
     api("/api/progress", { file_id: pl.info.id, pos: pos(), dur: total() }).catch(() => {});
   }
 
   // Tells tracking addons what's playing, only when the profile has turned that on
   function sendEvent(action) {
-    if (!pl.info || !ME.profile || !ME.profile.prefs || !ME.profile.prefs.share_events) return;
+    if (!pl.info || pl.info.live || pl.info.recording || !ME.profile || !ME.profile.prefs || !ME.profile.prefs.share_events) return;
     api("/api/event", { file_id: pl.info.id, action, pos: pos(), dur: total() }).catch(() => {});
   }
 
@@ -3068,8 +3160,12 @@
   function buildMenus() {
     const info = pl.info;
     $("#pAudio").innerHTML = ic("audio");
-    $("#pAudio").hidden = info.audio.length < 2;
-    $("#mAudio").innerHTML = info.audio.map((a) => `<button data-a="${a.n}"><span class="chk">${a.n === pl.audio ? ic("check") : ""}</span>${esc(a.label)}</button>`).join("");
+    $("#pAudio").hidden = !!(info.live || info.recording) && info.audio.length < 2;
+    // Audio tracks, then Audio Sync: resync on the spot, or shift the sound earlier or later if a file is out
+    const ads = [[-1, "1s Earlier"], [-0.5, "0.5s Earlier"], [-0.25, "0.25s Earlier"], [0, "In Sync"], [0.25, "0.25s Later"], [0.5, "0.5s Later"], [1, "1s Later"]];
+    $("#mAudio").innerHTML = (info.audio.length > 1 ? info.audio.map((a) => `<button data-a="${a.n}"><span class="chk">${a.n === pl.audio ? ic("check") : ""}</span>${esc(a.label)}</button>`).join("") + `<div class="menu-sep"></div>` : "")
+      + `<div class="menu-label">Audio Sync</div><button data-resync="1"><span class="chk"></span>Resync Now</button>`
+      + (info.live || info.recording ? "" : ads.map(([v, l]) => `<button data-ad="${v}"><span class="chk">${v === (pl.ad || 0) ? ic("check") : ""}</span>Sound ${l}</button>`).join(""));
     $("#pSubs").innerHTML = ic("cc");
     $("#pSubs").hidden = !info.subs.length;
     $("#mSubs").innerHTML = `<button data-s=""><span class="chk">${!pl.subId ? ic("check") : ""}</span>Off</button>` +
@@ -3081,6 +3177,24 @@
       startHls(pos());  // A different audio track needs a fresh stream from the server
     }));
     $("#mSubs").querySelectorAll("[data-s]").forEach((b) => (b.onclick = () => { hideMenus(); pl.subUserSet = true; loadSubs(b.dataset.s); }));
+    const rs = $("#mAudio [data-resync]");
+    if (rs) rs.onclick = () => {
+      hideMenus();
+      // Jumping to where it already is makes the browser line sound and picture up again, a converted stream gets restarted there
+      if (pl.mode === "hls") startHls(pos());
+      else if (pl.mode === "live") tune();
+      else pl.v.currentTime = Math.max(0, pl.v.currentTime - 0.05);
+      toast("Audio resynced");
+    };
+    $("#mAudio").querySelectorAll("[data-ad]").forEach((b) => (b.onclick = () => {
+      hideMenus();
+      const v = Number(b.dataset.ad);
+      // Shifting the sound happens on the server, so a file playing directly switches to the converted stream for it
+      if (info.stream && info.src) { toast("This source plays directly, try Resync Now instead", 4000); return; }
+      pl.ad = v; buildMenus();
+      startHls(pos());
+      toast(v ? `Sound ${v < 0 ? "earlier" : "later"} by ${Math.abs(v)}s` : "Audio back in sync");
+    }));
     $("#mSpeed").querySelectorAll("[data-r]").forEach((b) => (b.onclick = () => { pl.rate = Number(b.dataset.r); pl.v.playbackRate = pl.rate; hideMenus(); buildMenus(); }));
     const ad = $("#pAdminIntro");
     ad.hidden = !(info.is_admin && info.season != null && !info.stream);
@@ -3528,6 +3642,15 @@
   // Back on a remote or phone closes whatever is on top first, the app goes back a page when this says no
   window.kinoBack = () => {
     if (closeEmbed()) return true;
+    // An open dropdown on the page (the ... on a title) closes first and the remote goes back to its button
+    const dd = $$(".menu.drop:not([hidden])", app)[0];
+    if (dd) {
+      dd.hidden = true;
+      const wrap = dd.closest(".menu-wrap"), btn = wrap && $("button", wrap);
+      const hero = dd.closest(".detail-hero"); if (hero) hero.classList.remove("menu-open");
+      if (btn) { btn.setAttribute("aria-expanded", "false"); btn.focus(); }
+      return true;
+    }
     const menu = $$(".player .menu").find((m) => !m.hidden);
     if (menu) { hideMenus(); return true; }
     if (sheetClose) { closeSheet(); return true; }
@@ -3772,8 +3895,7 @@
       if (changed) { app.innerHTML = skeleton(page); app.classList.remove("enter"); window.scrollTo(0, 0); }
       if (page === "movies") await pageBrowse("movie");
       else if (page === "shows") await pageBrowse("series");
-      else if (page === "live") await pageLive(arg === "guide");
-      else if (page === "videos") await pageVideos();
+      else if (page === "live") await pageLive(arg || "");
       else if (page === "title" && arg) await pageTitle(arg);
       else if (page === "discover" && arg) await pageDiscover(decodeURIComponent(arg), decodeURIComponent((location.hash.split("?")[0].split("/")[3] || "")));
       else if (page === "search") await pageSearch();

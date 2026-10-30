@@ -604,7 +604,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         step("Kino is converting it for this TV", at > 1 ? "from " + clock(at) : null);
         new Thread(() -> {
             try {
-                JSONObject body = new JSONObject().put("t", at).put("audio", info.optInt("audioN", 0)).put("hevc", hasDecoder("video/hevc"));
+                JSONObject body = new JSONObject().put("t", at).put("audio", info.optInt("audioN", 0)).put("hevc", hasDecoder("video/hevc")).put("ad", audioDelay);
                 JSONObject r = new JSONObject(post("/api/play/" + Uri.encode(fid), body.toString()));
                 runOnUiThread(() -> {
                     if (isFinishing()) { stopSession(r.optString("sid")); return; }
@@ -918,6 +918,18 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                     if (t.selected || firstOn == null) firstOn = v;
                 }
                 if (hls) item("Pick audio on the Kino web player when the TV converts", false, null);
+                // Audio sync: resync on the spot, and for files that go through the server, shift the sound by hand
+                item("Resync Audio", false, () -> {
+                    if (hls) { relaunchLoading("Resyncing"); startHls(pos()); } else seekTo(Math.max(0, pos() - 0.05));
+                    toast("Audio resynced");
+                });
+                boolean canShift = !live && (!info.optBoolean("isStream") || info.optBoolean("torbox"));
+                if (canShift) {
+                    for (double d : new double[]{-0.5, -0.25, 0, 0.25, 0.5}) {
+                        String l = d == 0 ? "Sound In Sync" : "Sound " + Math.abs(d) + "s " + (d < 0 ? "Earlier" : "Later");
+                        item(l, audioDelay == d, () -> { audioDelay = d; relaunchLoading("Shifting the sound"); startHls(pos()); });
+                    }
+                }
                 break;
             }
             case "speed": {
@@ -1110,6 +1122,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     // Live tv: no timeline, and the remote's up and down (or channel buttons) flick through the channels it was opened
     // from without leaving the player, the same player keeps going so switching is quick
     private boolean live;
+    private double audioDelay;
     private JSONArray liveList;
     private int liveIdx;
 

@@ -1535,3 +1535,20 @@ body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none
   .player-title { min-width: 0; flex: 1; }
   .player-title div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
+
+/* favourite stars sit in the top right of a channel, favourites get little live pictures at the top of Live TV */
+.ch-fav { left: auto; right: 12px; top: 6px; }
+.live-filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.live-sel select { min-width: 190px; }
+.fav-tile .art { background: #111; }
+.fav-shot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.fav-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; background: transparent; }
+.fav-logo { position: absolute; left: 10px; bottom: 12px; z-index: 2; max-width: 30%; max-height: 28%; object-fit: contain; filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.8)); }
+.fav-star { position: absolute; right: 10px; top: 8px; z-index: 2; color: #ffd60a; font-size: 16px; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); }
+.fav-tile .tile-live, .fav-tile .bar { z-index: 2; }
+.emb-adv { margin: 4px 0; }
+.emb-adv summary { cursor: pointer; color: var(--label-2); padding: 6px 0; }
+.emb-adv input { width: 100%; margin-top: 8px; }
+.emb-test { margin-top: 10px; padding: 12px; border-radius: 12px; background: var(--fill-2); }
+.emb-test .li { padding: 6px 0; word-break: break-all; }
+#favRow .shelf { margin-bottom: 26px; }

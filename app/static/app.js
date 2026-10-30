@@ -1008,7 +1008,10 @@
   let HAS_VIDEO_ADDON = true;  // goes false once the server says no addon searches videos
   const SROW_STEP = 14;
   // Channels and live events in search, they play straight away
-  const liveSearchTile = (x) => x.live_id ? liveTile(x) : `<a class="tile landscape ch-tile" href="#/live" data-live="${esc(x.id)}" data-name="${esc(x.name)}"><div class="art">${x.logo ? `<img loading="lazy" src="${img(x.logo, 1, 240)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(x.name)}">${esc(x.name)}</div>`}<span class="tile-live">Live</span></div>
+  let SEARCH_EMBEDS = [];
+  const liveSearchTile = (x) => x.player ? `<a class="tile landscape" href="#/live" data-embs="${SEARCH_EMBEDS.indexOf(x)}"><div class="art">${x.image ? `<img loading="lazy" src="${img(x.image, 0, WW())}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(x.title)}">${esc(x.title)}</div>`}${x.live ? `<span class="tile-live">Live</span>` : ""}</div>
+      <div class="cap">${esc(x.title)}</div><div class="sub">${esc([x.source, x.category].filter(Boolean).join(" · "))}</div></a>`
+    : x.live_id ? liveTile(x) : `<a class="tile landscape ch-tile" href="#/live" data-live="${esc(x.id)}" data-name="${esc(x.name)}"><div class="art">${x.logo ? `<img loading="lazy" src="${img(x.logo, 1, 240)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(x.name)}">${esc(x.name)}</div>`}<span class="tile-live">Live</span></div>
       <div class="cap">${esc(x.name)}</div><div class="sub">${esc(x.now ? x.now.title : [x.group, flag(x.country)].filter(Boolean).join(" · "))}</div></a>`;
   const tileFor = (tile) => (tile === "wide" ? epTile : tile === "person" ? personTile : tile === "video" ? wideTile : tile === "live" ? liveSearchTile : posterTile);
   const searchRow = (id, title, items, tile) => {
@@ -1071,7 +1074,8 @@
         const peopleFirst = (r.people || []).length && (!all.length || (all[0].score || 0) < 60);
         // Youtubio and the like come in last, there own rows with videos and channels kept apart
         const vrows = searchRow("vids", "Videos", vids.filter((x) => x.shape !== "square"), "video") + searchRow("chans", "Channels", vids.filter((x) => x.shape === "square"), "video");
-        const liveRow = searchRow("live", "Live TV", [...(r.channels || []), ...ext.filter((x) => x.kind === "live")], "live");
+        SEARCH_EMBEDS = r.embeds || [];
+        const liveRow = searchRow("live", "Live TV", [...(r.channels || []), ...SEARCH_EMBEDS, ...ext.filter((x) => x.kind === "live")], "live");
         box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + liveRow + searchRow("eps", "Episodes", r.episodes, "wide") + vrows
           + (!extDone || !vidsDone ? `<div class="s-more"><span class="spin small"></span>${!extDone ? "Looking in your addons" : "Still looking for videos"}</div>` : ""))
           || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor, director or genre.</p></div>`;
@@ -1785,7 +1789,6 @@
     const st = LIVE_STATE, guide = mode === "guide";
     const qs = () => [st.fav && "fav=1", st.group && "group=" + encodeURIComponent(st.group), st.country && "country=" + encodeURIComponent(st.country), st.q && "q=" + encodeURIComponent(st.q)].filter(Boolean).join("&");
     const r = await api("/api/live?" + qs());
-    const chips = (list, key, label) => `<div class="chips live-chips" role="group" aria-label="${label}"><button class="chip ${!st[key] && !(key === "group" && st.fav) ? "on" : ""}" data-${key}="">All</button>${key === "group" && r.fav_count ? `<button class="chip ${st.fav ? "on" : ""}" data-fav="1">★ Favourites</button>` : ""}${list.map((x) => `<button class="chip ${st[key] === x && !st.fav ? "on" : ""}" data-${key}="${esc(x)}">${esc(key === "country" ? flag(x) : x)}</button>`).join("")}</div>`;
     const tabs = `<div class="live-tabs" role="tablist"><a class="${!mode ? "on" : ""}" href="#/live" role="tab">${ic("live")} Channels</a><a class="${guide ? "on" : ""}" href="#/live/guide" role="tab">${ic("guide")} TV Guide</a>${!kidsMode() ? `<a class="${mode === "rec" ? "on" : ""}" href="#/live/rec" role="tab">${ic("download")} Recordings</a>` : ""}</div>`;
     if (mode === "rec") {
       app.innerHTML = topbar("live") + `<main class="page live-page"><div class="live-head"><h1 class="large-title">Live TV</h1>${tabs}</div><div id="recList"></div></main>`;
@@ -1795,10 +1798,13 @@
     app.innerHTML = topbar("live") + `<main class="page live-page">
       <div class="live-head"><h1 class="large-title">Live TV</h1>${tabs}</div>
       ${!r.total && !r.addon_rows.length && !r.embeds.length && !st.fav && !st.q ? `<div class="empty"><h2>No channels yet</h2><p>${isAdmin() ? "Add an IPTV playlist (M3U) in Settings under Live TV, or install an addon with live channels." : "Ask the admin to add some channels."}</p>${isAdmin() ? `<a class="btn secondary small" href="#/settings">Open Settings</a>` : ""}</div>` : `
-      ${r.countries.length > 1 ? chips(r.countries.slice(0, 12), "country", "Country") : ""}
-      ${r.groups.length > 1 || r.fav_count ? chips(r.groups, "group", "Category") : ""}
+      <div class="live-filters">
+        ${r.countries.length > 1 ? `<label class="live-sel"><span class="sr">Country</span><select class="plain" id="lvCountry" aria-label="Country"><option value="">All Countries</option>${r.countries.map((x) => `<option value="${esc(x)}" ${st.country === x ? "selected" : ""}>${esc(flag(x))}</option>`).join("")}</select></label>` : ""}
+        ${r.groups.length > 1 || r.fav_count ? `<label class="live-sel"><span class="sr">Category</span><select class="plain" id="lvGroup" aria-label="Category"><option value="">All Categories</option>${r.fav_count ? `<option value="__fav" ${st.fav ? "selected" : ""}>★ Favourites</option>` : ""}${r.groups.map((x) => `<option value="${esc(x)}" ${st.group === x && !st.fav ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></label>` : ""}
+      </div>
       ${guide ? `<div id="guide" class="guide"></div>` : `
       <form class="search live-search" id="lsForm" role="search">${ic("search")}<input id="lsq" type="search" placeholder="Find a channel" value="${esc(st.q)}" autocomplete="off"></form>
+      <div id="favRow"></div>
       <div id="liveRows"></div>
       <section class="section"><h2 class="section-title">${st.fav ? "Favourites" : st.group || st.country ? esc([flag(st.country), st.group].filter(Boolean).join(" ")) : "Channels"} <span class="from" id="chCount">${r.total ? r.total + " working" : ""}</span></h2>
         <div class="ch-grid" id="chGrid">${r.channels.map(chanCard).join("")}</div>
@@ -1806,9 +1812,9 @@
     </main>`;
     wireTopbar();
     LIVE_LIST = r.channels.slice();
-    $$("[data-country]").forEach((b) => (b.onclick = () => { st.country = b.dataset.country; route(); }));
-    $$("[data-group]").forEach((b) => (b.onclick = () => { st.group = b.dataset.group; st.fav = false; route(); }));
-    $$("[data-fav]").forEach((b) => (b.onclick = () => { st.fav = true; st.group = ""; route(); }));
+    const lc = $("#lvCountry"), lg = $("#lvGroup");
+    if (lc) lc.onchange = () => { st.country = lc.value; route(); };
+    if (lg) lg.onchange = () => { st.fav = lg.value === "__fav"; st.group = st.fav ? "" : lg.value; route(); };
     if (guide) return drawGuide(qs());
     const grid = $("#chGrid");
     if (!grid) return;
@@ -1848,6 +1854,7 @@
     };
     window.addEventListener("scroll", more, { passive: true });
     grid.addEventListener("focusin", more);
+    if (r.fav_count && !st.fav && !st.group && !st.country && !st.q) drawFavRow();
     // Live rows from addons (events, channels), each filled in when it arrives
     const rows = $("#liveRows");
     // Embed sources (a service's own player pages), a row each, live ones first
@@ -1883,6 +1890,8 @@
   const liveTile = (t) => `<a class="tile landscape" href="#/live" data-live="${esc(t.live_id)}" data-name="${esc(t.name)}"><div class="art">${t.background || t.poster ? `<img loading="lazy" src="${img(t.background || t.poster, 0, WW())}" alt="${esc(t.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`}<span class="tile-live">Live</span></div>
       <div class="cap">${esc(t.name)}</div><div class="sub">${esc((t.genres || []).slice(0, 2).join(", ") || "Live")}</div></a>`;
   document.addEventListener("click", (e) => {
+    const em = e.target.closest("[data-embs]");
+    if (em) { e.preventDefault(); const x = SEARCH_EMBEDS[Number(em.dataset.embs)]; if (x) openEmbed([x], 0, x.source); return; }
     const a = e.target.closest("[data-live]");
     if (!a) return;
     e.preventDefault();
@@ -1908,6 +1917,45 @@
       if (g) { const [ci, pi] = g.dataset.gp.split(":").map(Number); return liveOptions(LIVE_LIST[ci], LIVE_LIST[ci].progs[pi]); }
       const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST);
     });
+  }
+
+  // Favourites at the top as little players: a fresh picture of whats on every minute, and on a computer the live
+  // picture itself (muted) while the mouse is over one. Tvs keep to pictures, a video per card is too much for them
+  async function drawFavRow() {
+    const box = $("#favRow");
+    const m = await api("/api/live?fav=1").catch(() => null);
+    if (!m || !m.channels.length || !$("#favRow")) return;
+    const favs = m.channels;
+    const shot = (c) => `/api/live/${c.id}/thumb.jpg?m=${Math.floor(Date.now() / 60000)}`;
+    box.innerHTML = `<section class="shelf" aria-label="Favourites"><h2 class="section-title">★ Favourites</h2><div class="row wide fav-row">${favs.map((c, i) => {
+      const pr = c.now ? Math.min(1, Math.max(0, (Date.now() / 1000 - c.now.start) / (c.now.stop - c.now.start))) : null;
+      return `<button class="tile landscape fav-tile" data-fv="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}"><div class="art">
+          <img class="fav-shot" src="${shot(c)}" alt="" data-fallback="hide">${c.logo ? `<img class="fav-logo" src="${img(c.logo, 1, 160)}" alt="" data-fallback="hide">` : ""}
+          <span class="tile-live">Live</span><span class="fav-star" aria-hidden="true">★</span>${pr != null ? `<div class="bar"><i style="width:${pr * 100}%"></i></div>` : ""}</div>
+        <div class="cap">${esc(c.name)}</div><div class="sub">${esc(c.now ? c.now.title : c.group || "")}</div></button>`;
+    }).join("")}</div></section>`;
+    const row = $(".fav-row", box);
+    row.addEventListener("click", (e) => { const b = e.target.closest("[data-fv]"); if (b) playLive(favs[Number(b.dataset.fv)], favs); });
+    const t = setInterval(() => {
+      if (!$("#favRow") || $("#favRow") !== box) return clearInterval(t);
+      $$(".fav-shot", box).forEach((im, i) => (im.src = shot(favs[i])));
+    }, 60000);
+    if (TV || !window.Hls || !Hls.isSupported()) return;
+    let pv = null;
+    const stop = () => { if (pv) { pv.h.destroy(); pv.v.remove(); pv = null; } };
+    row.addEventListener("mouseover", (e) => {
+      const b = e.target.closest("[data-fv]");
+      if (!b || (pv && pv.b === b)) return;
+      stop();
+      const v = document.createElement("video");
+      v.className = "fav-video"; v.muted = true; v.playsInline = true;
+      $(".art", b).appendChild(v);
+      const h = new Hls({ liveSyncDurationCount: 2, maxBufferLength: 8, backBufferLength: 0, capLevelToPlayerSize: true });
+      h.loadSource(`/api/live/${favs[Number(b.dataset.fv)].id}/index.m3u8`); h.attachMedia(v);
+      h.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
+      pv = { b, v, h };
+    });
+    row.addEventListener("mouseleave", stop);
   }
 
   // A channel's options (or a programme's, from the guide): watch, favourite, record
@@ -2296,7 +2344,7 @@
       <p class="secondary set-hint">Add IPTV playlists (an M3U link) to fill Live TV. Your own TV server (Tvheadend, Jellyfin, ErsatzTV, an HDHomeRun) can make one too. Add a guide (XMLTV) link for the TV Guide, if the playlist doesn't name its own. Channels that don't work get hidden automatically.</p>
       <div class="list">${r.lists.map((l) => `<div class="addon ${l.enabled ? "" : "off"}">
         <div class="addon-top"><span class="addon-logo">${ic("live")}</span>
-          <span class="grow"><b>${esc(l.name)}</b> <span class="secondary">${l.count} channels${l.good || l.bad ? `, ${l.good} working, ${l.bad} not` : ""}</span>
+          <span class="grow"><b>${esc(l.name)}</b> <span class="secondary">${l.count} channels${l.good || l.bad ? `, ${l.good} working, ${l.bad} not` : ""}, ${l.guided ? `${l.guided} with a guide` : "no guide yet"}</span>
             <span class="addon-desc secondary">${esc(l.url)}${l.epg ? `<br>Guide: ${esc(l.epg)}` : ""}</span></span>
           <input type="checkbox" class="switch" data-lon="${l.id}" ${l.enabled ? "checked" : ""} aria-label="Turn ${esc(l.name)} on or off"></div>
         ${l.error ? `<div class="note warn-text">${esc(l.error)}</div>` : ""}
@@ -2306,7 +2354,8 @@
       <form class="live-form" id="liveForm">
         <input id="lvName" placeholder="Name, like UK Freeview" autocomplete="off">
         <input id="lvUrl" placeholder="Playlist link (.m3u)" required spellcheck="false" autocapitalize="none" inputmode="url">
-        <input id="lvEpg" placeholder="Guide link (XMLTV), optional" spellcheck="false" autocapitalize="none" inputmode="url">
+        <input id="lvEpg" placeholder="Guide link (XMLTV), leave empty for the free UK, US, Canada and Australia guides" spellcheck="false" autocapitalize="none" inputmode="url" list="lvGuides">
+        <datalist id="lvGuides">${(r.guides || []).map((g) => `<option value="${esc(g.url)}">${esc(g.name)}</option>`).join("")}</datalist>
         <label class="set-row" style="padding:4px 0"><span><b>On My Network</b><span class="secondary">For a TV server at home, lets Kino reach local addresses for this playlist</span></span><input type="checkbox" class="switch" id="lvLocal"></label>
         <div class="actions end"><button class="btn primary small" type="submit" id="lvGo">${ic("plus")} Add Playlist</button></div>
       </form><div class="form-err" id="lvErr" role="alert"></div>`;
@@ -2321,15 +2370,29 @@
         <div class="addon-foot"><span></span><div class="actions end"><button class="btn danger small" data-erm="${x.id}">${ic("trash")} Remove</button></div></div></div>`).join("")}</div>
       <form class="live-form" id="embForm">
         <input id="emName" placeholder="Name" autocomplete="off">
-        <input id="emUrl" placeholder="List link (JSON, https)" required spellcheck="false" autocapitalize="none" inputmode="url">
-        <input id="emPlayer" placeholder="Player link with {id}, optional" spellcheck="false" autocapitalize="none" inputmode="url">
-        <div class="actions end"><button class="btn primary small" type="submit" id="emGo">${ic("plus")} Add Source</button></div>
-      </form><div class="form-err" id="emErr" role="alert"></div>`;
+        <input id="emUrl" placeholder="List link (JSON)" required spellcheck="false" autocapitalize="none" inputmode="url">
+        <input id="emPlayer" placeholder="Player link, like {base}/embed/{id} or {playerUrl}" spellcheck="false" autocapitalize="none" inputmode="url">
+        <details class="emb-adv"><summary>Where things are in the JSON (optional)</summary>
+          <p class="secondary set-hint">Kino finds these by itself most of the time. If not, say where the list is, like <b>data.events</b>, and which field is the title and the picture, like <b>channel_name</b> or <b>meta.logo</b>. In the player link any field of an item goes in curly brackets, <b>{channels.0.channel_id}</b> works too, and <b>{base}</b> is the list's own site.</p>
+          <input id="emItems" placeholder="List is at, like data.events" spellcheck="false" autocapitalize="none">
+          <input id="emTitle" placeholder="Title field, like channel_name" spellcheck="false" autocapitalize="none">
+          <input id="emImage" placeholder="Picture field, like logo_url" spellcheck="false" autocapitalize="none"></details>
+        <div class="actions end"><button class="btn secondary small" type="button" id="emTest">Test</button><button class="btn primary small" type="submit" id="emGo">${ic("plus")} Add Source</button></div>
+      </form><div class="form-err" id="emErr" role="alert"></div><div id="emOut"></div>`;
+    const emBody = () => ({ name: $("#emName").value, url: $("#emUrl").value, player: $("#emPlayer").value, items: $("#emItems").value, title_key: $("#emTitle").value, image_key: $("#emImage").value });
+    $("#emTest").onclick = async () => {
+      $("#emErr").textContent = ""; $("#emOut").innerHTML = `<span class="spin small"></span>`;
+      try {
+        const x = await api("/api/admin/embeds/test", emBody());
+        $("#emOut").innerHTML = `<div class="emb-test"><b>${x.count} found</b>${x.items.map((it) => `<div class="li"><span class="grow">${esc(it.title)}<br><span class="secondary">${esc(it.player)}</span></span></div>`).join("")}
+          <p class="secondary">Top of the JSON: ${esc(x.top.join(", "))}</p>${x.fields.length ? `<p class="secondary">Fields in an item: ${esc(x.fields.join(", "))}</p>` : ""}</div>`;
+      } catch (er) { $("#emOut").innerHTML = ""; $("#emErr").textContent = er.message; }
+    };
     $("#embForm").onsubmit = async (e) => {
       e.preventDefault();
       const go = $("#emGo"); go.disabled = true;
       try {
-        const x = await api("/api/admin/embeds", { name: $("#emName").value, url: $("#emUrl").value, player: $("#emPlayer").value });
+        const x = await api("/api/admin/embeds", emBody());
         toast(`Found ${x.count}, like ${x.sample.join(", ")}`, 5000);
         ME.features = null; drawLiveAdmin();
       } catch (er) { $("#emErr").textContent = er.message; go.disabled = false; }

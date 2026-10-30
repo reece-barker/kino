@@ -1430,3 +1430,6 @@ body.tv .int-chip:focus { background: var(--label); color: var(--page-bg); outli
 body.tv .int-chip:focus .int-kind { color: inherit; opacity: 0.7; }
 .int-add { display: flex; gap: 8px; }
 .int-add input { flex: 1; min-width: 0; height: 38px; border-radius: 10px; border: 0; padding: 0 12px; background: var(--fill); color: var(--label); font: inherit; font-size: 15px; }
+
+/* Loading more at the bottom of Movies and TV Shows */
+.grid-more { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 28px 0 8px; color: var(--label-2); font-size: 15px; }

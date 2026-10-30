@@ -1761,7 +1761,7 @@ async def home(request: Request, p=Depends(current_profile)):
     shelves = []
     mine, fresh = mylist_items(p, summ, wm)
     if fresh:
-        shelves.append({"id": "fresh", "title": "New Episodes in My List", "style": "fresh", "items": fresh[:6]})
+        shelves.append({"id": "fresh", "title": "New Episodes in My List", "style": "fresh", "items": fresh})
     if cont:
         shelves.append({"id": "continue", "title": f"Continue Watching for {p['name']}", "style": "continue", "items": cont})
     if has_signal:
@@ -1777,18 +1777,18 @@ async def home(request: Request, p=Depends(current_profile)):
         if picks:
             shelves.append({"id": "picks", "title": f"Top Picks for {p['name']}", "style": "poster", "items": picks})
     if mine:
-        shelves.append({"id": "mylist", "title": "My List", "style": "poster", "items": mine[:24]})
+        shelves.append({"id": "mylist", "title": "My List", "style": "poster", "items": mine})
     # A row for each of the newest two interests that has enough titles to fill one
     rows = 0
     for i in sorted(ints, key=lambda x: -(x.get("at") or 0)):
         items = [s for s in by_score if interest_matches(s, i)] if rows < 2 else []
         if len(items) >= 3:
             rows += 1
-            shelves.append({"id": "int-" + norm(i["name"]).replace(" ", "-"), "title": f"Because You Like {i['name']}", "style": "poster", "items": items[:16]})
+            shelves.append({"id": "int-" + norm(i["name"]).replace(" ", "-"), "title": f"Because You Like {i['name']}", "style": "poster", "items": items})
     fam = family_liked(p, summ)
     if len(fam) >= 2:
-        shelves.append({"id": "family", "title": "Loved by the Family", "style": "poster", "items": fam[:20]})
-    shelves.append({"id": "recent", "title": "Recently Added", "style": "wide", "items": recent[:16]})
+        shelves.append({"id": "family", "title": "Loved by the Family", "style": "poster", "items": fam})
+    shelves.append({"id": "recent", "title": "Recently Added", "style": "wide", "items": recent})
 
     # Because you watched, based on the last thing they finished or loved
     anchors = sorted([s for s in summ if (s["watched_count"] or s["my_rating"] > 0) and s["genres"]],
@@ -1798,18 +1798,18 @@ async def home(request: Request, p=Depends(current_profile)):
         similar = [s for s in visible if s["id"] != a["id"] and not s["watched"] and set(s["genres"]) & set(a["genres"])]
         similar.sort(key=lambda s: (len(set(s["genres"]) & set(a["genres"])), s["score"]), reverse=True)
         if len(similar) >= 2:
-            shelves.append({"id": "because", "title": f"Because You Watched {a['name']}", "style": "poster", "items": similar[:16]})
+            shelves.append({"id": "because", "title": f"Because You Watched {a['name']}", "style": "poster", "items": similar})
 
     movies = [s for s in recent if s["kind"] == "movie"]
     shows = [s for s in recent if s["kind"] == "series"]
     if movies:
-        shelves.append({"id": "movies", "title": "Movies", "style": "poster", "items": movies[:24], "more": "#/movies"})
+        shelves.append({"id": "movies", "title": "Movies", "style": "poster", "items": movies, "more": "#/movies"})
     if shows:
-        shelves.append({"id": "shows", "title": "TV Shows", "style": "poster", "items": shows[:24], "more": "#/shows"})
+        shelves.append({"id": "shows", "title": "TV Shows", "style": "poster", "items": shows, "more": "#/shows"})
 
     rated = sorted([s for s in visible + pool if imdb_score(s) >= 7.5 and s["rating"]], key=imdb_score, reverse=True)
     if len(rated) >= 3:
-        shelves.append({"id": "acclaimed", "title": "Critically Acclaimed", "style": "poster", "items": rated[:16]})
+        shelves.append({"id": "acclaimed", "title": "Critically Acclaimed", "style": "poster", "items": rated})
 
     shelves += addon_shelves(summ, kids=p.get("kids"))
 
@@ -1820,14 +1820,187 @@ async def home(request: Request, p=Depends(current_profile)):
     genres = sorted([g for g, n in counts.items() if n >= 3], key=lambda g: (weights.get(g, 0), counts[g]), reverse=True)
     for g in genres[:8]:
         items = sorted([s for s in visible if g in s["genres"]], key=lambda s: s["score"], reverse=True)
-        shelves.append({"id": "g-" + norm(g), "title": g, "style": "poster", "items": items[:16]})
+        shelves.append({"id": "g-" + norm(g), "title": g, "style": "poster", "items": items})
 
     unwatched = [s for s in by_score if not s["watched_count"] and not s["last_activity"]]
     if summ and len(unwatched) >= 3 and len(unwatched) < len(summ):
-        shelves.append({"id": "new-to-you", "title": "Not Watched Yet", "style": "poster", "items": unwatched[:16]})
+        shelves.append({"id": "new-to-you", "title": "Not Watched Yet", "style": "poster", "items": unwatched})
 
+    # Each row starts with a first batch, the rest comes from /api/shelf as you move along it. Movies and TV Shows use
+    # the same order as there own pages so loading more carries on without repeats
+    for sh in shelves:
+        if sh["id"] in ("movies", "shows"):
+            sh["items"] = (await browse_list(p, "movie" if sh["id"] == "movies" else "series", 0, SHELF_FIRST))["items"]
+    full = {}
+    for sh in shelves:
+        if sh["style"] not in ("poster", "wide") or sh["id"] == "continue":
+            continue
+        full[sh["id"]] = sh["items"]
+        more = len(sh["items"]) > SHELF_FIRST or sh["id"] in ("movies", "shows") or sh["id"].startswith("addon-")
+        sh["items"] = sh["items"][:SHELF_FIRST]
+        sh["next"] = len(sh["items"]) if more else None
+    HOME_FULL[p["id"]] = (time.time(), full)
     return {"hero": hero, "shelves": shelves, "empty": not summ, "storage": storage_state() if admin_user(request) else None, "scanning": LIB["scanning"], "error": LIB["error"],
             "mounted": box_mounted()}
+
+
+SHELF_FIRST = 24
+HOME_FULL = {}
+
+
+async def catalog_page(a, c, skip=0, genre=None):
+    """One page of an addon catalog, with the genre and how far in when the addon supports them"""
+    extra = {}
+    names = {e.get("name") for e in c.get("extra") or []} | set(c.get("extraSupported") or [])
+    if genre and "genre" in names:
+        extra["genre"] = genre
+    if skip and "skip" in names:
+        extra["skip"] = skip
+    if skip and "skip" not in names:
+        return []
+    # One retry, catalogs like cinemeta's sometimes take a while. None means it failed, [] means the list really ended
+    for attempt in (0, 1):
+        try:
+            j = await fetch_json(catalog_url(a, c, extra or None), ttl=3600, timeout=15)
+            return [m for m in (j.get("metas") or []) if isinstance(m, dict) and m.get("id")]
+        except Exception as e:
+            if attempt:
+                log.info("catalog page %s/%s skip=%s failed: %s", a["m"].get("name"), c.get("id"), skip, e)
+    return None
+
+
+def catalog_genres(c):
+    for e in c.get("extra") or []:
+        if e.get("name") == "genre":
+            return list(e.get("options") or [])
+    return []
+
+
+@app.get("/api/shelf")
+async def shelf_more(id: str, skip: int = 0, p=Depends(current_profile)):
+    """More of a Home row from where it got to"""
+    take = 40
+    if id.startswith("addon-"):
+        _, aid, kind, cid = id.split("-", 3)
+        a = next((x for x in addon_rows() if str(x["id"]) == aid), None)
+        c = next((x for x in (a["m"].get("catalogs") or []) if x.get("type") == kind and x.get("id") == cid), None) if a else None
+        if not c:
+            return {"items": [], "next": None}
+        metas = await catalog_page(a, c, skip)
+        if metas is None:
+            # Didnt answer, the page asks again next time instead of thinking the row ended
+            return {"items": [], "next": skip, "retry": True}
+        summ, _, _ = all_summaries(p["id"])
+        have = lib_by_meta_id(summ)
+        items = [have.get(m["id"]) or ext_preview(m, c["type"]) for m in metas]
+        if p.get("kids"):
+            items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
+        return {"items": items, "next": skip + len(metas) if metas else None}
+    if id in ("movies", "shows"):
+        r = await browse_list(p, "movie" if id == "movies" else "series", skip, take)
+        return {"items": r["items"], "next": r["next"]}
+    hit = HOME_FULL.get(p["id"])
+    full = hit[1].get(id, []) if hit else []
+    items = full[skip:skip + take]
+    return {"items": items, "next": skip + take if skip + take < len(full) else None}
+
+
+async def browse_list(p, kind, skip=0, limit=60, genres=(), decade=0, minr=0.0, src="", sort="added", q=""):
+    """Movies or TV Shows: the library first, then titles from the addon catalogs, a page at a time with the filters
+    applied. Catalogs that can filter by genre are asked for that genre, so a genre keeps going past the first page"""
+    yr = lambda t: int(str(t.get("releaseInfo") or t.get("year") or "")[:4]) if str(t.get("releaseInfo") or t.get("year") or "")[:4].isdigit() else 0
+    rating = lambda t: float(t["rating"]) if str(t.get("rating") or "").replace(".", "", 1).isdigit() else 0.0
+    qn = norm(q)
+
+    def keep(t, fetched_genre=None):
+        g = set(t.get("genres") or [])
+        if fetched_genre and not g:
+            g = {fetched_genre}
+        if genres and not all(x in g or x == fetched_genre for x in genres):
+            return False
+        if decade and not (decade <= yr(t) < decade + 10):
+            return False
+        if minr and rating(t) < minr:
+            return False
+        if qn and qn not in norm(t.get("name")):
+            return False
+        return True
+
+    keys = {"name": lambda t: norm(t["name"]), "year": lambda t: -yr(t), "old": lambda t: yr(t) or 9999,
+            "rating": lambda t: -rating(t), "added": lambda t: -(t.get("added") or 0)}
+    key = keys.get(sort, keys["added"])
+    summ, _, _ = all_summaries(p["id"])
+    have = lib_by_meta_id(summ)
+    lib = [s for s in summ if s["kind"] == kind and keep(s)] if src != "ext" else []
+    lib.sort(key=key)
+    ext, done = [], True
+    need = skip + limit - len(lib)
+    if src != "lib" and need > 0:
+        cats = [(a, c) for a, c in home_catalogs() if c.get("type") == kind or (kind == "series" and c.get("type") == "anime")]
+        g0 = genres[0] if genres else None
+        if g0:
+            # Only catalogs that know the genre, or ones that dont filter at all
+            cats = [(a, c) for a, c in cats if not catalog_genres(c) or g0 in catalog_genres(c)]
+        offs = {i: 0 for i in range(len(cats))}
+        live = set(offs)
+        seen = set(have) | {s.get("imdb") for s in lib}
+        rounds = 0
+        while live and len(ext) < need and rounds < 40:
+            rounds += 1
+            idx = sorted(live)
+            pages = await asyncio.gather(*(catalog_page(cats[i][0], cats[i][1], offs[i], g0) for i in idx))
+            for i, metas in zip(idx, pages):
+                # An addon that's down is left out of this page instead of holding the whole list up
+                if metas is None:
+                    live.discard(i)
+                    continue
+                if not metas:
+                    live.discard(i)
+                    continue
+                offs[i] += len(metas)
+                for m in metas:
+                    if m["id"] in seen:
+                        continue
+                    seen.add(m["id"])
+                    t = ext_preview(m, cats[i][1]["type"])
+                    if t["kind"] != kind:
+                        continue
+                    if p.get("kids") and not kids_ok(t["genres"], t["imdb"]):
+                        continue
+                    if keep(t, g0):
+                        ext.append(t)
+        done = not live
+        if sort != "added":
+            ext.sort(key=key)
+    all_ = lib + ext
+    items = all_[skip:skip + limit]
+    more = len(all_) > skip + limit or not done
+    return {"items": items, "next": skip + len(items) if more and items else None, "library": len(lib)}
+
+
+@app.get("/api/browse")
+async def browse(kind: str, skip: int = 0, genres: str = "", decade: int = 0, minr: float = 0, src: str = "", sort: str = "added", q: str = "",
+                 p=Depends(current_profile)):
+    if kind not in ("movie", "series"):
+        raise HTTPException(400, "Unknown type")
+    gl = [g for g in genres.split(",") if g][:4]
+    r = await browse_list(p, kind, max(0, skip), 60, gl, decade, minr, src, sort, q)
+    if skip == 0:
+        # Every genre the library or a catalog knows about, most common in the library first
+        summ, _, _ = all_summaries(p["id"])
+        counts = {}
+        for s in summ:
+            if s["kind"] == kind:
+                for g in s["genres"]:
+                    counts[g] = counts.get(g, 0) + 1
+        opts = set(counts)
+        for a, c in home_catalogs():
+            if c.get("type") == kind:
+                opts |= set(catalog_genres(c))
+        r["genres"] = sorted(opts, key=lambda g: (-counts.get(g, 0), g))
+        r["decades"] = sorted({(int(str(s.get("releaseInfo") or "")[:4]) // 10) * 10 for s in summ if str(s.get("releaseInfo") or "")[:4].isdigit()} | set(range(1920, 2030, 10)), reverse=True)
+        r["has_ext"] = any(c.get("type") == kind for _, c in home_catalogs())
+    return r
 
 
 def family_liked(p, summ):
@@ -2104,7 +2277,7 @@ async def search_addons(q: str, p=Depends(current_profile)):
         external = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
         await rank_by_popularity(external[:12])
         external.sort(key=lambda x: x["score"], reverse=True)
-    return {"external": external[:40]}
+    return {"external": external[:120]}
 
 
 async def rank_by_popularity(items):
@@ -2957,7 +3130,7 @@ async def addon_meta(kind, mid, skip_cinemeta=False):
     return None
 
 
-async def addon_search(kind, q, limit_per=12):
+async def addon_search(kind, q, limit_per=60):
     """Searches every installed catalog that supports search, used by search and fix match"""
     tasks = []
     for a in addon_rows():
@@ -2971,7 +3144,7 @@ async def addon_search(kind, q, limit_per=12):
             return [(a, c, m) for m in (j.get("metas") or [])[:limit_per]]
         except Exception:
             return []
-    res = await asyncio.gather(*(one(a, c) for a, c in tasks[:6]))
+    res = await asyncio.gather(*(one(a, c) for a, c in tasks[:16]))
     return [x for r in res for x in r]
 
 

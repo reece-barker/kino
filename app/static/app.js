@@ -697,13 +697,14 @@
       </section>
       <main class="page under-hero" style="padding-top:8px">
         ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
-          <div class="row ${s.style === "poster" ? "posters" : "wide"}">${(LITE ? s.items.slice(0, 16) : s.items).map((t) => s.style === "poster" ? posterTile(t)
+          <div class="row ${s.style === "poster" ? "posters" : "wide"}" ${s.next ? `data-shelf="${esc(s.id)}" data-next="${s.next}" data-style="${s.style}"` : ""}>${s.items.map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: TV ? null : t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
             : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster", s.more === "#/shows" ? "All TV Shows" : "All Movies") : ""}</div></section>`).join("")}
       </main>`;
     wireTopbar();
     startHero(heroes.length);
+    growShelves(app);
 
     // Taking something out of Continue Watching, it comes back if they start watching it again
     app.querySelectorAll("[data-hide]").forEach((b) => b.addEventListener("click", async (e) => {
@@ -737,6 +738,29 @@
 
   // On a tv the See All link at the top is hard to reach, so rows end with a card that does the same
   const moreCard = (href, poster, label) => `<a class="tile more-card ${poster ? "poster" : "landscape"}" href="${href}"><div class="art"><span class="more-in">${ic("chevronR")}<b>${esc(label)}</b></span></div><div class="cap">&nbsp;</div></a>`;
+
+  // Home rows start with the first batch and fetch more as you get near the end of one, so a row can go on for
+  // hundreds of titles. On a tv the View More card stays at the end
+  function growShelves(root) {
+    $$(".row[data-shelf]", root).forEach((row) => {
+      let busy = false;
+      const more = async () => {
+        if (busy || !row.dataset.next || !row.isConnected) return;
+        if (row.scrollWidth - row.scrollLeft - row.clientWidth > row.clientWidth * 1.5) return;
+        busy = true;
+        try {
+          const r = await api(`/api/shelf?id=${encodeURIComponent(row.dataset.shelf)}&skip=${row.dataset.next}`);
+          const html = r.items.map((t) => (row.dataset.style === "wide" ? wideTile(t) : posterTile(t))).join("");
+          const card = $(".more-card", row);
+          if (card) card.insertAdjacentHTML("beforebegin", html); else row.insertAdjacentHTML("beforeend", html);
+          if (r.next) row.dataset.next = r.next; else delete row.dataset.next;
+        } catch (_) {}
+        busy = false;
+      };
+      row.addEventListener("scroll", more, { passive: true });
+      row.addEventListener("focusin", more);
+    });
+  }
 
   // Floating back button on title pages, phones dont have the sidebar to get out with
   const backBtn = () => `<button class="page-back glass" data-goback aria-label="Back">${ic("back")}</button>`;
@@ -875,52 +899,72 @@
   }
 
   async function pageBrowse(kind) {
-    const lib = await api("/api/library");
-    const list = lib.titles.filter((t) => t.kind === kind);
-    // Genres as chips, the most common first. Picking more than one shows titles that have all of them
-    const gc = {};
-    list.forEach((t) => (t.genres || []).forEach((g) => (gc[g] = (gc[g] || 0) + 1)));
-    const genres = Object.keys(gc).sort((a, b) => gc[b] - gc[a] || a.localeCompare(b));
-    const yr = (t) => parseInt(String(t.releaseInfo || t.year || "").slice(0, 4), 10) || 0;
-    const decades = [...new Set(list.map(yr).filter(Boolean).map((y) => Math.floor(y / 10) * 10))].sort((a, b) => b - a);
-    const hasExt = list.some((t) => t.external) && list.some((t) => !t.external);
     const noun = kind === "movie" ? "movie" : "show";
+    const first = await api(`/api/browse?kind=${kind}`);
+    const genres = first.genres || [];
     app.innerHTML = topbar(kind === "movie" ? "movies" : "shows") + `<main class="page">
       <h1 class="large-title">${kind === "movie" ? "Movies" : "TV Shows"}</h1>
       <div class="toolbar">
         <label class="search">${ic("search")}<span class="sr">Filter</span><input id="q" type="search" placeholder="Filter ${noun}s"></label>
         <select class="plain" id="sort" aria-label="Sort"><option value="added">Recently Added</option><option value="name">Name</option><option value="year">Newest</option><option value="old">Oldest</option><option value="rating">Rating</option></select>
-        <select class="plain" id="decade" aria-label="Decade"><option value="">Any Year</option>${decades.map((d) => `<option value="${d}">${d}s</option>`).join("")}</select>
+        <select class="plain" id="decade" aria-label="Decade"><option value="">Any Year</option>${(first.decades || []).map((d) => `<option value="${d}">${d}s</option>`).join("")}</select>
         <select class="plain" id="minr" aria-label="Rating"><option value="">Any Rating</option><option value="6">6+ on IMDb</option><option value="7">7+ on IMDb</option><option value="8">8+ on IMDb</option></select>
-        ${hasExt ? `<select class="plain" id="src" aria-label="Where"><option value="">Library and Addons</option><option value="lib">In Your Library</option><option value="ext">From Addons</option></select>` : ""}
-        <select class="plain" id="seen" aria-label="Watched"><option value="">Watched and Unwatched</option><option value="no">Unwatched</option><option value="yes">Watched</option></select>
+        ${first.has_ext ? `<select class="plain" id="src" aria-label="Where"><option value="">Library and Addons</option><option value="lib">In Your Library</option><option value="ext">From Addons</option></select>` : ""}
         <span class="secondary" id="count" style="font-size:15px"></span>
       </div>
-      ${genres.length ? `<div class="chips" role="group" aria-label="Genres"><button class="chip on" data-g="" aria-pressed="true">All Genres</button>${genres.map((g) => `<button class="chip" data-g="${esc(g)}" aria-pressed="false">${esc(g)} <span>${gc[g]}</span></button>`).join("")}</div>` : ""}
-      <div class="grid" id="grid"></div></main>`;
+      ${genres.length ? `<div class="chips" role="group" aria-label="Genres"><button class="chip on" data-g="" aria-pressed="true">All Genres</button>${genres.map((g) => `<button class="chip" data-g="${esc(g)}" aria-pressed="false">${esc(g)}</button>`).join("")}</div>` : ""}
+      <div class="grid" id="grid"></div>
+      <div class="grid-more" id="gridMore" hidden><span class="spin small"></span>Loading more</div></main>`;
     wireTopbar();
-    const picked = new Set();
+    // Everything comes from the server a page at a time with the filters applied, and the next page loads as you get
+    // near the bottom. Changing a filter starts again from the top
+    const picked = [];
     const val = (id) => ($("#" + id) ? $("#" + id).value : "");
-    const draw = () => {
-      const q = val("q").trim().toLowerCase(), s = val("sort"), w = val("seen"), dec = Number(val("decade")) || 0, mr = Number(val("minr")) || 0, src = val("src");
-      let r = list.filter((t) => (!q || t.name.toLowerCase().includes(q)) && [...picked].every((g) => (t.genres || []).includes(g))
-        && (!w || (w === "yes") === !!t.watched) && (!dec || (yr(t) >= dec && yr(t) < dec + 10)) && (!mr || (parseFloat(t.rating) || 0) >= mr)
-        && (!src || (src === "ext") === !!t.external));
-      r = r.slice().sort((a, b) => s === "name" ? a.name.localeCompare(b.name) : s === "year" ? yr(b) - yr(a) : s === "old" ? (yr(a) || 9999) - (yr(b) || 9999)
-        : s === "rating" ? (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0) : b.added - a.added);
-      $("#grid").innerHTML = r.length ? r.slice(0, GRID_STEP).map(posterTile).join("") : `<div class="empty" style="grid-column:1/-1"><h2>No matches</h2><p>Try a different filter or genre.</p></div>`;
-      batch($("#grid"), r);
-      $("#count").textContent = `${r.length} ${noun}${r.length === 1 ? "" : "s"}`;
+    let next = 0, seq = 0, busy = false, shown = 0;
+    const query = () => `/api/browse?kind=${kind}&genres=${encodeURIComponent(picked.join(","))}&decade=${val("decade") || 0}&minr=${val("minr") || 0}&src=${val("src")}&sort=${val("sort")}&q=${encodeURIComponent(val("q").trim())}`;
+    const put = (r, reset) => {
+      const grid = $("#grid");
+      if (reset) { grid.innerHTML = ""; shown = 0; window.scrollTo(0, 0); }
+      if (!r.items.length && reset) grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><h2>No matches</h2><p>Try a different filter or genre.</p></div>`;
+      else grid.insertAdjacentHTML("beforeend", r.items.map(posterTile).join(""));
+      shown += r.items.length;
+      next = r.next;
+      $("#count").textContent = `${shown}${next ? "+" : ""} ${noun}${shown === 1 ? "" : "s"}${r.library != null && val("src") !== "ext" ? ` · ${r.library} in your library` : ""}`;
+      $("#gridMore").hidden = !next;
+      if (LITE) recycleSoon();
+      fill();
     };
+    const load = async (reset) => {
+      const my = reset ? ++seq : seq;
+      if (busy && !reset) return;
+      busy = true;
+      try {
+        const r = await api(query() + `&skip=${reset ? 0 : next}`);
+        if (my === seq && $("#grid")) put(r, reset);
+      } catch (_) {}
+      busy = false;
+    };
+    // Keeps loading while the bottom of the grid is near the screen, so a big screen fills up straight away
+    const fill = () => {
+      const g = $("#grid");
+      if (!g || !next || busy) return;
+      if (g.getBoundingClientRect().bottom < innerHeight * 2.2) load(false);
+    };
+    const onScroll = () => { if (!$("#grid")) { removeEventListener("scroll", onScroll); return; } fill(); };
+    addEventListener("scroll", onScroll, { passive: true });
+    $("#grid").addEventListener("focusin", fill);
     $$(".chip[data-g]").forEach((c) => (c.onclick = () => {
       const g = c.dataset.g;
-      if (!g) picked.clear();
-      else picked.has(g) ? picked.delete(g) : picked.add(g);
-      $$(".chip[data-g]").forEach((x) => { const on = x.dataset.g ? picked.has(x.dataset.g) : !picked.size; x.classList.toggle("on", on); x.setAttribute("aria-pressed", on); });
-      draw();
+      if (!g) picked.length = 0;
+      else if (picked.includes(g)) picked.splice(picked.indexOf(g), 1);
+      else picked.push(g);
+      $$(".chip[data-g]").forEach((x) => { const on = x.dataset.g ? picked.includes(x.dataset.g) : !picked.length; x.classList.toggle("on", on); x.setAttribute("aria-pressed", on); });
+      load(true);
     }));
-    ["q", "sort", "seen", "decade", "minr", "src"].forEach((id) => $("#" + id) && $("#" + id).addEventListener("input", draw));
-    draw();
+    let qt;
+    $("#q").addEventListener("input", () => { clearTimeout(qt); qt = setTimeout(() => load(true), 300); });
+    ["sort", "decade", "minr", "src"].forEach((id) => $("#" + id) && $("#" + id).addEventListener("input", () => load(true)));
+    put(first, true);
   }
 
   // ---------------------------------------------------------- my list

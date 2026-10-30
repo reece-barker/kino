@@ -215,6 +215,63 @@ public class MainActivity extends Activity {
         web.requestFocus();
     }
 
+    // ---- updating the app itself
+    private String pendingUpdate;
+
+    private void startUpdate(String path) {
+        // Android only lets an app install updates once its been allowed to, the first time that setting gets opened
+        if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+            pendingUpdate = path;
+            js("window.kinoUpdate && window.kinoUpdate({state:'permission'})");
+            try {
+                startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+            } catch (ActivityNotFoundException e) {
+                js("window.kinoUpdate && window.kinoUpdate({state:'error', message:'This device has no setting for installing apps'})");
+            }
+            return;
+        }
+        pendingUpdate = null;
+        String url = Uri.parse(HOME).buildUpon().path(path).build().toString();
+        String ua = web.getSettings().getUserAgentString();
+        new Thread(() -> {
+            try {
+                java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                c.setRequestProperty("User-Agent", ua);
+                String cookie = CookieManager.getInstance().getCookie(url);
+                if (cookie != null) c.setRequestProperty("Cookie", cookie);
+                c.setConnectTimeout(20000);
+                c.setReadTimeout(60000);
+                if (c.getResponseCode() != 200) throw new Exception("The server said " + c.getResponseCode());
+                long total = c.getContentLengthLong(), got = 0;
+                java.io.File dir = new java.io.File(getCacheDir(), "updates");
+                dir.mkdirs();
+                java.io.File apk = new java.io.File(dir, "kino.apk");
+                int last = -1;
+                try (java.io.InputStream in = c.getInputStream(); java.io.FileOutputStream out = new java.io.FileOutputStream(apk)) {
+                    byte[] buf = new byte[64 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        out.write(buf, 0, n);
+                        got += n;
+                        int pct = total > 0 ? (int) (got * 100 / total) : -1;
+                        if (pct != last) { last = pct; js("window.kinoUpdate && window.kinoUpdate({state:'downloading', progress:" + pct + "})"); }
+                    }
+                }
+                runOnUiThread(() -> {
+                    Uri uri = UpdateProvider.uri(this);
+                    Intent i = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                    js("window.kinoUpdate && window.kinoUpdate({state:'installing'})");
+                    try { startActivity(i); }
+                    catch (ActivityNotFoundException e) { js("window.kinoUpdate && window.kinoUpdate({state:'error', message:'No installer on this device'})"); }
+                });
+            } catch (Exception e) {
+                String m = e.getMessage() == null ? "Download failed" : e.getMessage();
+                js("window.kinoUpdate && window.kinoUpdate({state:'error', message:" + JSONObject.quote(m) + "})");
+            }
+        }).start();
+    }
+
     private void showOffline() {
         String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'><style>"
                 + "body{margin:0;height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:sans-serif;text-align:center}"
@@ -371,6 +428,10 @@ public class MainActivity extends Activity {
         super.onResume();
         web.onResume();
         if (isTv) hideSystemBars();
+        if (pendingUpdate != null && Build.VERSION.SDK_INT >= 26) {
+            if (getPackageManager().canRequestPackageInstalls()) startUpdate(pendingUpdate);
+            else { pendingUpdate = null; js("window.kinoUpdate && window.kinoUpdate({state:'denied'})"); }
+        }
     }
 
     @Override
@@ -388,6 +449,11 @@ public class MainActivity extends Activity {
     class Bridge {
         @JavascriptInterface public boolean isTv() { return isTv; }
         @JavascriptInterface public String version() { return BuildConfig.VERSION_NAME; }
+        @JavascriptInterface public int versionCode() { return BuildConfig.VERSION_CODE; }
+
+        // Downloads the newer app from the server and opens androids installer for it
+        @JavascriptInterface
+        public void installUpdate(String path) { runOnUiThread(() -> startUpdate(path)); }
 
         // Plays a video in the native player (exoplayer) instead of the web one, the page hands over everything it needs
         @JavascriptInterface

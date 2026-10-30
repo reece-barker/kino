@@ -134,6 +134,10 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         h.postDelayed(saver, 10000);
     }
 
+    // Tvs cut a bit off the edges of the picture (overscan), so controls stay at least 5% in from every side
+    private int safeX() { return Math.max(dp(40), Math.round(getResources().getDisplayMetrics().widthPixels * (tv ? 0.05f : 0.03f))); }
+    private int safeY() { return Math.max(dp(20), Math.round(getResources().getDisplayMetrics().heightPixels * (tv ? 0.05f : 0.02f))); }
+
     private int dp(float v) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics()));
     }
@@ -176,7 +180,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             setClickable(true);
             setContentDescription(label);
             setLayoutParams(new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)));
-            setOnFocusChangeListener((v, f) -> animate().scaleX(f ? 1.1f : 1f).scaleY(f ? 1.1f : 1f).setDuration(150).start());
+            // Focus shows as the white circle, no growing: a grown button got cut off by the row it sits in
         }
     }
 
@@ -193,7 +197,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         if (!primary) b.setTextColor(new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}}, new int[]{Color.BLACK, Color.WHITE}));
         b.setFocusable(true);
         b.setClickable(true);
-        b.setOnFocusChangeListener((v, f) -> v.animate().scaleX(f ? 1.06f : 1f).scaleY(f ? 1.06f : 1f).setDuration(150).start());
+        b.setSingleLine(true);
+        b.setEllipsize(TextUtils.TruncateAt.END);
         return b;
     }
 
@@ -222,7 +227,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         skip.setVisibility(View.GONE);
         skip.setOnClickListener(v -> skipIntro());
         FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
-        sl.setMargins(0, 0, dp(40), dp(150));
+        sl.setMargins(0, 0, safeX(), safeY() + dp(130));
         root.addView(skip, sl);
 
         buildUpNext();
@@ -258,7 +263,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(dp(40), dp(26), dp(40), dp(60));
+        top.setPadding(safeX(), safeY() + dp(4), safeX(), dp(60));
         top.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0xB3000000, 0x00000000}));
         if (!tv) {
             bClose = new RoundButton(R.drawable.ic_close, 44, "Close");
@@ -293,7 +298,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         // Bottom: timeline with the times, then the buttons
         LinearLayout bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.VERTICAL);
-        bottom.setPadding(dp(40), dp(70), dp(40), dp(22));
+        bottom.setPadding(safeX(), dp(70), safeX(), safeY());
         bottom.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, new int[]{0xC7000000, 0x59000000, 0x00000000}));
 
         FrameLayout tipRow = new FrameLayout(this);
@@ -412,29 +417,16 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         pulse.setRepeatCount(ValueAnimator.INFINITE);
         pulse.start();
 
-        // The thin bar with a light sliding along it
-        FrameLayout bar = new FrameLayout(this);
-        bar.setBackground(rounded(0x29FFFFFF, dp(2)));
-        View glow = new View(this);
-        glow.setBackground(rounded(Color.WHITE, dp(2)));
-        bar.addView(glow, new FrameLayout.LayoutParams(dp(84), dp(3)));
-        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(dp(240), dp(3));
-        bl.topMargin = dp(24);
-        mid.addView(bar, bl);
-        ObjectAnimator slide = ObjectAnimator.ofFloat(glow, "translationX", -dp(90), dp(250));
-        slide.setDuration(1300);
-        slide.setRepeatCount(ValueAnimator.INFINITE);
-        slide.start();
-
         stats = new LinearLayout(this);
         stats.setOrientation(LinearLayout.VERTICAL);
         stats.setGravity(Gravity.CENTER_HORIZONTAL);
         stats.setMinimumHeight(dp(92));
-        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        sl.topMargin = dp(22);
-        mid.addView(stats, sl);
         stats.setVisibility(info.optBoolean("loadStats", true) ? View.VISIBLE : View.GONE);
+        // The logo sits dead centre, the details hang underneath it without pushing it up
         loadLayer.addView(mid, new FrameLayout.LayoutParams(dp(560), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(dp(560), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL | Gravity.TOP);
+        sl.topMargin = getResources().getDisplayMetrics().heightPixels / 2 + dp(84);
+        loadLayer.addView(stats, sl);
         root.addView(loadLayer, match());
 
         JSONObject art = info.optJSONObject("art");
@@ -549,7 +541,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         body.addView(acts);
         upNext.addView(body, new LinearLayout.LayoutParams(dp(250), ViewGroup.LayoutParams.WRAP_CONTENT));
         FrameLayout.LayoutParams ul = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
-        ul.setMargins(0, 0, dp(40), dp(150));
+        ul.setMargins(0, 0, safeX(), safeY() + dp(130));
         root.addView(upNext, ul);
     }
 
@@ -643,12 +635,31 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         done();
     }
 
+    /** An online source (not the library) and theres another one to try */
+    private boolean sourceCanMoveOn() {
+        return info.optBoolean("isStream") && info.optBoolean("moreSources");
+    }
+
+    private void sourceFailed(String msg) {
+        if (leaving) return;
+        leaving = true;
+        try {
+            JSONObject r = new JSONObject().put("fid", fid).put("pos", pos()).put("dur", dur()).put("sourceFailed", true).put("error", msg);
+            setResult(RESULT_OK, new Intent().putExtra("result", r.toString()));
+        } catch (Exception ignored) { }
+        finish();
+    }
+
     @Override
     public void onError(String msg, boolean codec) {
         double at = pos();
         boolean exo = eng.name().equals("exo");
+        // Direct links from addons that fail are nearly always a broken source, not the player, so the next one gets tried.
+        // TorBox copies go through Kino, those get the converted stream first in case its the format
+        if (sourceCanMoveOn() && (!info.optBoolean("torbox") || triedHls)) { sourceFailed(msg); return; }
         // Direct play didnt work, the converted stream nearly always does
-        if (exo && !hls && !triedHls) { relaunchLoading("This TV can't play the file as it is"); startHls(at); return; }
+        boolean canConvert = !info.optBoolean("isStream") || info.optBoolean("torbox");
+        if (exo && !hls && !triedHls && canConvert) { relaunchLoading("This TV can't play the file as it is"); startHls(at); return; }
         // The converted stream stops on the server after a while paused, it just gets started again from where it was
         if (exo && hls && hlsRetries++ < 2) { relaunchLoading("Reconnecting"); startHls(at); return; }
         showError("This video won't play in the " + (exo ? "Kino" : "Android") + " player (" + msg + ")");
@@ -656,7 +667,12 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onTracks() {
-        if (eng instanceof ExoEngine && !hls && !triedHls && ((ExoEngine) eng).noPlayableAudio()) {
+        boolean canConvert = !info.optBoolean("isStream") || info.optBoolean("torbox");
+        if (eng instanceof ExoEngine && !hls && !triedHls && ((ExoEngine) eng).noPlayableAudio() && !canConvert && sourceCanMoveOn()) {
+            sourceFailed("no sound this TV can play");
+            return;
+        }
+        if (eng instanceof ExoEngine && !hls && !triedHls && canConvert && ((ExoEngine) eng).noPlayableAudio()) {
             relaunchLoading("This TV can't play the sound in this file");
             startHls(pos());
             return;
@@ -872,7 +888,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                 TextView hint = text(12, 0x80FFFFFF, false);
                 hint.setText("Try another player if the picture or sound is wrong. Kino remembers your pick on this device.");
                 hint.setPadding(dp(12), dp(8), dp(12), dp(4));
-                hint.setMaxWidth(dp(280));
+                hint.setLineSpacing(0, 1.2f);
                 menu.addView(hint);
                 break;
             }
@@ -882,8 +898,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         sc.setBackground(rounded(0xF52C2C2E, dp(16)));
         sc.setElevation(dp(12));
         sc.addView(menu);
-        FrameLayout.LayoutParams ml = new FrameLayout.LayoutParams(dp(320), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
-        ml.setMargins(0, dp(40), dp(36), dp(96));
+        FrameLayout.LayoutParams ml = new FrameLayout.LayoutParams(dp(380), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
+        ml.setMargins(0, safeY() + dp(20), safeX(), safeY() + dp(78));
         menuWrap.addView(sc, ml);
         menuWrap.setVisibility(View.VISIBLE);
         sc.setAlpha(0f);
@@ -897,7 +913,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     private View item(String label, boolean on, Runnable run) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(12), dp(11), dp(12), dp(11));
+        row.setPadding(dp(14), 0, dp(14), 0);
+        row.setMinimumHeight(dp(50));
         ImageView ck = new ImageView(this);
         ck.setImageResource(R.drawable.ic_check);
         ck.setImageTintList(new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}}, new int[]{0xFF0A84FF, 0xFF0A84FF}));
@@ -905,6 +922,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         row.addView(ck, new LinearLayout.LayoutParams(dp(18), dp(18)));
         TextView t = text(16, Color.WHITE, on);
         t.setText(label);
+        t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
         t.setPadding(dp(12), 0, 0, 0);
         t.setDuplicateParentStateEnabled(true);
         t.setTextColor(new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}}, new int[]{Color.BLACK, run == null ? 0x80FFFFFF : Color.WHITE}));
@@ -1015,18 +1034,16 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         bd.setPadding(0, dp(8), 0, dp(18));
         bd.setLineSpacing(0, 1.15f);
         card.addView(bd);
-        root.addView(card, new FrameLayout.LayoutParams(dp(460), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        root.addView(card, new FrameLayout.LayoutParams(dp(420), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
         return card;
     }
 
     private void buttons(LinearLayout c, TextView... bs) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER);
         for (int i = 0; i < bs.length; i++) {
-            if (i > 0) row.addView(space(10));
-            row.addView(bs[i]);
+            LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+            if (i > 0) l.topMargin = dp(8);
+            c.addView(bs[i], l);
         }
-        c.addView(row);
         bs[0].post(bs[0]::requestFocus);
     }
 

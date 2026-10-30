@@ -324,7 +324,11 @@
   function placePill(instant) {
     const pill = $("#sidePill"), cur = $(`.side-item[aria-current="page"]`);
     if (!pill) return;
-    if (!cur || !cur.offsetParent) { pill.style.opacity = "0"; return; }
+    // The page is in the Settings group but the group is folded away: no pill (it showed as a blank white shape),
+    // the Settings heading gets highlighted instead
+    const folded = !!(cur && cur.closest(".side-group:not(.open)"));
+    const head = $("#sideHead"); if (head) head.classList.toggle("holds-current", folded);
+    if (!cur || !cur.offsetParent || folded) { pill.style.opacity = "0"; return; }
     // Layout offsets instead of screen positions, so it still lines up when TVs zoom the whole page
     let top = 0;
     for (let el = cur; el && el !== pill.parentElement; el = el.offsetParent) top += el.offsetTop;
@@ -1220,7 +1224,7 @@
         </div></section>
       </main>`;
     wireTopbar();
-    window.scrollTo(0, 0);
+    if (!SOFT) window.scrollTo(0, 0);
 
     const drawEps = (season) => {
       const eps = t.files.filter((f) => (f.season ?? 0) === season);
@@ -1373,7 +1377,23 @@
     try { r = await api(`/api/streams/series/${encodeURIComponent(vid)}`); } catch (e) { toast(e.message, 5000); return false; }
     if (!r.streams.length) { toast("There's no public domain copy of this episode"); return false; }
     const s = r.streams[0];
+    SOURCES = { list: r.streams, tried: new Set() };
     playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
+    return true;
+  }
+
+  // The sources a title or episode was played from. When one turns out broken it gets marked on the server (so it
+  // goes to the back of the list next time) and the next one plays straight away, instead of asking about players
+  let SOURCES = null;
+  const moreSources = (fid) => !!(SOURCES && SOURCES.list.some((x) => x.id !== fid && !SOURCES.tried.has(x.id)));
+  function nextSource(fid, from) {
+    api(`/api/streams/${fid}/bad`, {}).catch(() => {});
+    if (!SOURCES || !SOURCES.list.some((x) => x.id === fid)) return false;
+    SOURCES.tried.add(fid);
+    const n = SOURCES.list.find((x) => !SOURCES.tried.has(x.id));
+    if (!n) { toast("None of the sources for this would play. Try again later, or another player from the player's menu.", 7000); return false; }
+    toast(`That source didn't work, trying ${n.addon ? `one from ${n.addon}` : "another one"}`, 4000);
+    playFile(n.id, { from: from || 0 });
     return true;
   }
 
@@ -1415,7 +1435,7 @@
         ${isAdmin() ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
       </div>
       ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
-    const play = (s) => playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
+    const play = (s) => { SOURCES = { list: r.streams, tried: new Set() }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
     $("#pdPlay").onclick = () => play(first);
     if (grabFocus) $("#pdPlay").focus({ preventScroll: true });
     wireListBtn({ kind, id: t.list_key }, t.list_key);
@@ -1483,6 +1503,44 @@
     $("#fmGo", s.el).onclick = go;
     $("#fmq", s.el).addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
     go();
+  }
+
+  // ---------------------------------------------------------- interests
+  // Things this profile is into. Recommendations lean towards them but still mix in other well rated titles, and
+  // Kino adds ones it notices from what's been watched lately (marked Picked Up)
+  async function drawInterests() {
+    const box = $("#intCard");
+    if (!box) return;
+    let r;
+    try { r = await api("/api/interests"); } catch (e) { box.innerHTML = `<h2 class="set-title">Your Interests</h2><div class="err-note">${esc(e.message)}</div>`; return; }
+    const kindName = { genre: "Genre", person: "Person", word: "Topic" };
+    box.innerHTML = `<h2 class="set-title">Your Interests</h2>
+      <p class="secondary set-hint">Tell Kino what you're into, like a genre, an actor or director, or a topic like Heists or Space. Recommendations lean towards these but still show other things you might like. Kino adds some itself from what you've been watching.</p>
+      <div class="int-list">${r.interests.length ? r.interests.map((i) => `<button class="int-chip ${i.auto ? "auto" : ""}" data-int="${esc(i.name)}" aria-label="Remove ${esc(i.name)}" title="Remove">
+          <span>${esc(i.name)}</span><span class="int-kind">${i.auto ? "Picked Up" : kindName[i.kind] || ""}</span>${ic("close")}</button>`).join("")
+        : `<span class="secondary">No interests yet. Add some below, or watch a few things and Kino will pick some up.</span>`}</div>
+      <form class="int-add" id="intForm"><input id="intIn" placeholder="Add an interest" maxlength="40" autocomplete="off" enterkeyhint="done"><button class="btn primary small" type="submit">${ic("plus")} Add</button></form>
+      <div class="form-err" id="intErr" role="alert"></div>
+      ${r.suggestions.length ? `<div class="menu-label" style="padding-left:0">Ideas</div><div class="int-list">${r.suggestions.map((x) => `<button class="int-chip sugg" data-add="${esc(x.name)}" data-kind="${x.kind}">${ic("plus")}<span>${esc(x.name)}</span></button>`).join("")}</div>` : ""}
+      <div class="set-row" style="margin-top:10px"><span><b>Start Over</b><span class="secondary">Forgets your interests and what you've watched so far for recommendations. Your history and ratings stay.</span></span>
+        <button class="btn secondary small" id="intReset">Reset Recommendations</button></div>`;
+    const add = async (name, kind) => {
+      try { await api("/api/interests", { name, kind }); toast(`Added ${name}`); drawInterests(); }
+      catch (e) { $("#intErr").textContent = e.message; }
+    };
+    $("#intForm").onsubmit = (e) => { e.preventDefault(); const v = $("#intIn").value.trim(); if (v) add(v); };
+    $$("[data-add]", box).forEach((b) => (b.onclick = () => add(b.dataset.add, b.dataset.kind)));
+    $$("[data-int]", box).forEach((b) => (b.onclick = async () => {
+      await api("/api/interests?name=" + encodeURIComponent(b.dataset.int), undefined, "DELETE").catch(() => {});
+      toast(`Removed ${b.dataset.int}`);
+      drawInterests();
+    }));
+    $("#intReset").onclick = async () => {
+      if (!(await confirmSheet("Reset your recommendations?", "Your interests are cleared and what you've watched and rated so far stops counting towards Top Picks. Your history and ratings are kept.", "Reset", true))) return;
+      await api("/api/interests/reset", {});
+      toast("Recommendations reset");
+      drawInterests();
+    };
   }
 
   // ---------------------------------------------------------- history
@@ -1590,6 +1648,7 @@
         <div class="set-row"><span><b>Profile Lock</b><span class="secondary">${p.locked ? "A 4 digit code is needed to open this profile" : "Ask for a 4 digit code when someone picks this profile"}</span></span>
           <span class="actions">${p.locked ? `<button class="btn secondary small" id="pinChange">Change Code</button><button class="btn secondary small" id="pinOff">Remove</button>` : `<button class="btn secondary small" id="pinSet">${ic("lock")} Set Code</button>`}</span></div>
       </section>
+      <section class="card set-card" id="intCard"><h2 class="set-title">Your Interests</h2><div class="sk sk-line" style="width:60%"></div></section>
       <section class="card set-card">
         <h2 class="set-title">Appearance</h2>
         <div class="set-row"><span><b>Theme</b><span class="secondary">Automatic follows this device's light or dark setting</span></span>${themePicker("setTheme")}</div>
@@ -1641,6 +1700,7 @@
     if (pc) pc.onclick = () => setPin(false);
     if (po) po.onclick = () => setPin(true);
     wireThemePicker($("#setTheme"));
+    drawInterests();
     const saveP = async () => {
       const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
@@ -2022,6 +2082,8 @@
         <h3 style="margin-top:18px">Uptime</h3><div class="big" style="font-size:22px">${dur(s.uptime)}</div>
         <div class="note">${s.players} active player${s.players === 1 ? "" : "s"}</div></section>
     </div>`;
+    // On a tv the cards with nothing to press in them can still be landed on, so the remote steps down through them
+    if (TV) $$(".card", b).forEach((c, n) => { if (!$("a,button,input,select", c)) { c.tabIndex = 0; c.dataset.card = String(n); } });
   }
 
   // ---------------------------------------------------------- polling
@@ -2199,6 +2261,7 @@
     const art = { background: (t && t.background) || (info.art && info.art.background) || null, logo: (t && t.logo) || (info.art && info.art.logo) || null };
     setTimeout(() => (NATIVE_BUSY = 0), 3000);
     window.KinoAndroid.playNative(JSON.stringify({
+      isStream: !!info.stream, torbox: !!(info.stream && !info.src), moreSources: moreSources(fid),
       art, video: info.video || {}, credits: info.credits || 0, autoplay: prefs.autoplay !== false, loadStats: prefs.load_stats !== false,
       subSize: prefs.sub_size || "m", titleId: info.title_id || (t && t.id) || null,
       next: n ? { id: n.id || null, video_id: n.video_id || null, name: n.name ? nice(n.name) : null, season: n.season ?? null, episode: n.episode ?? null, thumbnail: n.thumbnail || null } : null,
@@ -2214,12 +2277,14 @@
   window.kinoNativeDone = (r) => {
     const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
     if (!r) return;
-    // The player only hands back an error when someone picked Web Player in its error box
-    if (r.error) return playFile(r.fid, { ...(cur ? cur.opts : {}), from: r.pos, web: true });
+    // A broken source: the next one plays straight away
+    if (r.sourceFailed && nextSource(r.fid, r.pos)) return;
+    // Otherwise the player only hands back an error when someone picked Web Player in its error box
+    if (r.error && !r.sourceFailed) return playFile(r.fid, { ...(cur ? cur.opts : {}), from: r.pos, web: true });
     const n = cur ? cur.info.next : r.next, auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : r.autoplay !== false;
     if (r.ended && n && auto) return nextFrom(n, cur ? cur.opts.title : null, r.titleId);
     // Redraws the page so resume bars and watched ticks are right
-    if (ME.profile) setTimeout(route, 300);
+    if (ME.profile) setTimeout(softRoute, 300);
   };
   // The next episode, also when the page was reloaded while the player was open and only the ids are left
   async function nextFrom(n, title, titleId) {
@@ -2295,6 +2360,8 @@
         const code = pl.v.error && pl.v.error.code;
         if (code === 1) { pl.v.addEventListener("error", onErr, { once: true }); return; }   // aborted on purpose, not a real problem
         // Online sources often stall on the first try, one more go before saying it won't play
+        // A format this browser can't play, or still failing after the retry: the next source if there is one
+        if ((retried || code !== 2) && moreSources(info.id)) { closePlayer(true); if (nextSource(info.id, opts.from)) return; }
         if (!retried && code === 2) {
           retried = true;
           const at = pl.v.currentTime || (opts.from || 0);
@@ -2468,7 +2535,7 @@
       document.body.style.overflow = "";
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       // Redraws the page behind so resume bars and watched ticks are up to date
-      if (ME.profile && (location.hash.startsWith("#/title/") || location.hash.startsWith("#/discover/") || location.hash === "#/home" || !location.hash)) setTimeout(route, 400);
+      if (ME.profile && (location.hash.startsWith("#/title/") || location.hash.startsWith("#/discover/") || location.hash === "#/home" || !location.hash)) setTimeout(softRoute, 400);
     }
   }
 
@@ -2786,7 +2853,9 @@
     const openMenu = cur && cur.closest && cur.closest(".menu:not([hidden])");
     const scope = sheetClose ? $(".sheet-wrap") : openMenu || (playerOpen ? pl.el : document);
     if (playerOpen) wakeUi();
-    const items = $$('a[href], button, input, select, [tabindex]:not([tabindex="-1"])', scope).filter((el) => {
+    const items = $$('a[href], button, input, select, summary, [tabindex]:not([tabindex="-1"])', scope).filter((el) => {
+      // Things inside a closed section can't take focus, only the section's own toggle can
+      if (el.closest("details:not([open])") && el.tagName !== "SUMMARY") return false;
       // The little See All links in row headers get skipped, rows end with a card that does the same and is easy to land on
       if (el.disabled || el.closest("[hidden]") || el.closest('[aria-hidden="true"]') || el.closest(".hero-dots") || el.closest(".section-title")) return false;
       const r = el.getBoundingClientRect();
@@ -2814,7 +2883,8 @@
       if (curRow && !curRow.contains(el)) continue;
       const elSide = !!(side && side.contains(el));
       if (d[1] && elSide !== inSide) continue;
-      if (d[0] > 0 && inSide && elSide) continue;
+      // Right stays out of the sidebar's own items, but works inside its profile menu (the Appearance buttons)
+      if (d[0] > 0 && inSide && elSide && !openMenu) continue;
       const b = el.getBoundingClientRect();
       if (!elSide && scope === document && b.left + b.width / 2 < sideRight) continue;
       const bx = b.left + b.width / 2, by = b.top + b.height / 2;
@@ -2825,26 +2895,45 @@
       const along = d[1] ? Math.abs(bx - ax) : Math.abs(by - ay);
       cands.push({ el, gap: Math.max(-8, gap), overlap, along });
     }
-    let best = null;
+    // Ranked best first, if the first one won't take focus the next one gets it, so the remote never gets stuck
+    let ranked = [];
     if (cands.length) {
       if (d[1]) {
         const near = Math.min(...cands.map((c) => c.gap));
         const line = cands.filter((c) => c.gap <= near + 24);
         line.sort((x, y) => (y.overlap > 0) - (x.overlap > 0) || x.along - y.along);
-        best = line[0].el;
+        const rest = cands.filter((c) => !line.includes(c)).sort((x, y) => x.gap - y.gap || x.along - y.along);
+        ranked = line.concat(rest).map((c) => c.el);
       } else {
         // Sideways prefers things on the same row, then the closest
         cands.sort((x, y) => (y.overlap > 0) - (x.overlap > 0) || (x.gap + x.along * 2) - (y.gap + y.along * 2));
-        best = cands[0].el;
+        ranked = cands.map((c) => c.el);
       }
     }
+    // Rows of cards (Home, search, a title's episodes) go by the order of the rows instead of measuring, the tv's zoom
+    // made the measuring land on the wrong row now and then. It lands on the card in the next row nearest to you
+    const rowOf = (el) => el.closest && el.closest(".shelf, .hist");
+    const curShelf = d[1] && !inSide && scope === document && rowOf(cur);
+    if (curShelf) {
+      const shelves = $$(".shelf, .hist", app).filter((sh) => sh.getBoundingClientRect().height > 2 && $$("a[href], button", sh).some((x) => items.includes(x)));
+      const i = shelves.indexOf(curShelf), nextShelf = shelves[i + d[1]];
+      if (nextShelf) {
+        const opts = items.filter((x) => nextShelf.contains(x));
+        // History rows go play button to play button
+        const same = cur.dataset && cur.dataset.hplay ? opts.filter((x) => x.dataset.hplay) : cur.dataset && cur.dataset.hdel ? opts.filter((x) => x.dataset.hdel) : opts.filter((x) => x.classList.contains("tile") || x.classList.contains("fresh-card"));
+        const pool = same.length ? same : opts;
+        pool.sort((x, y) => Math.abs(x.getBoundingClientRect().left + x.getBoundingClientRect().width / 2 - ax) - Math.abs(y.getBoundingClientRect().left + y.getBoundingClientRect().width / 2 - ax));
+        if (pool.length) ranked = pool.concat(ranked.filter((x) => !pool.includes(x)));
+      }
+    }
+    let best = null;
+    for (const el of ranked) { el.focus({ preventScroll: true }); if (document.activeElement === el) { best = el; break; } }
     // Going into the sidebar lands on the page you're on, not whichever item happened to be level with you
     if (best && d[0] < 0 && !inSide && side && side.contains(best)) {
       const here = $(".side-item[aria-current='page']", side);
-      if (here && here.getBoundingClientRect().height > 2) best = here;
+      if (here && here.getBoundingClientRect().height > 2) { best = here; here.focus({ preventScroll: true }); }
     }
     if (best) {
-      best.focus({ preventScroll: true });
       // Anything in the big picture at the top of a page scrolls the page right back up, so the logo and art stay in
       // view instead of the button being put in the middle of the screen
       const top = !playerOpen && !sheetClose && best.closest(".detail-hero, .hero");
@@ -3052,6 +3141,18 @@
     if (page === "settings" || page === "history" || page === "sync" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
     if (page === "search") return `<main class="page"><div class="sk sk-search"></div><div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${tiles(12)}</div></main>`;
     return `<main class="page"><div class="sk sk-title"></div><div class="grid">${tiles(14)}</div></main>`;
+  }
+
+  // Coming back from the player the page refreshes in place: same scroll, same focus, the old page held at its height
+  // while the new one draws, so resume bars update without the page jumping or flashing
+  let SOFT = false;
+  async function softRoute() {
+    const y = scrollY, k = focusKey(document.activeElement), h = app.offsetHeight;
+    SOFT = true;
+    app.style.minHeight = h + "px";
+    try { await route(); } finally { SOFT = false; }
+    window.scrollTo(0, y);
+    requestAnimationFrame(() => { app.style.minHeight = ""; refocus(k); if (LITE) recycle(); });
   }
 
   async function route() {

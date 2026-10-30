@@ -64,4 +64,6 @@ interface Engine {
     /** Moves the subtitles up while the controls are showing so they dont sit under them */
     void subsRaised(boolean up);
     void release();
+    /** Live tv: the picture shouldnt pause itself cause something else on the tv grabed the sound for a moment */
+    default void live(boolean on) { }
 }

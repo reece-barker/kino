@@ -566,6 +566,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     private void startEngine(String which, double at) {
         if (eng != null) { eng.release(); video.removeAllViews(); }
         eng = makeEngine(which);
+        if (live) eng.live(true);
         video.addView(eng.view(), match());
         audioPicked = false;
         errorShown = false;
@@ -634,6 +635,11 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onBuffering(boolean b) {
+        // A live channel stuck loading for 20 seconds gets tuned in again by its self, it nearly allways just needs that
+        if (live) {
+            h.removeCallbacks(liveStall);
+            if (b) h.postDelayed(liveStall, 20000);
+        }
         if (b && loading) note("buffering");
         long now = System.currentTimeMillis();
         if (b && bufStart == 0) bufStart = now;
@@ -679,6 +685,19 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     @Override
     public void onError(String msg, boolean codec) {
         if (live) {
+            // Most errors on a live channel are blips (the player fell behind the window after a stall or a pause, one peice
+            // didnt load) so it quietly tunes in again a few times first, only when it keeps happening does the channel get
+            // called broken, before it said so on the first one and marked the channel bad for everyone
+            long now = System.currentTimeMillis();
+            if (now - liveErrAt > 60000) liveErrs = 0;
+            liveErrAt = now;
+            if (++liveErrs <= 4) {
+                h.removeCallbacks(liveStall);
+                final String again = fid;
+                h.postDelayed(() -> { if (live && !leaving && eng != null && !errorShown && again.equals(fid)) retuneLive(); }, 600L * liveErrs);
+                return;
+            }
+            liveErrs = 0;
             // A channel thats down: try the next one or go back, nothing else to switch to
             errorShown = true;
             loading = false;
@@ -1126,6 +1145,15 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     private JSONArray liveList;
     private int liveIdx;
 
+    private int liveErrs;
+    private long liveErrAt;
+    private final Runnable liveStall = () -> { if (live && !leaving && eng != null && !errorShown && card == null) retuneLive(); };
+
+    private void retuneLive() {
+        h.removeCallbacks(liveStall);
+        eng.open(base + "/api/live/" + fid + "/index.m3u8", true, -1, new ArrayList<>());
+    }
+
     private void switchChannel(int d) {
         if (liveList == null || liveList.length() < 2) return;
         liveIdx = (liveIdx + d + liveList.length()) % liveList.length();
@@ -1273,6 +1301,13 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         boolean onPopup = (skip.getVisibility() == View.VISIBLE && skip.isFocused()) || (upNext.getVisibility() == View.VISIBLE && upNext.hasFocus());
         if (!shown && !onPopup && menuWrap.getVisibility() != View.VISIBLE) {
             // Controls hidden: left and right jump with the timeline focused, ok pauses, anything else brings them up
+            // Live tv has no timeline to seek on, left and right flick to the previous and next channel and thats the only
+            // thing that does (up and down used to as well and left and right tried to focus the hiden timeline which
+            // is why the remote acted wierd)
+            if (down && live && (k == KeyEvent.KEYCODE_DPAD_LEFT || k == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+                if (e.getRepeatCount() == 0) switchChannel(k == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1);
+                return true;
+            }
             if (down && (k == KeyEvent.KEYCODE_DPAD_LEFT || k == KeyEvent.KEYCODE_DPAD_RIGHT)) {
                 showControls(line);
                 line.requestFocus();
@@ -1280,8 +1315,6 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                 return true;
             }
             if (down && (k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER)) { togglePlay(); showControls(bPlay); return true; }
-            if (down && live && (k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN)) { switchChannel(k == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1); return true; }
-            if (down && live && (k == KeyEvent.KEYCODE_DPAD_LEFT || k == KeyEvent.KEYCODE_DPAD_RIGHT)) { showControls(bPlay); return true; }
             if (down && (k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN)) { showControls(bPlay); return true; }
             if (!down && (k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER || k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN)) return true;
         }

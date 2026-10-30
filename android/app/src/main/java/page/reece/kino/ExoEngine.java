@@ -185,4 +185,8 @@ class ExoEngine implements Engine {
     }
 
     @Override public void release() { player.release(); }
+
+    // Audio focus is what pauses the picture when a tvs assistant or a notification sound grabs the sound, on a live channel
+    // that looked like it paused for no reason so for those the player just keeps going
+    @Override public void live(boolean on) { player.setAudioAttributes(AudioAttributes.DEFAULT, !on); }
 }

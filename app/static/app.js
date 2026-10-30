@@ -1974,7 +1974,7 @@
         <span class="ch-now">${c.now ? esc(c.now.title) : esc([c.group, flag(c.country)].filter(Boolean).join(" · "))}</span>
         ${pr != null ? `<span class="ch-bar"><i style="width:${pr * 100}%"></i></span>` : ""}
         ${c.next ? `<span class="ch-next">${hm(c.next.start)} ${esc(c.next.title)}</span>` : ""}</span></button>
-      ${c.fav ? `<button class="ch-fav" data-unfav="${i}" aria-label="Remove ${esc(c.name)} from Favourites" title="Remove from Favourites">★</button>` : ""}
+      ${c.fav ? `<span class="ch-fav" aria-hidden="true">★</span>` : ""}
       <button class="ch-opt" data-opt="${i}" aria-label="More for ${esc(c.name)}" title="Favourite, Record">${ic("more")}</button></div>`;
   };
 
@@ -2014,8 +2014,6 @@
     grid.addEventListener("click", (e) => {
       const o = e.target.closest("[data-opt]");
       if (o) return liveOptions(LIVE_LIST[Number(o.dataset.opt)], null, o);
-      const u = e.target.closest("[data-unfav]");
-      if (u) return setFav(LIVE_LIST[Number(u.dataset.unfav)], false);
       const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST);
     });
     let next = r.next, busy = false, t, qn = 0;
@@ -2172,7 +2170,7 @@
     $$(".ch-cell").forEach((cell) => {
       const b = $("[data-ch]", cell); if (!b || LIVE_LIST[Number(b.dataset.ch)].id !== ch.id) return;
       const old = $(".ch-fav", cell); if (old) old.remove();
-      if (on) { const n = document.createElement("button"); n.className = "ch-fav"; n.textContent = "★"; n.dataset.unfav = b.dataset.ch; n.title = "Remove from Favourites"; n.setAttribute("aria-label", `Remove ${ch.name} from Favourites`); cell.insertBefore(n, $(".ch-opt", cell)); }
+      if (on) { const n = document.createElement("span"); n.className = "ch-fav"; n.textContent = "★"; n.setAttribute("aria-hidden", "true"); cell.insertBefore(n, $(".ch-opt", cell)); }
     });
     const hadFocus = document.activeElement && document.activeElement.closest && document.activeElement.closest("#favRow");
     await drawFavRow();
@@ -2392,7 +2390,7 @@
     if (isSafari && pl.v.canPlayType("application/vnd.apple.mpegurl")) { pl.v.src = url; pl.v.play().catch(() => {}); return; }
     // One hls.js for every channel, switching just loads a new playlist into it which is much quicker than starting over
     if (!pl.hls) {
-      const h = new Hls({ liveSyncDurationCount: 3, maxBufferLength: 20, backBufferLength: 20, manifestLoadingMaxRetry: 2, levelLoadingMaxRetry: 3, fragLoadingMaxRetry: 3, enableWorker: true });
+      const h = new Hls({ liveSyncDurationCount: 4, maxBufferLength: 30, backBufferLength: 20, manifestLoadingMaxRetry: 2, levelLoadingMaxRetry: 3, fragLoadingMaxRetry: 3, enableWorker: true });
       pl.hls = h;
       h.attachMedia(pl.v);
       h.on(Hls.Events.ERROR, (_, d) => {
@@ -2404,7 +2402,16 @@
         let ahead = 0;
         for (let i = 0; i < b.length; i++) if (t >= b.start(i) - 0.3 && t <= b.end(i)) ahead = b.end(i) - t;
         if (pl.v.paused) { pl.liveStale = true; return; }
-        if (ahead > 3 && (pl.liveRetries = (pl.liveRetries || 0) + 1) <= 4) { setTimeout(() => { if (pl.hls === h && pl.info && pl.info.live) h.startLoad(); }, 2000); return; }
+        // Most of these are blips so it quietly goes again a few times (the playlist at the live edge if theres nothing
+        // left to play) before saying the channel is broken, the count starts over after a minute without any
+        const now = Date.now();
+        if (now - (pl.liveErrAt || 0) > 60000) pl.liveRetries = 0;
+        pl.liveErrAt = now;
+        if ((pl.liveRetries = (pl.liveRetries || 0) + 1) <= 4) {
+            const ch = LIVE_NOW && LIVE_NOW.i;
+            setTimeout(() => { if (pl.hls === h && pl.info && pl.info.live && LIVE_NOW && LIVE_NOW.i === ch) { if (ahead > 3) h.startLoad(); else h.loadSource(`/api/live/${pl.info.id}/index.m3u8`); } }, 1000 * pl.liveRetries);
+            return;
+        }
         spinner(false);
         api(`/api/live/${pl.info.id}/bad`, {}).catch(() => {});
         showMsg("This channel isn't working", "It might be off air right now, or the link stopped working.",
@@ -3480,6 +3487,19 @@
     }
     pl.v.play().catch(() => {});
     pl.v.playbackRate = pl.rate;
+    // The stream starts on a keyframe, which can be a few seconds before the spot you asked for (that's also what Resync
+    // Now does, it asks for where you are). Once enough of it is made it jumps forward to the exact spot, the sound is
+    // lined up with the picture from the start so this is safe
+    const lead = t - r.offset, sid0 = r.sid;
+    if (lead > 1 && lead < 40) {
+      const jump = () => {
+        if (pl.sid !== sid0) return pl.v.removeEventListener("progress", jump);
+        const se = pl.v.seekable.length ? pl.v.seekable.end(pl.v.seekable.length - 1) : 0;
+        if (pl.v.readyState >= 1 && se > lead + 1) { pl.v.removeEventListener("progress", jump); pl.v.currentTime = lead; }
+      };
+      pl.v.addEventListener("progress", jump);
+      setTimeout(() => pl.v.removeEventListener("progress", jump), 20000);
+    }
   }
 
   function seekTo(target) {
@@ -3921,7 +3941,9 @@
     const onControl = TV && e.target.closest && e.target.closest(".player-row, .menu, .up-next, .player-top, .skip-intro");
     if ((e.key === " " || e.key === "k") && !onControl) { e.preventDefault(); toggle(); }
     else if (pl.info && pl.info.live && ["PageUp", "PageDown", "ChannelUp", "ChannelDown"].includes(e.key)) { e.preventDefault(); switchLive(e.key === "PageUp" || e.key === "ChannelUp" ? -1 : 1); }
-    else if (pl.info && pl.info.live && (e.key === "ArrowUp" || e.key === "ArrowDown") && !onControl && pl.el.classList.contains("idle")) { e.preventDefault(); e.stopImmediatePropagation(); switchLive(e.key === "ArrowUp" ? -1 : 1); }
+    // Live tv: left and right flick between channels and they are the only keys that do, up and down used to change channel
+    // when the buttons were hiden which kept happening by acident
+    else if (pl.info && pl.info.live && (e.key === "ArrowLeft" || e.key === "ArrowRight") && !onControl) { e.preventDefault(); switchLive(e.key === "ArrowLeft" ? -1 : 1); }
     else if (e.key === "ArrowLeft" && e.target !== scrub && !onControl) seekTo(pos() - 10);
     else if (e.key === "ArrowRight" && e.target !== scrub && !onControl) seekTo(pos() + 10);
     else if (e.key === "f") $("#pFull").click();
@@ -3942,6 +3964,9 @@
     if (cur && cur.matches("input[type=search], input[type=text], input:not([type])") && d[0] && cur.value) return;  // moving the text cursor
     if (cur && cur.id === "scrub" && d[0]) return;   // the timeline seeks with left and right
     const playerOpen = !pl.el.hidden;
+    // Watching live tv with the buttons hidden: left and right change channel (the focus sits on a hidden button so the
+    // remote used to move that instead and the screen just looked wierd), up and down only bring the buttons back
+    if (playerOpen && d[0] && pl.info && pl.info.live && pl.el.classList.contains("idle") && !$(".player .menu:not([hidden])")) { e.preventDefault(); e.stopImmediatePropagation(); switchLive(d[0]); return; }
     if (playerOpen && (!cur || !pl.el.contains(cur) || cur === pl.v) && d[0]) return;  // left and right seek
     // An open dropdown keeps the remote inside it until it's closed, otherwise down could land on the page behind it
     const openMenu = cur && cur.closest && cur.closest(".menu:not([hidden])");
@@ -3971,7 +3996,10 @@
       if (at >= 0 && d[0]) return void (btns[Math.max(0, Math.min(btns.length - 1, at + d[0]))].focus());
       if (at >= 0 && d[1] < 0) return void $(".fav-tile", fc).focus();
     }
-    const a = cur.getBoundingClientRect();
+    // Up and down from anywhere on a favourite measure from the whole card and never land on the favourites row its self,
+    // the star sits on top of the picture so its own tile (and the tiles next to it) were counted as "below" the star,
+    // thats why down from the star hit the tile and then down again jumped back up to the star
+    const a = (fc || cur).getBoundingClientRect();
     const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
     // The sidebar is its own column: up and down stay inside it, and things tucked behind it aren't targets
     const side = $("#side"), inSide = !!(side && side.contains(cur));
@@ -3987,6 +4015,8 @@
     const cands = [];
     for (const el of items) {
       if (el === cur) continue;
+      if (fc && d[1] && el.closest(".fav-cell")) continue;
+      if (fc && d[1] > 0 && el.classList.contains("ch-opt")) continue;  // land on the channel itself, not its little menu button
       if (curRow && !curRow.contains(el)) continue;
       if (rowTiles.length && !rowTiles.includes(el)) continue;
       if (tileRow && d[0] > 0 && !el.classList.contains("tile")) continue;

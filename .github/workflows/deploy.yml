@@ -24,6 +24,11 @@ jobs:
           node --check app/static/app.js
           # The version the server tells apps about has to be the one in kino.apk, or apps would keep offering the update
           python3 -c "import json,re; v=json.load(open('app/static/kino-version.json')); g=open('android/app/build.gradle').read(); c=int(re.search(r'versionCode (\\d+)', g).group(1)); n=re.search(r'versionName \"([^\"]+)\"', g).group(1); assert v['code']==c and v['name']==n, f'kino-version.json says {v} but build.gradle says {c} {n}'"
+          # And kino.apk itself has to be that version, a forgotten copy meant apps installed 1.5 and kept being offered 1.6
+          AAPT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/aapt"
+          APKV=$("$AAPT" dump badging app/static/kino.apk | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")
+          WANT=$(python3 -c "import json; print(json.load(open('app/static/kino-version.json'))['code'])")
+          test "$APKV" = "$WANT" || { echo "kino.apk is versionCode $APKV but kino-version.json says $WANT, copy the new build into app/static"; exit 1; }
           bash -n install.sh
           bash -n deploy/update.sh
 

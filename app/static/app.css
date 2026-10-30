@@ -1395,3 +1395,38 @@ html.lite img { image-rendering: auto; }
   body.with-side .detail-hero .hero-content { padding-top: 48px; }
   .detail-hero .hero-desc { -webkit-line-clamp: 3; }
 }
+
+/* ---- v14 */
+/* Settings heading stands in for the current page when its group is folded away */
+.side-head.holds-current { background: var(--side-on-bg); color: var(--side-on-fg); border-radius: 20px; }
+.side-head.holds-current .i { opacity: 0.7; }
+
+/* Two buttons next to each other in a settings row (Change Code and Remove) get space between them */
+.set-row .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+
+/* Server page on tvs: cards get space between them, can be focused with the remote so the page scrolls through
+   them one at a time, and buttons keep there text inside */
+.backups .sr-head .btn, .storage-review .btn { white-space: nowrap; flex: none; }
+.backups .sr-head { flex-wrap: wrap; }
+body.tv .cards { gap: 16px; }
+body.tv .card[tabindex]:focus { outline: 3px solid var(--label); outline-offset: 3px; }
+body.tv #backups, body.tv #appLog { margin-top: 16px; }
+
+/* Loading screen: the pulsing logo is the loading sign, no bar. Logo dead centre, details hang under it */
+.pl-bar { display: none; }
+.pl-mid { position: relative; gap: 0; }
+.pl-stats { position: absolute; top: calc(100% + 26px); left: 0; right: 0; min-height: 0; }
+
+/* Interests */
+.int-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 14px; }
+.int-chip { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px 0 14px; border-radius: 999px; background: var(--fill-2); color: var(--label); font-size: 15px; font-weight: 500; }
+.int-chip .i { width: 14px; height: 14px; opacity: 0.55; }
+.int-chip .int-kind { font-size: 12px; color: var(--label-3); }
+.int-chip.auto { box-shadow: inset 0 0 0 1px var(--blue); }
+.int-chip.auto .int-kind { color: var(--blue); }
+.int-chip.sugg { padding: 0 14px 0 10px; background: transparent; box-shadow: inset 0 0 0 1px var(--sep); color: var(--label-2); }
+.int-chip:hover { background: var(--hover); }
+body.tv .int-chip:focus { background: var(--label); color: var(--page-bg); outline: none; }
+body.tv .int-chip:focus .int-kind { color: inherit; opacity: 0.7; }
+.int-add { display: flex; gap: 8px; }
+.int-add input { flex: 1; min-width: 0; height: 38px; border-radius: 10px; border: 0; padding: 0 12px; background: var(--fill); color: var(--label); font: inherit; font-size: 15px; }

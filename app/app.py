@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, code TEXT, name TEXT, u
 CREATE TABLE IF NOT EXISTS search_recent (profile_id INTEGER, key TEXT, kind TEXT, title_id TEXT, name TEXT, poster TEXT,
     at REAL, PRIMARY KEY (profile_id, key));
 CREATE TABLE IF NOT EXISTS auto_intros (file_id TEXT PRIMARY KEY, start REAL, end REAL, tried REAL);
+CREATE TABLE IF NOT EXISTS stream_health (id TEXT PRIMARY KEY, good REAL, bad REAL);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
 """
@@ -1459,10 +1460,14 @@ def imdb_score(s):
         return 6.0
 
 
-def genre_weights(summ):
-    # What this profile likes, built from thumbs and what they actualy watched
+def genre_weights(summ, since=0, rated_at=None):
+    # What this profile likes, built from thumbs and what they actualy watched. After a reset only what happened
+    # since then counts
     w = {}
+    rated_at = rated_at or {}
     for s in summ:
+        if since and (s["last_activity"] or 0) < since and (rated_at.get(s["id"], 0) or 0) < since:
+            continue
         sig = {2: 3.0, 1: 2.0, -1: -3.0}.get(s["my_rating"], 0.0)
         if s["watched_count"]:
             sig += 1.0
@@ -1565,15 +1570,166 @@ async def library(p=Depends(current_profile)):
             "error": LIB["error"], "files": len(LIB["files"]), "mounted": box_mounted()}
 
 
+
+# ---- interests: things a profile tells Kino it likes (a genre, an actor or director, any word), plus ones Kino picks
+# up from what they've been watching lately. They push matching titles up in recommendations
+
+def prof_prefs(pid):
+    r = db().q("SELECT prefs FROM profiles WHERE id = ?", (pid,))
+    return json.loads(r[0]["prefs"] or "{}") if r else {}
+
+
+def save_prefs(pid, pr):
+    db().q("UPDATE profiles SET prefs = ? WHERE id = ?", (json.dumps(pr), pid))
+
+
+def lib_people():
+    """How many library titles each actor and director is in, used for suggestions and to tell what kind of interest a word is"""
+    count = {}
+    for t in LIB["titles"].values():
+        cast, directors = people_of(meta_for(t) or {})
+        for n in set(cast[:6] + directors):
+            count[n] = count.get(n, 0) + 1
+    return count
+
+
+def lib_genres(summ):
+    g = {}
+    for s in summ:
+        for x in s["genres"]:
+            g[x] = g.get(x, 0) + 1
+    return g
+
+
+def interest_kind(name, summ):
+    n = norm(name)
+    if any(norm(g) == n for g in lib_genres(summ)):
+        return "genre"
+    if any(norm(x) == n for x in lib_people()):
+        return "person"
+    return "word"
+
+
+def pick_up_interests(p, summ):
+    """Looks at the last two weeks: a director or actor in 2+ titles they watched, or a genre in 3+, becomes an interest
+    on its own. Ones they removed before stay removed"""
+    pr = prof_prefs(p["id"])
+    have = {norm(i["name"]) for i in pr.get("interests", [])} | {norm(x) for x in pr.get("dismissed", [])}
+    since = max(time.time() - 14 * 86400, pr.get("reset_at") or 0)
+    recent = [s for s in summ if (s["last_activity"] or 0) >= since and (s["watched_count"] or s["my_rating"] > 0)]
+    people, genres = {}, {}
+    for s in recent:
+        cast, directors = people_of(meta_for(LIB["titles"][s["id"]]) or {})
+        for n in set(directors + cast[:4]):
+            people[n] = people.get(n, 0) + 1
+        for g in s["genres"]:
+            genres[g] = genres.get(g, 0) + 1
+    new = [(n, "person") for n, c in sorted(people.items(), key=lambda x: -x[1]) if c >= 2]
+    new += [(g, "genre") for g, c in sorted(genres.items(), key=lambda x: -x[1]) if c >= 3 and c >= len(recent) * 0.4]
+    added = []
+    for name, kind in new[:4]:
+        if norm(name) in have:
+            continue
+        pr.setdefault("interests", []).append({"name": name, "kind": kind, "auto": True, "at": time.time()})
+        have.add(norm(name))
+        added.append(name)
+    if added:
+        save_prefs(p["id"], pr)
+    return added
+
+
+def interest_boost(s, ints):
+    """Extra score for a title that matches the profile's interests"""
+    if not ints:
+        return 0.0
+    m = meta_for(LIB["titles"][s["id"]]) if s.get("id") and s["id"] in LIB["titles"] else None
+    cast, directors = people_of(m or {})
+    people = {norm(x) for x in cast[:8] + directors}
+    genres = {norm(g) for g in s["genres"]}
+    text = norm(f"{s.get('name', '')} {s.get('description') or ''}")
+    b = 0.0
+    for i in ints:
+        n = norm(i["name"])
+        if i["kind"] == "genre" and n in genres:
+            b += 3
+        elif i["kind"] == "person" and n in people:
+            b += 5
+        elif i["kind"] == "word" and (n in genres or f" {n} " in f" {text} " or n in people):
+            b += 2.5
+    return min(b, 9.0)
+
+
+def interest_matches(s, i):
+    return interest_boost(s, [i]) > 0
+
+
+@app.get("/api/interests")
+async def interests_get(p=Depends(current_profile)):
+    summ, _, _ = all_summaries(p["id"])
+    pick_up_interests(p, summ)
+    pr = prof_prefs(p["id"])
+    mine = pr.get("interests", [])
+    have = {norm(i["name"]) for i in mine}
+    gs = sorted(lib_genres(summ).items(), key=lambda x: -x[1])
+    ppl = sorted(lib_people().items(), key=lambda x: -x[1])
+    sugg = [{"name": g, "kind": "genre"} for g, _ in gs if norm(g) not in have][:10] + \
+           [{"name": n, "kind": "person"} for n, c in ppl if c >= 2 and norm(n) not in have][:8]
+    return {"interests": mine, "suggestions": sugg, "reset_at": pr.get("reset_at")}
+
+
+@app.post("/api/interests")
+async def interests_add(request: Request, p=Depends(current_profile)):
+    b = await request.json()
+    name = re.sub(r"\s+", " ", str(b.get("name") or "")).strip()[:40]
+    if len(name) < 2:
+        raise HTTPException(400, "Type what you're into, like Heist, Quentin Tarantino or Space")
+    summ, _, _ = all_summaries(p["id"])
+    pr = prof_prefs(p["id"])
+    ints = pr.setdefault("interests", [])
+    if any(norm(i["name"]) == norm(name) for i in ints):
+        raise HTTPException(400, "That's already one of your interests")
+    if len(ints) >= 30:
+        raise HTTPException(400, "That's the most interests a profile can have, remove one first")
+    ints.append({"name": name, "kind": b.get("kind") if b.get("kind") in ("genre", "person", "word") else interest_kind(name, summ), "auto": False, "at": time.time()})
+    pr["dismissed"] = [x for x in pr.get("dismissed", []) if norm(x) != norm(name)]
+    save_prefs(p["id"], pr)
+    return {"ok": True}
+
+
+@app.delete("/api/interests")
+async def interests_remove(name: str, p=Depends(current_profile)):
+    pr = prof_prefs(p["id"])
+    gone = [i for i in pr.get("interests", []) if norm(i["name"]) == norm(name)]
+    pr["interests"] = [i for i in pr.get("interests", []) if norm(i["name"]) != norm(name)]
+    if any(i.get("auto") for i in gone):
+        # Picked up on its own, so it isnt picked up again
+        pr.setdefault("dismissed", []).append(name)
+    save_prefs(p["id"], pr)
+    return {"ok": True}
+
+
+@app.post("/api/interests/reset")
+async def interests_reset(p=Depends(current_profile)):
+    # Starts recommendations fresh: interests go and what was watched or rated before now stops counting towards them
+    pr = prof_prefs(p["id"])
+    pr["interests"], pr["dismissed"], pr["reset_at"] = [], [], time.time()
+    save_prefs(p["id"], pr)
+    return {"ok": True}
+
 @app.get("/api/home")
 async def home(request: Request, p=Depends(current_profile)):
     summ, wm, rm = all_summaries(p["id"])
     now = time.time()
-    weights = genre_weights(summ)
-    has_signal = any(v > 0 for v in weights.values())
+    pick_up_interests(p, summ)
+    pr = prof_prefs(p["id"])
+    ints = pr.get("interests", [])
+    since = pr.get("reset_at") or 0
+    rated_at = {r["title_id"]: r["updated"] for r in db().q("SELECT title_id, updated FROM ratings WHERE profile_id = ?", (p["id"],))} if since else {}
+    weights = genre_weights(summ, since, rated_at)
+    has_signal = any(v > 0 for v in weights.values()) or bool(ints)
     visible = [s for s in summ if s["my_rating"] != -1]
     for s in visible:
-        s["score"] = rec_score(s, weights, now)
+        s["score"] = rec_score(s, weights, now) + interest_boost(s, ints)
     by_score = sorted(visible, key=lambda s: s["score"], reverse=True)
     recent = sorted(summ, key=lambda s: s["added"], reverse=True)
 
@@ -1585,7 +1741,7 @@ async def home(request: Request, p=Depends(current_profile)):
     if p.get("kids"):
         pool = [s for s in pool if kids_ok(s["genres"], s["imdb"])]
     for s in pool:
-        s["score"] = rec_score(s, weights, now)
+        s["score"] = rec_score(s, weights, now) + interest_boost(s, ints)
     by_score = sorted(visible + pool, key=lambda s: s["score"], reverse=True)
     recent = sorted(summ + pool, key=lambda s: s["added"], reverse=True)
 
@@ -1601,11 +1757,26 @@ async def home(request: Request, p=Depends(current_profile)):
     if cont:
         shelves.append({"id": "continue", "title": f"Continue Watching for {p['name']}", "style": "continue", "items": cont})
     if has_signal:
-        picks = [s for s in by_score if not s["watched"]][:16]
+        picks = [s for s in by_score if not s["watched"]][:13]
+        # Every few picks is something well rated from outside what they usually watch, so there's always room for
+        # something new to become an interest
+        outside = [s for s in sorted(visible + pool, key=imdb_score, reverse=True)
+                   if not s["watched"] and s not in picks and imdb_score(s) >= 7 and not interest_boost(s, ints)
+                   and not set(s["genres"]) & {g for g, v in sorted(weights.items(), key=lambda x: -x[1])[:3]}]
+        random.Random(int(now // 86400) + p["id"]).shuffle(outside)
+        for k, s in enumerate(outside[:3]):
+            picks.insert(3 + k * 4, s)
         if picks:
             shelves.append({"id": "picks", "title": f"Top Picks for {p['name']}", "style": "poster", "items": picks})
     if mine:
         shelves.append({"id": "mylist", "title": "My List", "style": "poster", "items": mine[:24]})
+    # A row for each of the newest two interests that has enough titles to fill one
+    rows = 0
+    for i in sorted(ints, key=lambda x: -(x.get("at") or 0)):
+        items = [s for s in by_score if interest_matches(s, i)] if rows < 2 else []
+        if len(items) >= 3:
+            rows += 1
+            shelves.append({"id": "int-" + norm(i["name"]).replace(" ", "-"), "title": f"Because You Like {i['name']}", "style": "poster", "items": items[:16]})
     fam = family_liked(p, summ)
     if len(fam) >= 2:
         shelves.append({"id": "family", "title": "Loved by the Family", "style": "poster", "items": fam[:20]})
@@ -2385,6 +2556,14 @@ async def subtitles(fid: str, sub_id: str, p=Depends(current_profile)):
     raise HTTPException(404, "Subtitle not found")
 
 
+@app.post("/api/streams/{sid}/bad")
+async def stream_bad(sid: str, p=Depends(current_profile)):
+    # A source that wouldn't play goes to the back of the list next time
+    stream_row(sid)
+    db().q("INSERT INTO stream_health (id, good, bad) VALUES (?, 0, ?) ON CONFLICT(id) DO UPDATE SET bad = excluded.bad", (sid, time.time()))
+    return {"ok": True}
+
+
 @app.post("/api/progress")
 async def progress(request: Request, p=Depends(current_profile)):
     b = await request.json()
@@ -2392,6 +2571,9 @@ async def progress(request: Request, p=Depends(current_profile)):
     if fid not in LIB["files"] and not (fid.startswith("s") and db().q("SELECT 1 FROM streams WHERE id = ?", (fid,))):
         raise HTTPException(404, "Unknown file")
     pos, dur = float(b.get("pos") or 0), float(b.get("dur") or 0)
+    if fid.startswith("s") and pos > 60:
+        # Played for a minute, so this source works and goes first next time
+        db().q("INSERT INTO stream_health (id, good, bad) VALUES (?, ?, 0) ON CONFLICT(id) DO UPDATE SET good = excluded.good", (fid, time.time()))
     done = 1 if dur and pos / dur > 0.93 else 0
     db().q("INSERT OR REPLACE INTO watch VALUES (?,?,?,?,?,?)", (p["id"], fid, pos, dur, done, time.time()))
     return {"ok": True}
@@ -3086,8 +3268,20 @@ async def streams_for(kind: str, vid: str, request: Request, p=Depends(current_p
             w = db().q("SELECT pos, dur, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
             out.append({"id": sid, **stream_facts(st, url, label), "addon": a["m"].get("name"),
                         "progress": dict(w[0]) if w else None, "_url": url})
-    # Ones that play in a browser first, then the best quality
-    out.sort(key=lambda x: (not x.get("torbox"), not x["plays"], -x["height"], -(x["bytes"] or 0)))
+    # TorBox copies first, then a source that played fine before, then ones not tried yet, and ones that failed last.
+    # After that the ones that play in a browser, then the best quality
+    health = {r["id"]: r for r in db().q("SELECT id, good, bad FROM stream_health WHERE id IN (%s)" % ",".join("?" * len(out)), [x["id"] for x in out])} if out else {}
+
+    def rank(x):
+        h = health.get(x["id"])
+        if not h:
+            return 1
+        if (h["bad"] or 0) > (h["good"] or 0):
+            return 2
+        return 0
+    for x in out:
+        x["health"] = ("good", "untried", "failed")[rank(x)]
+    out.sort(key=lambda x: (not x.get("torbox"), rank(x), not x["plays"], -x["height"], -(x["bytes"] or 0)))
     for x in out:
         x.pop("_url", None)
     res = {"streams": out, "dropped": dropped, "checked": len(rows)}

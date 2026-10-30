@@ -1,11 +1,23 @@
 package page.reece.kino;
 
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.ActivityManager;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.RenderEffect;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.net.Uri;
@@ -13,6 +25,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -23,30 +36,16 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
-import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
-import android.widget.Toast;
-
-import androidx.media3.common.AudioAttributes;
-import androidx.media3.common.C;
-import androidx.media3.common.MediaItem;
-import androidx.media3.common.MimeTypes;
-import androidx.media3.common.PlaybackException;
-import androidx.media3.common.Player;
-import androidx.media3.common.TrackSelectionOverride;
-import androidx.media3.common.Tracks;
-import androidx.media3.datasource.DefaultHttpDataSource;
-import androidx.media3.exoplayer.DefaultRenderersFactory;
-import androidx.media3.exoplayer.ExoPlayer;
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
-import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
-import androidx.media3.ui.PlayerView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -55,34 +54,51 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
- * The player the app uses instead of the one in the web page. Its exoplayer, the same thing stremio uses on android tv,
- * so the video goes straight to the tv's own hardware decoder. That fixes the green and purple blocks the webview
- * player gave on fire tv with hevc and dolby vision films, and seeking is instant cause nothing gets converted.
- * When the tv cant play the sound (dts or truehd) or the picture (dolby vision on a tv without it), it asks the server
- * for a converted stream instead, same as the web player does.
+ * Kino's own player screen in the app. The video is played by an Engine (exoplayer normally, androids MediaPlayer as
+ * a backup) and everything on top is drawn here to look like the web player: title or logo at the top, the timeline,
+ * round buttons, menus for subtitles, audio, speed and which player to use, skip intro, up next and the loading
+ * screen. VLC or any other video app can be picked from the Player menu too, it opens on its own and Kino saves
+ * where it got to when it comes back
  */
-public class PlayerActivity extends Activity {
+public class PlayerActivity extends Activity implements Engine.Listener {
     static final String EXTRA = "info";
+    private static final int EXTERNAL = 51;
 
     private JSONObject info;
     private String base, ua, fid;
-    private ExoPlayer player;
-    private PlayerView view;
-    private TextView title, sub;
-    private LinearLayout top;
-    private Button skip;
+    private Map<String, String> headers;
+    private boolean tv, lowRam;
     private final Handler h = new Handler(Looper.getMainLooper());
+    private SharedPreferences prefs;
 
-    private boolean hls, ended, introSkipped, audioPicked, triedHls;
-    private double offset;          // where the converted stream starts in the film, in seconds
-    private String sid;             // the servers player session when its converting
+    // playback state
+    private Engine eng;
+    private boolean hls, triedHls, ended, introSkipped, audioPicked, errorShown, leaving, loading = true;
+    private double offset;        // where the server's converted stream starts in the film, seconds
+    private String sid;           // the server's converting session
     private int hlsRetries;
+    private float speed = 1f;
     private long lastInput = System.currentTimeMillis();
-    private AlertDialog still;
-    private String error;
+
+    // views
+    private FrameLayout root, video, controls, loadLayer, menuWrap;
+    private LinearLayout menu, stats, upNext, card;
+    private TextView title, sub, tNow, tLeft, tTip, subText, toastView, unLeft, plName;
+    private ImageView logo, plLogo, plBg;
+    private Timeline line;
+    private RoundButton bPlay, bBack, bFwd, bSubs, bAudio, bSpeed, bPlayer, bClose;
+    private TextView skip;
+    private View focusBeforeMenu;
+    private ObjectAnimator pulse;
+    private final List<TextView> statLines = new ArrayList<>();
+    private int upNextLeft = -1;
+    private boolean upNextShown;
+
+    // ---------------------------------------------------------------- setup
 
     @Override
     protected void onCreate(Bundle state) {
@@ -96,155 +112,488 @@ public class PlayerActivity extends Activity {
         base = info.optString("base").replaceAll("/+$", "");
         ua = info.optString("ua");
         fid = info.optString("fid");
+        tv = getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK) || getPackageManager().hasSystemFeature("amazon.hardware.fire_tv");
+        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+        am.getMemoryInfo(mi);
+        lowRam = am.isLowRamDevice() || mi.totalMem < 2_200_000_000L;
+        prefs = getSharedPreferences("kino", MODE_PRIVATE);
 
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        hideBars();
-
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.BLACK);
-        view = new PlayerView(this);
-        view.setShowSubtitleButton(true);
-        view.setShowNextButton(false);
-        view.setShowPreviousButton(false);
-        view.setControllerShowTimeoutMs(4000);
-        view.setKeepContentOnPlayerReset(true);
-        root.addView(view, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        // Title at the top, shows and hides with the controls
-        top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(28);
-        top.setPadding(pad, dp(22), pad, dp(40));
-        GradientDrawable fade = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0xCC000000, 0x00000000});
-        top.setBackground(fade);
-        title = new TextView(this);
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setText(info.optString("title"));
-        sub = new TextView(this);
-        sub.setTextColor(0xB3FFFFFF);
-        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        sub.setText(info.optString("sub"));
-        sub.setVisibility(info.optString("sub").isEmpty() ? View.GONE : View.VISIBLE);
-        top.addView(title);
-        top.addView(sub);
-        root.addView(top, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
-        view.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) v -> top.setVisibility(v));
-
-        // Skip intro, bottom right like netflix
-        skip = new Button(this);
-        skip.setText("Skip Intro");
-        skip.setAllCaps(false);
-        skip.setTextColor(Color.BLACK);
-        skip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        skip.setTypeface(Typeface.DEFAULT_BOLD);
-        GradientDrawable pill = new GradientDrawable();
-        pill.setColor(Color.WHITE);
-        pill.setCornerRadius(dp(12));
-        skip.setBackground(pill);
-        skip.setPadding(dp(22), dp(10), dp(22), dp(10));
-        skip.setVisibility(View.GONE);
-        skip.setOnClickListener(v -> skipIntro());
-        FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
-        sl.setMargins(0, 0, dp(40), dp(110));
-        root.addView(skip, sl);
-        setContentView(root);
-
-        // Picks the profile's audio and subtitle languages, the exact audio track comes from the page in onTracksChanged
-        DefaultTrackSelector ts = new DefaultTrackSelector(this);
-        DefaultTrackSelector.Parameters.Builder pb = ts.buildUponParameters();
-        String al = info.optString("audioLang"), sl2 = info.optString("subLang");
-        if (!al.isEmpty()) pb.setPreferredAudioLanguage(al);
-        if (!sl2.isEmpty()) pb.setPreferredTextLanguage(sl2).setSelectUndeterminedTextLanguage(false);
-        ts.setParameters(pb.build());
-
-        Map<String, String> headers = new HashMap<>();
+        headers = new HashMap<>();
         String cookie = CookieManager.getInstance().getCookie(base);
         if (cookie != null) headers.put("Cookie", cookie);
         headers.put("X-Kino", "1");
-        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
-                .setUserAgent(ua)
-                .setDefaultRequestProperties(headers)
-                .setConnectTimeoutMs(20000)
-                .setReadTimeoutMs(30000)
-                .setAllowCrossProtocolRedirects(false);
 
-        // Decoder fallback means if the first hevc decoder says no another one gets tried before giving up
-        DefaultRenderersFactory rf = new DefaultRenderersFactory(this).setEnableDecoderFallback(true);
-        player = new ExoPlayer.Builder(this, rf)
-                .setTrackSelector(ts)
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(http))
-                .setSeekBackIncrementMs(10000)
-                .setSeekForwardIncrementMs(10000)
-                .build();
-        player.setAudioAttributes(AudioAttributes.DEFAULT, true);
-        view.setPlayer(player);
-        player.addListener(new Player.Listener() {
-            @Override
-            public void onTracksChanged(Tracks tracks) { checkTracks(tracks); }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        hideBars();
+        buildUi();
 
-            @Override
-            public void onPlaybackStateChanged(int s) {
-                if (s == Player.STATE_ENDED) {
-                    ended = true;
-                    done();
-                }
-            }
-
-            @Override
-            public void onIsPlayingChanged(boolean playing) {
-                if (playing) hlsRetries = 0;
-                else save();
-            }
-
-            @Override
-            public void onPlayerError(PlaybackException e) { failed(e); }
-        });
-
-        double start = info.optDouble("start", 0);
-        boolean dovi = info.optBoolean("dovi");
-        if (info.optBoolean("forceHls") || (dovi && !hasDecoder("video/dolby-vision"))) startHls(start);
-        else startDirect(start);
-
-        h.postDelayed(tick, 500);
+        String pick = prefs.getString("engine", "exo");
+        startEngine(pick.equals("android") ? "android" : "exo", info.optDouble("start", 0));
+        h.post(tick);
         h.postDelayed(saver, 10000);
     }
 
-    private int dp(int v) {
+    private int dp(float v) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics()));
     }
 
-    // ---- starting playback
+    private TextView text(float sp, int color, boolean bold) {
+        TextView t = new TextView(this);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        t.setTextColor(color);
+        t.setTypeface(Typeface.create("sans-serif", bold ? Typeface.BOLD : Typeface.NORMAL));
+        if (!bold) t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        t.setIncludeFontPadding(false);
+        return t;
+    }
+
+    private static GradientDrawable rounded(int color, float radius) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(radius);
+        return g;
+    }
+
+    /** The round icon buttons. Focused on a tv they go white with a dark icon, like the web player's tv mode */
+    class RoundButton extends ImageView {
+        RoundButton(int icon, int sizeDp, String label) {
+            super(PlayerActivity.this);
+            setImageResource(icon);
+            setScaleType(ScaleType.CENTER_INSIDE);
+            int pad = dp(sizeDp * 0.24f);
+            setPadding(pad, pad, pad, pad);
+            StateListDrawable bg = new StateListDrawable();
+            GradientDrawable on = new GradientDrawable(); on.setShape(GradientDrawable.OVAL); on.setColor(Color.WHITE);
+            GradientDrawable press = new GradientDrawable(); press.setShape(GradientDrawable.OVAL); press.setColor(0x66FFFFFF);
+            GradientDrawable off = new GradientDrawable(); off.setShape(GradientDrawable.OVAL); off.setColor(0x00000000);
+            bg.addState(new int[]{android.R.attr.state_focused}, on);
+            bg.addState(new int[]{android.R.attr.state_pressed}, press);
+            bg.addState(new int[]{}, off);
+            setBackground(bg);
+            setImageTintList(new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}}, new int[]{Color.BLACK, Color.WHITE}));
+            setFocusable(true);
+            setClickable(true);
+            setContentDescription(label);
+            setLayoutParams(new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)));
+            setOnFocusChangeListener((v, f) -> animate().scaleX(f ? 1.1f : 1f).scaleY(f ? 1.1f : 1f).setDuration(150).start());
+        }
+    }
+
+    /** White pill buttons for skip intro, up next and the dialogs */
+    private TextView pill(String label, boolean primary) {
+        TextView b = text(16, primary ? Color.BLACK : Color.WHITE, true);
+        b.setText(label);
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(dp(20), dp(11), dp(20), dp(11));
+        StateListDrawable bg = new StateListDrawable();
+        bg.addState(new int[]{android.R.attr.state_focused}, rounded(Color.WHITE, dp(12)));
+        bg.addState(new int[]{}, rounded(primary ? 0xEBFFFFFF : 0x40767680, dp(12)));
+        b.setBackground(bg);
+        if (!primary) b.setTextColor(new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}}, new int[]{Color.BLACK, Color.WHITE}));
+        b.setFocusable(true);
+        b.setClickable(true);
+        b.setOnFocusChangeListener((v, f) -> v.animate().scaleX(f ? 1.06f : 1f).scaleY(f ? 1.06f : 1f).setDuration(150).start());
+        return b;
+    }
+
+    private void buildUi() {
+        root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+        video = new FrameLayout(this);
+        root.addView(video, match());
+
+        // Subtitles for the backup player, exoplayer draws its own
+        subText = text(22, Color.WHITE, true);
+        subText.setGravity(Gravity.CENTER);
+        subText.setShadowLayer(dp(2), 0, dp(1), 0xCC000000);
+        subText.setBackground(rounded(0x8C000000, dp(6)));
+        subText.setPadding(dp(10), dp(3), dp(10), dp(3));
+        subText.setVisibility(View.GONE);
+        FrameLayout.LayoutParams stl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        stl.bottomMargin = dp(48);
+        root.addView(subText, stl);
+
+        buildControls();
+        buildLoading();
+
+        // Skip intro, bottom right
+        skip = pill("Skip Intro", true);
+        skip.setVisibility(View.GONE);
+        skip.setOnClickListener(v -> skipIntro());
+        FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
+        sl.setMargins(0, 0, dp(40), dp(150));
+        root.addView(skip, sl);
+
+        buildUpNext();
+
+        // Menus open above the buttons on the right
+        menuWrap = new FrameLayout(this);
+        menuWrap.setVisibility(View.GONE);
+        menuWrap.setOnClickListener(v -> closeMenu());
+        root.addView(menuWrap, match());
+
+        toastView = text(15, Color.WHITE, true);
+        toastView.setBackground(rounded(0xE61C1C1E, dp(22)));
+        toastView.setPadding(dp(18), dp(10), dp(18), dp(10));
+        toastView.setVisibility(View.GONE);
+        FrameLayout.LayoutParams tl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        tl.topMargin = dp(28);
+        root.addView(toastView, tl);
+
+        setContentView(root);
+    }
+
+    private static FrameLayout.LayoutParams match() {
+        return new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+    }
+
+    private void buildControls() {
+        controls = new FrameLayout(this);
+        controls.setAlpha(0f);
+        controls.setVisibility(View.GONE);
+        root.addView(controls, match());
+
+        // Top: logo or title, and the episode underneath, on a fade
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(40), dp(26), dp(40), dp(60));
+        top.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0xB3000000, 0x00000000}));
+        if (!tv) {
+            bClose = new RoundButton(R.drawable.ic_close, 44, "Close");
+            bClose.setBackground(rounded(0x993C3C40, dp(22)));
+            bClose.setOnClickListener(v -> done());
+            top.addView(bClose);
+            View gap = new View(this);
+            top.addView(gap, new LinearLayout.LayoutParams(dp(16), 1));
+        }
+        LinearLayout names = new LinearLayout(this);
+        names.setOrientation(LinearLayout.VERTICAL);
+        logo = new ImageView(this);
+        logo.setAdjustViewBounds(true);
+        logo.setMaxHeight(dp(64));
+        logo.setMaxWidth(dp(300));
+        logo.setScaleType(ImageView.ScaleType.FIT_START);
+        logo.setVisibility(View.GONE);
+        names.addView(logo, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        title = text(22, Color.WHITE, true);
+        title.setText(info.optString("title"));
+        title.setMaxLines(1);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        names.addView(title);
+        sub = text(15, 0xB3FFFFFF, false);
+        sub.setText(info.optString("sub"));
+        sub.setPadding(0, dp(6), 0, 0);
+        sub.setVisibility(info.optString("sub").isEmpty() ? View.GONE : View.VISIBLE);
+        names.addView(sub);
+        top.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        controls.addView(top, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
+
+        // Bottom: timeline with the times, then the buttons
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setOrientation(LinearLayout.VERTICAL);
+        bottom.setPadding(dp(40), dp(70), dp(40), dp(22));
+        bottom.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, new int[]{0xC7000000, 0x59000000, 0x00000000}));
+
+        FrameLayout tipRow = new FrameLayout(this);
+        tTip = text(13, Color.WHITE, true);
+        tTip.setBackground(rounded(0xE61E1E20, dp(6)));
+        tTip.setPadding(dp(8), dp(4), dp(8), dp(4));
+        tTip.setVisibility(View.INVISIBLE);
+        tipRow.addView(tTip, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        bottom.addView(tipRow);
+
+        LinearLayout tlRow = new LinearLayout(this);
+        tlRow.setGravity(Gravity.CENTER_VERTICAL);
+        tNow = text(13, 0xB8FFFFFF, false);
+        tNow.setMinWidth(dp(52));
+        tLeft = text(13, 0xB8FFFFFF, false);
+        tLeft.setMinWidth(dp(52));
+        tLeft.setGravity(Gravity.END);
+        line = new Timeline(this);
+        line.setCallback(new Timeline.Callback() {
+            @Override public void onPreview(long ms) { showTip(ms); bump(); }
+            @Override public void onSeek(long ms) { tTip.setVisibility(View.INVISIBLE); seekTo(ms / 1000.0); }
+        });
+        tlRow.addView(tNow);
+        tlRow.addView(line, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        tlRow.addView(tLeft);
+        bottom.addView(tlRow);
+
+        FrameLayout row = new FrameLayout(this);
+        LinearLayout mid = new LinearLayout(this);
+        mid.setGravity(Gravity.CENTER);
+        bBack = new RoundButton(R.drawable.ic_back10, 48, "Back 10 seconds");
+        bPlay = new RoundButton(R.drawable.ic_pause, 62, "Pause");
+        bFwd = new RoundButton(R.drawable.ic_fwd10, 48, "Forward 10 seconds");
+        mid.addView(bBack);
+        mid.addView(space(14));
+        mid.addView(bPlay);
+        mid.addView(space(14));
+        mid.addView(bFwd);
+        row.addView(mid, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        LinearLayout right = new LinearLayout(this);
+        right.setGravity(Gravity.CENTER_VERTICAL);
+        bSubs = new RoundButton(R.drawable.ic_cc, 46, "Subtitles");
+        bAudio = new RoundButton(R.drawable.ic_audio, 46, "Audio");
+        bSpeed = new RoundButton(R.drawable.ic_speed, 46, "Playback Speed");
+        bPlayer = new RoundButton(R.drawable.ic_player, 46, "Player");
+        for (View v : new View[]{bSubs, bAudio, bSpeed, bPlayer}) { right.addView(v); right.addView(space(6)); }
+        row.addView(right, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END | Gravity.CENTER_VERTICAL));
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rl.topMargin = dp(8);
+        bottom.addView(row, rl);
+        controls.addView(bottom, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
+
+        bPlay.setOnClickListener(v -> togglePlay());
+        bBack.setOnClickListener(v -> { seekTo(Math.max(0, pos() - 10)); bump(); });
+        bFwd.setOnClickListener(v -> { seekTo(pos() + 10); bump(); });
+        bSubs.setOnClickListener(v -> openMenu("subs"));
+        bAudio.setOnClickListener(v -> openMenu("audio"));
+        bSpeed.setOnClickListener(v -> openMenu("speed"));
+        bPlayer.setOnClickListener(v -> openMenu("player"));
+
+        // Up from the buttons goes to the timeline, down from the timeline goes to play
+        line.setNextFocusDownId(View.generateViewId());
+        bPlay.setId(View.generateViewId());
+        line.setId(View.generateViewId());
+        line.setNextFocusDownId(bPlay.getId());
+        for (View v : new View[]{bBack, bPlay, bFwd, bSubs, bAudio, bSpeed, bPlayer}) v.setNextFocusUpId(line.getId());
+
+        // A tap on the video shows or hides the controls on phones
+        video.setOnClickListener(v -> { if (controls.getVisibility() == View.VISIBLE) hideControls(); else showControls(bPlay); });
+        controls.setOnClickListener(v -> hideControls());
+    }
+
+    private View space(int w) {
+        View v = new View(this);
+        v.setLayoutParams(new LinearLayout.LayoutParams(dp(w), 1));
+        return v;
+    }
+
+    private void buildLoading() {
+        loadLayer = new FrameLayout(this);
+        loadLayer.setBackgroundColor(Color.BLACK);
+        loadLayer.setClickable(true);
+        plBg = new ImageView(this);
+        plBg.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        plBg.setAlpha(0.32f);
+        if (Build.VERSION.SDK_INT >= 31 && !lowRam) plBg.setRenderEffect(RenderEffect.createBlurEffect(dp(14), dp(14), Shader.TileMode.CLAMP));
+        loadLayer.addView(plBg, match());
+        View shade = new View(this);
+        GradientDrawable vg = new GradientDrawable();
+        vg.setGradientType(GradientDrawable.RADIAL_GRADIENT);
+        vg.setGradientRadius(dp(700));
+        vg.setColors(new int[]{0x1A000000, 0xBF000000});
+        shade.setBackground(vg);
+        loadLayer.addView(shade, match());
+
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setGravity(Gravity.CENTER_HORIZONTAL);
+        FrameLayout logoBox = new FrameLayout(this);
+        logoBox.setMinimumHeight(dp(90));
+        plLogo = new ImageView(this);
+        plLogo.setAdjustViewBounds(true);
+        plLogo.setMaxHeight(dp(140));
+        plLogo.setMaxWidth(dp(420));
+        plLogo.setVisibility(View.GONE);
+        logoBox.addView(plLogo, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        plName = text(40, Color.WHITE, true);
+        plName.setText(info.optString("title"));
+        plName.setGravity(Gravity.CENTER);
+        plName.setMaxLines(2);
+        logoBox.addView(plName, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        mid.addView(logoBox);
+        pulse = ObjectAnimator.ofFloat(logoBox, "alpha", 0.45f, 1f);
+        pulse.setDuration(900);
+        pulse.setRepeatMode(ValueAnimator.REVERSE);
+        pulse.setRepeatCount(ValueAnimator.INFINITE);
+        pulse.start();
+
+        // The thin bar with a light sliding along it
+        FrameLayout bar = new FrameLayout(this);
+        bar.setBackground(rounded(0x29FFFFFF, dp(2)));
+        View glow = new View(this);
+        glow.setBackground(rounded(Color.WHITE, dp(2)));
+        bar.addView(glow, new FrameLayout.LayoutParams(dp(84), dp(3)));
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(dp(240), dp(3));
+        bl.topMargin = dp(24);
+        mid.addView(bar, bl);
+        ObjectAnimator slide = ObjectAnimator.ofFloat(glow, "translationX", -dp(90), dp(250));
+        slide.setDuration(1300);
+        slide.setRepeatCount(ValueAnimator.INFINITE);
+        slide.start();
+
+        stats = new LinearLayout(this);
+        stats.setOrientation(LinearLayout.VERTICAL);
+        stats.setGravity(Gravity.CENTER_HORIZONTAL);
+        stats.setMinimumHeight(dp(92));
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sl.topMargin = dp(22);
+        mid.addView(stats, sl);
+        stats.setVisibility(info.optBoolean("loadStats", true) ? View.VISIBLE : View.GONE);
+        loadLayer.addView(mid, new FrameLayout.LayoutParams(dp(560), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        root.addView(loadLayer, match());
+
+        JSONObject art = info.optJSONObject("art");
+        if (art != null) {
+            String bg = art.optString("background"), lg = art.optString("logo");
+            if (!bg.isEmpty() && !"null".equals(bg)) loadImage(img(bg, false, lowRam ? 640 : 960), b -> plBg.setImageBitmap(b));
+            if (!lg.isEmpty() && !"null".equals(lg)) loadImage(img(lg, true, 640), b -> {
+                plLogo.setImageBitmap(b); plLogo.setVisibility(View.VISIBLE); plName.setVisibility(View.GONE);
+                logo.setImageBitmap(b); logo.setVisibility(View.VISIBLE); title.setVisibility(View.GONE);
+            });
+        }
+    }
+
+    private String img(String u, boolean trim, int w) {
+        return base + "/api/img?u=" + Uri.encode(u) + (trim ? "&trim=1" : "") + "&w=" + w;
+    }
+
+    interface Got { void on(Bitmap b); }
+
+    private void loadImage(String url, Got cb) {
+        new Thread(() -> {
+            try {
+                HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                c.setRequestProperty("User-Agent", ua);
+                for (Map.Entry<String, String> e : headers.entrySet()) c.setRequestProperty(e.getKey(), e.getValue());
+                c.setConnectTimeout(10000);
+                c.setReadTimeout(15000);
+                if (c.getResponseCode() != 200) return;
+                Bitmap b = BitmapFactory.decodeStream(c.getInputStream());
+                if (b != null) runOnUiThread(() -> { if (!isFinishing()) cb.on(b); });
+            } catch (Exception ignored) { }
+        }).start();
+    }
+
+    // One line per step on the loading screen. Lines fade in once, after that only there text changes
+    private void step(String text, String note) {
+        if (!loading) return;
+        for (TextView t : statLines) t.setTextColor(0x8CFFFFFF);
+        TextView t = text(14, Color.WHITE, false);
+        t.setText(note == null || note.isEmpty() ? text : text + "  ·  " + note);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(0, dp(3), 0, dp(3));
+        t.setAlpha(0f);
+        t.setTranslationY(dp(6));
+        stats.addView(t);
+        statLines.add(t);
+        if (statLines.size() > 4) { stats.removeView(statLines.remove(0)); }
+        t.animate().alpha(1f).translationY(0).setDuration(350).start();
+    }
+
+    private void note(String note) {
+        if (!loading || statLines.isEmpty()) return;
+        TextView t = statLines.get(statLines.size() - 1);
+        String s = t.getText().toString();
+        int i = s.indexOf("  ·  ");
+        t.setText((i > 0 ? s.substring(0, i) : s) + "  ·  " + note);
+    }
+
+    private void loaded() {
+        if (!loading) return;
+        loading = false;
+        loadLayer.animate().alpha(0f).setDuration(450).withEndAction(() -> {
+            loadLayer.setVisibility(View.GONE);
+            if (pulse != null) pulse.cancel();
+            plBg.setImageBitmap(null);       // the blurred background isnt needed once its playing
+        }).start();
+    }
+
+    private void relaunchLoading(String why) {
+        loading = true;
+        loadLayer.setVisibility(View.VISIBLE);
+        loadLayer.animate().alpha(1f).setDuration(200).start();
+        if (pulse != null && !pulse.isRunning()) pulse.start();
+        step(why, null);
+    }
+
+    private void buildUpNext() {
+        upNext = new LinearLayout(this);
+        upNext.setOrientation(LinearLayout.HORIZONTAL);
+        upNext.setGravity(Gravity.CENTER_VERTICAL);
+        upNext.setBackground(rounded(0xEB1C1C1E, dp(18)));
+        upNext.setPadding(dp(14), dp(14), dp(14), dp(14));
+        upNext.setVisibility(View.GONE);
+        JSONObject n = info.optJSONObject("next");
+        ImageView th = new ImageView(this);
+        th.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        th.setBackground(rounded(0xFF2C2C2E, dp(10)));
+        th.setClipToOutline(true);
+        upNext.addView(th, new LinearLayout.LayoutParams(dp(150), dp(84)));
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(14), 0, 0, 0);
+        unLeft = text(13, 0xB3FFFFFF, false);
+        TextView nm = text(16, Color.WHITE, true);
+        nm.setMaxLines(2);
+        if (n != null) {
+            String ep = n.isNull("season") ? "" : "S" + n.optInt("season") + ", E" + n.optInt("episode");
+            nm.setText(ep + (n.optString("name").isEmpty() || n.isNull("name") ? "" : "  " + n.optString("name")));
+            String thumb = n.optString("thumbnail");
+            if (!thumb.isEmpty() && !"null".equals(thumb)) loadImage(img(thumb, false, 480), th::setImageBitmap);
+        }
+        body.addView(unLeft);
+        body.addView(nm);
+        LinearLayout acts = new LinearLayout(this);
+        acts.setPadding(0, dp(10), 0, 0);
+        TextView now = pill("Play Now", true), cancel = pill("Cancel", false);
+        now.setOnClickListener(v -> { ended = true; done(); });
+        cancel.setOnClickListener(v -> { upNextLeft = -1; upNext.setVisibility(View.GONE); showControls(bPlay); });
+        acts.addView(now);
+        acts.addView(space(10));
+        acts.addView(cancel);
+        body.addView(acts);
+        upNext.addView(body, new LinearLayout.LayoutParams(dp(250), ViewGroup.LayoutParams.WRAP_CONTENT));
+        FrameLayout.LayoutParams ul = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
+        ul.setMargins(0, 0, dp(40), dp(150));
+        root.addView(upNext, ul);
+    }
+
+    // ---------------------------------------------------------------- engines
+
+    private Engine makeEngine(String which) {
+        if (which.equals("android")) return new MediaEngine(this, headers, this);
+        return new ExoEngine(this, headers, ua, info.optString("audioLang"), info.optString("subLang"), info.optString("subSize", "m"), lowRam, this);
+    }
+
+    private void startEngine(String which, double at) {
+        if (eng != null) { eng.release(); video.removeAllViews(); }
+        eng = makeEngine(which);
+        video.addView(eng.view(), match());
+        audioPicked = false;
+        errorShown = false;
+        boolean dovi = info.optBoolean("dovi");
+        // The converted stream only works with exoplayer, the backup player always plays the file as it is
+        if (which.equals("exo") && (info.optBoolean("forceHls") || (dovi && !hasDecoder("video/dolby-vision")))) startHls(at);
+        else startDirect(at);
+    }
 
     private void startDirect(double at) {
         hls = false;
         offset = 0;
-        MediaItem.Builder b = new MediaItem.Builder().setUri(Uri.parse(base + info.optString("url")));
-        // Subtitle files from the folder and from addons come in as extra tracks, the ones inside the file are found by exoplayer
-        List<MediaItem.SubtitleConfiguration> subs = new ArrayList<>();
+        List<Engine.Sub> subs = new ArrayList<>();
         JSONArray js = info.optJSONArray("subs");
         for (int i = 0; js != null && i < js.length(); i++) {
             JSONObject s = js.optJSONObject(i);
-            if (s == null) continue;
-            subs.add(new MediaItem.SubtitleConfiguration.Builder(Uri.parse(base + s.optString("url")))
-                    .setMimeType(MimeTypes.TEXT_VTT)
-                    .setLanguage(s.optString("lang", null))
-                    .setLabel(s.optString("label"))
-                    .build());
+            if (s != null) subs.add(new Engine.Sub(base + s.optString("url"), s.optString("label"), s.optString("lang")));
         }
-        b.setSubtitleConfigurations(subs);
-        player.setMediaItem(b.build(), (long) (at * 1000));
-        player.prepare();
-        player.play();
+        JSONObject v = info.optJSONObject("video");
+        String what = v == null ? "" : (v.optString("codec").toUpperCase(Locale.ROOT) + (v.optInt("height") >= 2000 ? " 4K" : v.optInt("height") >= 1000 ? " 1080p" : ""));
+        step(eng.name().equals("exo") ? "Direct play" : "Direct play with the Android player", what.trim());
+        eng.open(base + info.optString("url"), false, (long) (at * 1000), subs);
+        if (speed != 1f) eng.speed(speed);
     }
 
-    // Asks the server for a converted stream from a point in the film, it answers once the first bit is ready
+    // Asks the server for a converted stream from a point in the film, its ready once the first bit is made
     private void startHls(double at) {
         hls = true;
         triedHls = true;
         stopSession();
-        Toast.makeText(this, "Preparing a version this TV can play…", Toast.LENGTH_SHORT).show();
+        step("Kino is converting it for this TV", at > 1 ? "from " + clock(at) : null);
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject().put("t", at).put("audio", info.optInt("audioN", 0)).put("hevc", hasDecoder("video/hevc"));
@@ -253,46 +602,14 @@ public class PlayerActivity extends Activity {
                     if (isFinishing()) { stopSession(r.optString("sid")); return; }
                     sid = r.optString("sid");
                     offset = r.optDouble("offset", at);
-                    MediaItem item = new MediaItem.Builder().setUri(Uri.parse(base + r.optString("url"))).setMimeType(MimeTypes.APPLICATION_M3U8).build();
-                    player.setMediaItem(item, 0);
-                    player.prepare();
-                    player.play();
+                    step("Buffering", null);
+                    eng.open(base + r.optString("url"), true, 0, new ArrayList<>());
+                    if (speed != 1f) eng.speed(speed);
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> { error = message(e); done(); });
+                runOnUiThread(() -> showError(message(e)));
             }
         }).start();
-    }
-
-    // If the tv cant do the sound in this file it would play silent, so the server converts it instead
-    private void checkTracks(Tracks t) {
-        if (!hls && !triedHls && t.containsType(C.TRACK_TYPE_AUDIO) && !t.isTypeSupported(C.TRACK_TYPE_AUDIO)) {
-            startHls(pos());
-            return;
-        }
-        if (hls || audioPicked) return;
-        audioPicked = true;
-        // The page already worked out which audio track to use (by language tag or by name), that one gets picked here
-        int want = info.optInt("audioN", -1), n = 0;
-        if (want < 0 || !info.optBoolean("audioChosen")) return;
-        for (Tracks.Group g : t.getGroups()) {
-            if (g.getType() != C.TRACK_TYPE_AUDIO) continue;
-            if (n++ == want && g.isSupported()) {
-                player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
-                        .setOverrideForType(new TrackSelectionOverride(g.getMediaTrackGroup(), 0)).build());
-                return;
-            }
-        }
-    }
-
-    private void failed(PlaybackException e) {
-        double at = pos();
-        // Direct play didnt work (a codec the tv doesnt have), the converted stream nearly always does
-        if (!hls && !triedHls) { startHls(at); return; }
-        // The converted stream stops on the server after a while paused, it just gets started again from where it was
-        if (hls && hlsRetries++ < 2) { startHls(at); return; }
-        error = "This video won't play on this TV (" + e.getErrorCodeName() + ")";
-        done();
     }
 
     private static boolean hasDecoder(String mime) {
@@ -305,37 +622,168 @@ public class PlayerActivity extends Activity {
         return false;
     }
 
-    // ---- position, intro, still watching
+    // ---- what the engine tells us
 
-    private double pos() {
-        return (hls ? offset : 0) + Math.max(0, player.getCurrentPosition()) / 1000.0;
+    @Override public void onBuffering(boolean b) { if (b && loading) note("buffering"); }
+
+    @Override
+    public void onPlaying(boolean p) {
+        bPlay.setImageResource(p ? R.drawable.ic_pause : R.drawable.ic_play);
+        bPlay.setContentDescription(p ? "Pause" : "Play");
+        if (p) { hlsRetries = 0; loaded(); bump(); }
+        else { save(); showControls(null); }
     }
+
+    @Override public void onFirstFrame() { loaded(); }
+
+    @Override
+    public void onEnded() {
+        if (hls && pos() < dur() - 30) return;
+        ended = true;
+        done();
+    }
+
+    @Override
+    public void onError(String msg, boolean codec) {
+        double at = pos();
+        boolean exo = eng.name().equals("exo");
+        // Direct play didnt work, the converted stream nearly always does
+        if (exo && !hls && !triedHls) { relaunchLoading("This TV can't play the file as it is"); startHls(at); return; }
+        // The converted stream stops on the server after a while paused, it just gets started again from where it was
+        if (exo && hls && hlsRetries++ < 2) { relaunchLoading("Reconnecting"); startHls(at); return; }
+        showError("This video won't play in the " + (exo ? "Kino" : "Android") + " player (" + msg + ")");
+    }
+
+    @Override
+    public void onTracks() {
+        if (eng instanceof ExoEngine && !hls && !triedHls && ((ExoEngine) eng).noPlayableAudio()) {
+            relaunchLoading("This TV can't play the sound in this file");
+            startHls(pos());
+            return;
+        }
+        if (audioPicked || hls) return;
+        audioPicked = true;
+        // The page already worked out which audio track to use (by language tag or by name), that one is picked here
+        int want = info.optInt("audioN", -1);
+        if (want >= 0 && info.optBoolean("audioChosen")) {
+            List<Engine.Track> a = eng.audio();
+            if (want < a.size() && a.get(want).supported) eng.pickAudio(a.get(want).id);
+        }
+        for (Engine.Track t : eng.audio()) if (t.selected) { note(t.label); break; }
+    }
+
+    @Override
+    public void onBandwidth(long bps) {
+        if (loading && bps > 0) note(String.format(Locale.ROOT, "%.1f Mbps", bps / 1e6));
+    }
+
+    @Override
+    public void onText(String t) {
+        if (t == null || t.trim().isEmpty()) subText.setVisibility(View.GONE);
+        else { subText.setText(t.trim()); subText.setVisibility(View.VISIBLE); }
+    }
+
+    // ---------------------------------------------------------------- position, controls
+
+    private double pos() { return eng == null ? 0 : (hls ? offset : 0) + eng.pos() / 1000.0; }
 
     private double dur() {
         double d = info.optDouble("duration", 0);
         if (d > 0) return d;
-        long ms = player.getDuration();
-        return ms == C.TIME_UNSET ? 0 : ms / 1000.0;
+        return eng == null ? 0 : eng.dur() / 1000.0;
+    }
+
+    private void seekTo(double t) {
+        t = Math.max(0, Math.min(t, dur() > 0 ? dur() - 1 : t));
+        if (!hls) { eng.seek((long) (t * 1000)); return; }
+        double rel = t - offset;
+        long have = eng.dur();
+        if (rel >= 0 && have > 0 && rel * 1000 < have - 2000) eng.seek((long) (rel * 1000));
+        else { relaunchLoading("Jumping to " + clock(t)); startHls(t); }
+    }
+
+    private void togglePlay() {
+        if (eng.playing()) eng.pause(); else eng.play();
+        bump();
+    }
+
+    private static String clock(double s) {
+        long x = Math.max(0, (long) s), hh = x / 3600, mm = (x % 3600) / 60, ss = x % 60;
+        return hh > 0 ? String.format(Locale.ROOT, "%d:%02d:%02d", hh, mm, ss) : String.format(Locale.ROOT, "%d:%02d", mm, ss);
+    }
+
+    private void showTip(long ms) {
+        tTip.setText(clock(ms / 1000.0));
+        tTip.setVisibility(View.VISIBLE);
+        double d = dur();
+        float frac = d > 0 ? (float) (ms / 1000.0 / d) : 0;
+        float x = line.getLeft() + dp(9) + (line.getWidth() - dp(18)) * frac - tTip.getWidth() / 2f;
+        tTip.setTranslationX(Math.max(0, x));
+    }
+
+    private final Runnable hideLater = this::hideControls;
+
+    /** Keeps the controls up for another 4 seconds */
+    private void bump() {
+        h.removeCallbacks(hideLater);
+        if (controls.getVisibility() == View.VISIBLE && eng != null && eng.playing()) h.postDelayed(hideLater, 4000);
+    }
+
+    private void showControls(View focus) {
+        if (controls.getVisibility() != View.VISIBLE) {
+            controls.setVisibility(View.VISIBLE);
+            controls.animate().alpha(1f).setDuration(220).start();
+            eng.subsRaised(true);
+            subText.animate().translationY(-dp(130)).setDuration(220).start();
+        }
+        if (focus != null && (getCurrentFocus() == null || !isInControls(getCurrentFocus()))) focus.requestFocus();
+        bump();
+    }
+
+    private void hideControls() {
+        if (menuWrap.getVisibility() == View.VISIBLE || line.scrubbing() || errorShown) return;
+        if (eng != null && !eng.playing()) return;
+        controls.animate().alpha(0f).setDuration(260).withEndAction(() -> controls.setVisibility(View.GONE)).start();
+        eng.subsRaised(false);
+        subText.animate().translationY(0).setDuration(260).start();
+        if (skip.getVisibility() == View.VISIBLE) skip.requestFocus();
+        else if (upNext.getVisibility() == View.VISIBLE) upNext.getChildAt(1).requestFocus();
+        else root.requestFocus();
+    }
+
+    private boolean isInControls(View v) {
+        for (View p = v; p != null; p = p.getParent() instanceof View ? (View) p.getParent() : null) if (p == controls) return true;
+        return false;
     }
 
     private final Runnable tick = new Runnable() {
-        @Override
-        public void run() {
-            JSONObject intro = info.optJSONObject("intro");
-            if (intro != null && player != null) {
-                double p = pos(), s = intro.optDouble("start"), e = intro.optDouble("end");
-                boolean in = p >= s - 1 && p < e - 2;
-                if (in && info.optBoolean("autoSkip") && !introSkipped) skipIntro();
-                else if (in != (skip.getVisibility() == View.VISIBLE)) {
-                    skip.setVisibility(in ? View.VISIBLE : View.GONE);
-                    if (in) skip.requestFocus();
-                }
+        @Override public void run() {
+            if (eng != null) {
+                double p = pos(), d = dur();
+                if (!line.scrubbing()) line.set((long) (p * 1000), (long) (d * 1000), (long) (((hls ? offset * 1000 : 0)) + eng.buffered()));
+                double shown = line.shown() / 1000.0;
+                tNow.setText(clock(shown));
+                tLeft.setText("-" + clock(Math.max(0, d - shown)));
+                checkIntro(p);
+                checkUpNext(p, d);
+                int mins = info.optInt("stillMins", 0);
+                if (mins > 0 && card == null && eng.playing() && System.currentTimeMillis() - lastInput > mins * 60000L) askStill();
             }
-            int mins = info.optInt("stillMins", 0);
-            if (mins > 0 && still == null && player != null && player.isPlaying() && System.currentTimeMillis() - lastInput > mins * 60000L) askStill();
-            h.postDelayed(this, 500);
+            h.postDelayed(this, 250);
         }
     };
+
+    private void checkIntro(double p) {
+        JSONObject intro = info.optJSONObject("intro");
+        if (intro == null || loading) return;
+        double s = intro.optDouble("start"), e = intro.optDouble("end");
+        boolean in = p >= s - 1 && p < e - 2;
+        if (in && info.optBoolean("autoSkip") && !introSkipped) { skipIntro(); toast("Intro skipped"); return; }
+        if (in != (skip.getVisibility() == View.VISIBLE)) {
+            skip.setVisibility(in ? View.VISIBLE : View.GONE);
+            if (in && controls.getVisibility() != View.VISIBLE) skip.requestFocus();
+        }
+    }
 
     private void skipIntro() {
         JSONObject intro = info.optJSONObject("intro");
@@ -345,54 +793,329 @@ public class PlayerActivity extends Activity {
         seekTo(intro.optDouble("end"));
     }
 
-    private void seekTo(double t) {
-        if (!hls) { player.seekTo((long) (t * 1000)); return; }
-        double rel = t - offset;
-        long have = player.getDuration();
-        if (rel >= 0 && have != C.TIME_UNSET && rel * 1000 < have - 2000) player.seekTo((long) (rel * 1000));
-        else startHls(t);
+    // Up next with a countdown like netflix, during the credits or the last 25 seconds
+    private void checkUpNext(double p, double d) {
+        if (info.optJSONObject("next") == null || d <= 0 || p < d * 0.5) return;
+        double at = info.optDouble("credits", 0) > 0 ? info.optDouble("credits") : d - 25;
+        if (!upNextShown && p >= at) {
+            upNextShown = true;
+            upNext.setVisibility(View.VISIBLE);
+            upNext.setAlpha(0f);
+            upNext.animate().alpha(1f).setDuration(300).start();
+            upNextLeft = info.optBoolean("autoplay", true) ? 10 : -1;
+            if (controls.getVisibility() != View.VISIBLE) upNext.post(() -> ((ViewGroup) ((ViewGroup) upNext.getChildAt(1)).getChildAt(2)).getChildAt(0).requestFocus());
+            h.post(countdown);
+        }
+    }
+
+    private final Runnable countdown = new Runnable() {
+        @Override public void run() {
+            if (upNext.getVisibility() != View.VISIBLE) return;
+            if (upNextLeft < 0) { unLeft.setText("Next Episode"); return; }
+            unLeft.setText("Next episode in " + upNextLeft);
+            if (upNextLeft == 0) { ended = true; done(); return; }
+            if (eng.playing()) upNextLeft--;
+            h.postDelayed(this, 1000);
+        }
+    };
+
+    // ---------------------------------------------------------------- menus
+
+    private void openMenu(String which) {
+        focusBeforeMenu = getCurrentFocus();
+        menuWrap.removeAllViews();
+        menu = new LinearLayout(this);
+        menu.setOrientation(LinearLayout.VERTICAL);
+        menu.setPadding(dp(6), dp(8), dp(6), dp(6));
+        TextView head = text(12, 0x99FFFFFF, true);
+        head.setLetterSpacing(0.06f);
+        head.setPadding(dp(12), dp(4), dp(12), dp(8));
+        menu.addView(head);
+        View firstOn = null;
+        switch (which) {
+            case "subs": {
+                head.setText("SUBTITLES");
+                List<Engine.Track> ts = eng.text();
+                boolean any = false;
+                for (Engine.Track t : ts) any |= t.selected;
+                firstOn = item("Off", !any, () -> eng.pickText(-1));
+                for (Engine.Track t : ts) { View v = item(t.label, t.selected, () -> eng.pickText(t.id)); if (t.selected) firstOn = v; }
+                if (ts.isEmpty()) item("No subtitles in this video", false, null);
+                break;
+            }
+            case "audio": {
+                head.setText("AUDIO");
+                for (Engine.Track t : eng.audio()) {
+                    View v = item(t.label + (t.supported ? "" : " (not on this TV)"), t.selected, t.supported ? () -> eng.pickAudio(t.id) : null);
+                    if (t.selected || firstOn == null) firstOn = v;
+                }
+                if (hls) item("Pick audio on the Kino web player when the TV converts", false, null);
+                break;
+            }
+            case "speed": {
+                head.setText("SPEED");
+                for (float s : new float[]{0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f}) {
+                    View v = item(s == 1f ? "Normal" : (s == (int) s ? String.valueOf((int) s) : String.valueOf(s)) + "×", s == speed, () -> { speed = s; eng.speed(s); });
+                    if (s == speed) firstOn = v;
+                }
+                break;
+            }
+            case "player": {
+                head.setText("PLAYER");
+                String cur = eng.name();
+                firstOn = item("Kino Player", cur.equals("exo"), () -> switchEngine("exo"));
+                View a = item("Android Player", cur.equals("android"), () -> switchEngine("android"));
+                if (cur.equals("android")) firstOn = a;
+                String vlc = vlcPackage();
+                item(vlc != null ? "Open in VLC" : "Open in Another App", false, () -> openExternal(vlc));
+                if (vlc != null) item("Open in Another App", false, () -> openExternal(null));
+                TextView hint = text(12, 0x80FFFFFF, false);
+                hint.setText("Try another player if the picture or sound is wrong. Kino remembers your pick on this device.");
+                hint.setPadding(dp(12), dp(8), dp(12), dp(4));
+                hint.setMaxWidth(dp(280));
+                menu.addView(hint);
+                break;
+            }
+        }
+        ScrollView sc = new ScrollView(this);
+        sc.setVerticalScrollBarEnabled(false);
+        sc.setBackground(rounded(0xF52C2C2E, dp(16)));
+        sc.setElevation(dp(12));
+        sc.addView(menu);
+        FrameLayout.LayoutParams ml = new FrameLayout.LayoutParams(dp(320), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
+        ml.setMargins(0, dp(40), dp(36), dp(96));
+        menuWrap.addView(sc, ml);
+        menuWrap.setVisibility(View.VISIBLE);
+        sc.setAlpha(0f);
+        sc.setTranslationY(dp(10));
+        sc.animate().alpha(1f).translationY(0).setDuration(200).start();
+        h.removeCallbacks(hideLater);
+        View f = firstOn;
+        if (f != null) f.post(f::requestFocus);
+    }
+
+    private View item(String label, boolean on, Runnable run) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(11), dp(12), dp(11));
+        ImageView ck = new ImageView(this);
+        ck.setImageResource(R.drawable.ic_check);
+        ck.setImageTintList(new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}}, new int[]{0xFF0A84FF, 0xFF0A84FF}));
+        ck.setVisibility(on ? View.VISIBLE : View.INVISIBLE);
+        row.addView(ck, new LinearLayout.LayoutParams(dp(18), dp(18)));
+        TextView t = text(16, Color.WHITE, on);
+        t.setText(label);
+        t.setPadding(dp(12), 0, 0, 0);
+        t.setDuplicateParentStateEnabled(true);
+        t.setTextColor(new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}}, new int[]{Color.BLACK, run == null ? 0x80FFFFFF : Color.WHITE}));
+        row.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (run != null) {
+            StateListDrawable bg = new StateListDrawable();
+            bg.addState(new int[]{android.R.attr.state_focused}, rounded(Color.WHITE, dp(10)));
+            bg.addState(new int[]{android.R.attr.state_pressed}, rounded(0x33FFFFFF, dp(10)));
+            bg.addState(new int[]{}, rounded(0x00000000, dp(10)));
+            row.setBackground(bg);
+            row.setFocusable(true);
+            row.setClickable(true);
+            row.setOnClickListener(v -> { closeMenu(); run.run(); });
+        }
+        menu.addView(row);
+        return row;
+    }
+
+    private void closeMenu() {
+        if (menuWrap.getVisibility() != View.VISIBLE) return;
+        menuWrap.setVisibility(View.GONE);
+        menuWrap.removeAllViews();
+        if (focusBeforeMenu != null) focusBeforeMenu.requestFocus();
+        bump();
+    }
+
+    private void switchEngine(String which) {
+        if (which.equals(eng.name())) return;
+        double at = pos();
+        prefs.edit().putString("engine", which).apply();
+        stopSession();
+        triedHls = false;
+        hlsRetries = 0;
+        relaunchLoading(which.equals("exo") ? "Switching to the Kino player" : "Switching to the Android player");
+        startEngine(which, at);
+    }
+
+    private String vlcPackage() {
+        for (String p : new String[]{"org.videolan.vlc", "org.videolan.vlc.betav7neon"}) {
+            try { getPackageManager().getPackageInfo(p, 0); return p; } catch (PackageManager.NameNotFoundException ignored) { }
+        }
+        return null;
+    }
+
+    // VLC and other apps get a signed link (they cant send Kino's cookies), and the position to start from
+    private void openExternal(String pkg) {
+        double at = pos();
+        eng.pause();
+        save();
+        toast("Opening " + (pkg != null ? "VLC" : "the other app") + "…");
+        new Thread(() -> {
+            try {
+                JSONObject r = new JSONObject(post("/api/extlink/" + Uri.encode(fid), "{}"));
+                Uri u = Uri.parse(base + r.getString("url"));
+                runOnUiThread(() -> {
+                    Intent i = new Intent(Intent.ACTION_VIEW).setDataAndType(u, "video/*");
+                    i.putExtra("title", info.optString("title") + (info.optString("sub").isEmpty() ? "" : "  " + info.optString("sub")));
+                    i.putExtra("position", (long) (at * 1000));       // vlc and mx player both read this
+                    i.putExtra("from_start", false);
+                    i.putExtra("return_result", true);
+                    if (pkg != null) i.setPackage(pkg);
+                    try {
+                        startActivityForResult(pkg != null ? i : Intent.createChooser(i, "Play with"), EXTERNAL);
+                    } catch (ActivityNotFoundException e) {
+                        toast("No other video player is installed. VLC is free in the app store");
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> toast(message(e)));
+            }
+        }).start();
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != EXTERNAL) return;
+        // VLC and MX Player say where they stopped, Kino saves that and carries on from there
+        long p = data != null ? data.getLongExtra("extra_position", data.getIntExtra("position", -1)) : -1;
+        long d = data != null ? data.getLongExtra("extra_duration", data.getIntExtra("duration", -1)) : -1;
+        if (p > 0) {
+            double at = p / 1000.0, du = d > 0 ? d / 1000.0 : dur();
+            postProgress(at, du);
+            if (du > 0 && at / du > 0.93) { ended = true; done(); return; }
+            seekTo(at);
+        }
+        toast("Back in Kino");
+    }
+
+    // ---------------------------------------------------------------- dialogs
+
+    private LinearLayout dialog(String heading, String body) {
+        closeMenu();
+        if (card != null) root.removeView(card);
+        card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_HORIZONTAL);
+        card.setBackground(rounded(0xF21E1E20, dp(26)));
+        card.setPadding(dp(28), dp(26), dp(28), dp(22));
+        card.setElevation(dp(16));
+        TextView hd = text(22, Color.WHITE, true);
+        hd.setText(heading);
+        hd.setGravity(Gravity.CENTER);
+        card.addView(hd);
+        TextView bd = text(15, 0x99FFFFFF, false);
+        bd.setText(body);
+        bd.setGravity(Gravity.CENTER);
+        bd.setPadding(0, dp(8), 0, dp(18));
+        bd.setLineSpacing(0, 1.15f);
+        card.addView(bd);
+        root.addView(card, new FrameLayout.LayoutParams(dp(460), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        return card;
+    }
+
+    private void buttons(LinearLayout c, TextView... bs) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER);
+        for (int i = 0; i < bs.length; i++) {
+            if (i > 0) row.addView(space(10));
+            row.addView(bs[i]);
+        }
+        c.addView(row);
+        bs[0].post(bs[0]::requestFocus);
+    }
+
+    private void closeDialog() {
+        if (card != null) { root.removeView(card); card = null; }
     }
 
     // Are you still watching, pauses and asks after the profile's set time with nobody touching the remote
     private void askStill() {
-        player.pause();
-        still = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("Are you still watching?")
-                .setMessage(info.optString("title"))
-                .setPositiveButton("Continue Watching", (d, w) -> { still = null; lastInput = System.currentTimeMillis(); player.play(); })
-                .setNegativeButton("Stop", (d, w) -> { still = null; done(); })
-                .setOnCancelListener(d -> { still = null; lastInput = System.currentTimeMillis(); player.play(); })
-                .show();
-        // Nobody answers for 10 minutes and it closes, saving where it got to
-        h.postDelayed(() -> { if (still != null) { still.dismiss(); still = null; done(); } }, 600000);
+        eng.pause();
+        LinearLayout c = dialog("Are you still watching?", info.optString("title") + (info.optString("sub").isEmpty() ? "" : "\n" + info.optString("sub")));
+        TextView yes = pill("Continue Watching", true), no = pill("Stop", false);
+        yes.setOnClickListener(v -> { closeDialog(); lastInput = System.currentTimeMillis(); eng.play(); });
+        no.setOnClickListener(v -> { closeDialog(); done(); });
+        buttons(c, yes, no);
+        h.postDelayed(() -> { if (card == c) { closeDialog(); done(); } }, 600000);
     }
+
+    private void showError(String msg) {
+        errorShown = true;
+        loading = false;
+        loadLayer.setVisibility(View.GONE);
+        LinearLayout c = dialog("This won't play here", msg + ". Another player might manage it.");
+        String other = eng.name().equals("exo") ? "android" : "exo";
+        TextView tryOther = pill(other.equals("android") ? "Try Android Player" : "Try Kino Player", true);
+        String vlc = vlcPackage();
+        TextView ext = pill(vlc != null ? "Open in VLC" : "Another App", false);
+        TextView web = pill("Web Player", false);
+        tryOther.setOnClickListener(v -> { closeDialog(); errorShown = false; switchEngine(other); });
+        ext.setOnClickListener(v -> { closeDialog(); errorShown = false; openExternal(vlc); });
+        web.setOnClickListener(v -> { closeDialog(); done(msg); });
+        buttons(c, tryOther, ext, web);
+    }
+
+    private final Runnable hideToast = () -> toastView.animate().alpha(0f).setDuration(250).withEndAction(() -> toastView.setVisibility(View.GONE)).start();
+
+    private void toast(String t) {
+        toastView.setText(t);
+        toastView.setVisibility(View.VISIBLE);
+        toastView.setAlpha(0f);
+        toastView.animate().alpha(1f).setDuration(200).start();
+        h.removeCallbacks(hideToast);
+        h.postDelayed(hideToast, 2800);
+    }
+
+    // ---------------------------------------------------------------- keys
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
         lastInput = System.currentTimeMillis();
-        if (e.getAction() == KeyEvent.ACTION_DOWN && player != null) {
-            switch (e.getKeyCode()) {
-                case KeyEvent.KEYCODE_BACK:
-                    done();
-                    return true;
+        int k = e.getKeyCode();
+        boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
+        if (k == KeyEvent.KEYCODE_BACK) {
+            if (down && e.getRepeatCount() == 0) {
+                if (menuWrap.getVisibility() == View.VISIBLE) closeMenu();
+                else if (card != null && !errorShown) { closeDialog(); eng.play(); }
+                else done();
+            }
+            return true;
+        }
+        if (eng == null || card != null) return super.dispatchKeyEvent(e);
+        if (down) {
+            switch (k) {
+                case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                case KeyEvent.KEYCODE_HEADSETHOOK: togglePlay(); showControls(bPlay); return true;
+                case KeyEvent.KEYCODE_MEDIA_PLAY: eng.play(); return true;
+                case KeyEvent.KEYCODE_MEDIA_PAUSE: eng.pause(); return true;
                 case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
-                case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
-                    seekTo(pos() + 10); view.showController(); return true;
+                case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD: seekTo(pos() + 10); showControls(line); return true;
                 case KeyEvent.KEYCODE_MEDIA_REWIND:
-                case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
-                    seekTo(Math.max(0, pos() - 10)); view.showController(); return true;
-                case KeyEvent.KEYCODE_DPAD_LEFT:
-                case KeyEvent.KEYCODE_DPAD_RIGHT:
-                    // With the controls hidden left and right skip 10 seconds, like the fire tv's own player
-                    if (!view.isControllerFullyVisible() && skip.getVisibility() != View.VISIBLE) {
-                        seekTo(Math.max(0, pos() + (e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 10 : -10)));
-                        view.showController();
-                        return true;
-                    }
-                    break;
+                case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD: seekTo(Math.max(0, pos() - 10)); showControls(line); return true;
+                case KeyEvent.KEYCODE_MEDIA_STOP: done(); return true;
             }
         }
-        if (e.getKeyCode() == KeyEvent.KEYCODE_BACK) return true;
+        boolean shown = controls.getVisibility() == View.VISIBLE;
+        boolean onPopup = (skip.getVisibility() == View.VISIBLE && skip.isFocused()) || (upNext.getVisibility() == View.VISIBLE && upNext.hasFocus());
+        if (!shown && !onPopup && menuWrap.getVisibility() != View.VISIBLE) {
+            // Controls hidden: left and right jump with the timeline focused, ok pauses, anything else brings them up
+            if (down && (k == KeyEvent.KEYCODE_DPAD_LEFT || k == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+                showControls(line);
+                line.requestFocus();
+                line.onKeyDown(k, e);
+                return true;
+            }
+            if (down && (k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER)) { togglePlay(); showControls(bPlay); return true; }
+            if (down && (k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN)) { showControls(bPlay); return true; }
+            if (!down && (k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER || k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN)) return true;
+        }
+        if (shown) bump();
         return super.dispatchKeyEvent(e);
     }
 
@@ -402,30 +1125,35 @@ public class PlayerActivity extends Activity {
         return super.dispatchTouchEvent(e);
     }
 
-    // ---- saving progress and leaving
+    // ---------------------------------------------------------------- saving and leaving
 
     private final Runnable saver = new Runnable() {
-        @Override
-        public void run() {
-            if (player != null && player.isPlaying()) save();
+        @Override public void run() {
+            if (eng != null && eng.playing()) save();
             h.postDelayed(this, 10000);
         }
     };
 
     private void save() {
-        if (player == null) return;
-        double p = pos(), d = dur();
+        if (eng == null || loading) return;
+        postProgress(pos(), dur());
+    }
+
+    private void postProgress(double p, double d) {
         if (d <= 0) return;
         String body = "{\"file_id\":" + JSONObject.quote(fid) + ",\"pos\":" + p + ",\"dur\":" + d + "}";
         new Thread(() -> { try { post("/api/progress", body); } catch (Exception ignored) { } }).start();
     }
 
-    private void done() {
-        if (isFinishing()) return;
-        double p = player != null ? pos() : 0, d = dur();
-        save();
+    private void done() { done(null); }
+
+    private void done(String error) {
+        if (leaving) return;
+        leaving = true;
+        double p = eng != null ? pos() : 0, d = dur();
+        if (!loading) postProgress(p, d);
         try {
-            JSONObject r = new JSONObject().put("fid", fid).put("pos", p).put("dur", d).put("ended", ended);
+            JSONObject r = new JSONObject().put("fid", fid).put("pos", p).put("dur", d).put("ended", ended).put("engine", eng != null ? eng.name() : "");
             if (error != null) r.put("error", error);
             setResult(RESULT_OK, new Intent().putExtra("result", r.toString()));
         } catch (Exception ignored) { }
@@ -446,10 +1174,8 @@ public class PlayerActivity extends Activity {
         c.setReadTimeout(60000);
         c.setDoOutput(true);
         c.setRequestProperty("Content-Type", "application/json");
-        c.setRequestProperty("X-Kino", "1");
         c.setRequestProperty("User-Agent", ua);
-        String cookie = CookieManager.getInstance().getCookie(base);
-        if (cookie != null) c.setRequestProperty("Cookie", cookie);
+        for (Map.Entry<String, String> e : headers.entrySet()) c.setRequestProperty(e.getKey(), e.getValue());
         try (OutputStream o = c.getOutputStream()) { o.write(json.getBytes(StandardCharsets.UTF_8)); }
         int code = c.getResponseCode();
         InputStream in = code < 400 ? c.getInputStream() : c.getErrorStream();
@@ -463,7 +1189,7 @@ public class PlayerActivity extends Activity {
     }
 
     private static byte[] readAll(InputStream in) throws Exception {
-        java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         int n;
         while ((n = in.read(buf)) > 0) b.write(buf, 0, n);
@@ -498,15 +1224,15 @@ public class PlayerActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
-        // Leaving the app pauses it, coming back carries on
-        if (player != null) { save(); player.pause(); }
+        // Leaving the app pauses it, coming back carries on. Not when VLC is in front, that one is playing it
+        if (eng != null && !isFinishing()) { save(); eng.pause(); }
     }
 
     @Override
     protected void onDestroy() {
         h.removeCallbacksAndMessages(null);
         stopSession();
-        if (player != null) { player.release(); player = null; }
+        if (eng != null) { eng.release(); eng = null; }
         super.onDestroy();
     }
 }

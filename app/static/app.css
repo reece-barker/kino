@@ -1552,3 +1552,21 @@ body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none
 .emb-test { margin-top: 10px; padding: 12px; border-radius: 12px; background: var(--fill-2); }
 .emb-test .li { padding: 6px 0; word-break: break-all; }
 #favRow .shelf { margin-bottom: 26px; }
+
+/* server page: the cards under the stats get the same gap as the stats */
+#stress > .card, #srvErrors > .card, #backups > .card, #appLog > .card, #storageReview > .card { margin-top: 18px; }
+.stress-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 8px; }
+.stress-form label { display: grid; gap: 6px; font-size: 13px; color: var(--label-2); }
+.stress-form input { width: 90px; height: 38px; border: 0; border-radius: 10px; background: var(--fill); padding: 0 12px; font-size: 15px; color: var(--label); }
+.stress-res { margin-top: 16px; padding: 14px; border-radius: 14px; background: var(--fill-2); }
+.stress-res.good > b { color: #30d158; }
+.stress-res.bad > b { color: #ff9f0a; }
+.live-tabs a { white-space: nowrap; }
+@media (max-width: 600px) {
+  .live-head { gap: 12px; }
+  .live-tabs { width: 100%; }
+  .live-tabs a { flex: 1; justify-content: center; padding: 0 8px; font-size: 14px; gap: 5px; }
+  .live-tabs a svg { display: none; }
+  .live-filters .live-sel { flex: 1; }
+  .live-sel select { min-width: 0; width: 100%; }
+}

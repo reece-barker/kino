@@ -1906,6 +1906,9 @@
     if (!box) return;
     let r;
     try { r = await api("/api/admin/addons"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
+    // Youtube style addons with nothing but search catalogs (youtubio without cookies or playlists) cant fill a Home row
+    const vidType = (t) => !["movie", "series", "anime", "tv"].includes(t);
+    const onlySearch = (a) => a.catalogs.some((c) => vidType(c.type)) && !a.catalogs.some((c) => vidType(c.type) && c.home);
     const uses = (u) => [u.catalogs && "Catalogs", u.meta && "Metadata", u.subtitles && "Subtitles", u.events && "Watch Activity"].filter(Boolean);
     box.innerHTML = `
       <h2 class="set-title">Addons</h2>
@@ -1920,9 +1923,10 @@
         <div class="addon-tags">${uses(a.uses).map((u) => `<span class="badge">${u}</span>`).join("")}${a.uses.streams ? `<span class="badge">Streams</span>` : ""}
           ${a.config_required ? `<span class="badge warn">Needs Setting Up</span>` : ""}</div>
         ${a.config_required ? `<div class="note">This addon has to be set up on its own website first. Paste the link it gives you after setting it up.</div>` : ""}
+        ${onlySearch(a) ? `<div class="note">${ic("info")} This addon only has search catalogs, so its videos show up in Search but it has nothing to put on Home. In the addon's own settings add your cookies, a playlist or a channel as a catalog, then install the new link it gives you.</div>` : ""}
         <div class="addon-foot">
         ${a.catalogs.filter((c) => c.home).length ? `<details class="addon-cats"><summary>Home Shelves</summary>${a.catalogs.filter((c) => c.home).map((c) => `
-          <label class="set-row"><span><b>${esc(c.name)}</b><span class="secondary">${c.type === "series" ? "TV Shows" : c.type === "movie" ? "Movies" : esc(c.type)}</span></span>
+          <label class="set-row"><span><b>${esc(c.name)}</b><span class="secondary">${c.type === "series" ? "TV Shows" : c.type === "movie" ? "Movies" : esc(c.type)}${c.problem ? ` · <span class="warn-text">${esc(c.problem)}, so it's not on Home</span>` : ""}</span></span>
           <input type="checkbox" class="switch" data-cat="${a.id}" data-key="${esc(c.key)}" ${c.shown ? "checked" : ""}></label>`).join("")}</details>` : "<span></span>"}
         <div class="actions end"><button class="btn secondary small" data-aref="${a.id}">${ic("refresh")} Refresh</button>
           <button class="btn danger small" data-arm="${a.id}">${ic("trash")} Remove</button></div></div>

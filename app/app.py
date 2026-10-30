@@ -1861,7 +1861,7 @@ async def catalog_page(a, c, skip=0, genre=None):
     # One retry, catalogs like cinemeta's sometimes take a while. None means it failed, [] means the list really ended
     for attempt in (0, 1):
         try:
-            j = await fetch_json(catalog_url(a, c, extra or None), ttl=3600, timeout=15)
+            j = await fetch_json(catalog_url(a, c, extra or None), ttl=3600, timeout=max(15, cat_timeout(c)))
             return [m for m in (j.get("metas") or []) if isinstance(m, dict) and m.get("id")]
         except Exception as e:
             if attempt:
@@ -3009,7 +3009,8 @@ def manifest_summary(a):
         needs = list(c.get("extraRequired") or []) + [e.get("name") for e in c.get("extra") or [] if e.get("isRequired")]
         cats.append({"key": f"{c.get('type')}/{c.get('id')}", "name": c.get("name") or c.get("id"), "type": c.get("type"),
                      "search": any(e.get("name") == "search" for e in c.get("extra") or []) or "search" in (c.get("extraSupported") or []),
-                     "home": not needs, "shown": f"{c.get('type')}/{c.get('id')}" not in a["hidden"]})
+                     "home": not needs, "shown": f"{c.get('type')}/{c.get('id')}" not in a["hidden"],
+                     "problem": CAT_ERR.get(catalog_url(a, c)) if not needs else None})
     return {"id": a["id"], "url": a["url"], "enabled": a["enabled"], "name": m.get("name") or m.get("id"),
             "version": m.get("version"), "description": m.get("description"), "logo": https_url(m.get("logo")),
             "uses": {"catalogs": bool(cats), "meta": "meta" in res, "subtitles": "subtitles" in res,
@@ -3097,15 +3098,26 @@ def home_catalogs():
     return out
 
 
+CAT_ERR = {}  # catalog link -> why it isnt on Home, shown under the addon in Settings
+
+
+def cat_timeout(c):
+    # Youtubio runs yt-dlp for every list, a hundred videos can take most of a minute
+    return 60 if video_type(c.get("type")) else 12
+
+
 async def refresh_catalogs():
     if CAT_STATE["refreshing"]:
         return
     CAT_STATE["refreshing"] = True
     try:
         for a, c in home_catalogs():
+            u = catalog_url(a, c)
             try:
-                await fetch_json(catalog_url(a, c), ttl=3600)
+                j = await fetch_json(u, ttl=3600, timeout=cat_timeout(c))
+                CAT_ERR.pop(u, None) if (j.get("metas") if isinstance(j, dict) else None) else CAT_ERR.__setitem__(u, "The addon sent an empty list")
             except Exception as e:
+                CAT_ERR[u] = "Took too long to answer" if isinstance(e, httpx.TimeoutException) else f"Failed: {str(e)[:80] or type(e).__name__}"
                 log.info("catalog %s/%s failed: %s", a["m"].get("name"), c.get("id"), e)
     finally:
         CAT_STATE["refreshing"] = False

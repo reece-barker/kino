@@ -6,3 +6,4 @@ guessit>=3.8,<5
 Pillow>=10,<12
 requests>=2.31,<3
 numpy>=1.26,<3
+faster-whisper>=1.0,<2

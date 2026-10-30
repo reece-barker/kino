@@ -22,6 +22,14 @@
   <video id="video" playsinline preload="auto" x-webkit-airplay="allow"></video>
   <div class="subs-layer" id="subsLayer" aria-live="off"></div>
   <div class="player-spinner" id="playerSpinner" hidden><div class="spin"></div></div>
+  <div class="player-load" id="pLoad" hidden>
+    <div class="pl-bg" id="plBg"></div>
+    <div class="pl-mid"><div class="pl-logo" id="plLogo"></div><div class="pl-bar"><i></i></div><div class="pl-stats" id="plStats" aria-live="polite"></div></div>
+  </div>
+  <div class="still glass" id="pStill" role="alertdialog" aria-labelledby="stillQ" hidden>
+    <h3 id="stillQ">Are you still watching?</h3><p class="secondary" id="stillWhat"></p>
+    <div class="actions"><button class="btn primary small" id="stillYes">Continue Watching</button><button class="btn secondary small" id="stillNo">Stop</button></div>
+  </div>
   <button class="skip-intro" id="skipIntro" hidden>Skip Intro</button>
   <div class="up-next glass" id="upNext" role="status" hidden></div>
   <div class="player-ui" id="playerUi">

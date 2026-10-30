@@ -77,7 +77,7 @@ IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.spa
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
 AVATAR_COUNT = 18  # Has to match the AVATARS list in app.js
-DEFAULT_PREFS = {"audio_lang": "", "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False}
+DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("kino")
@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, kind TEXT, first REAL);
 CREATE TABLE IF NOT EXISTS mylist (profile_id INTEGER, key TEXT, kind TEXT, title_id TEXT, name TEXT, poster TEXT,
     added REAL, checked REAL, PRIMARY KEY (profile_id, key));
 CREATE TABLE IF NOT EXISTS kids_rules (key TEXT PRIMARY KEY, allow INTEGER);
+CREATE TABLE IF NOT EXISTS cont_hidden (profile_id INTEGER, key TEXT, at REAL, PRIMARY KEY (profile_id, key));
 CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, code TEXT, name TEXT, ua TEXT, ip TEXT, status TEXT,
     created REAL, last_seen REAL);
 CREATE TABLE IF NOT EXISTS search_recent (profile_id INTEGER, key TEXT, kind TEXT, title_id TEXT, name TEXT, poster TEXT,
@@ -168,8 +169,25 @@ def db():
 
 def migrate():
     d = _db
-    if "kids" not in [r["name"] for r in d.q("PRAGMA table_info(profiles)")]:
+    cols = [r["name"] for r in d.q("PRAGMA table_info(profiles)")]
+    if "kids" not in cols:
         d.q("ALTER TABLE profiles ADD COLUMN kids INTEGER DEFAULT 0")
+    if "pin" not in cols:
+        d.q("ALTER TABLE profiles ADD COLUMN pin TEXT")        # scrypt hash of the 4 digit code, nobody can read it back
+    if "pending" not in cols:
+        d.q("ALTER TABLE profiles ADD COLUMN pending INTEGER DEFAULT 0")  # asked for by someone, waiting for the admin
+    if "device" not in [r["name"] for r in d.q("PRAGMA table_info(sessions)")]:
+        # Admin sign ins are tied to the device they were made on now, old ones without it get signed out
+        d.q("ALTER TABLE sessions ADD COLUMN device TEXT")
+        d.q("DELETE FROM sessions")
+    if d.q("PRAGMA user_version")[0]["user_version"] < 2:
+        # English audio is the default now, profiles that never picked one get it
+        for r in d.q("SELECT id, prefs FROM profiles"):
+            pr = json.loads(r["prefs"] or "{}")
+            if not pr.get("audio_lang"):
+                pr["audio_lang"] = "English"
+                d.q("UPDATE profiles SET prefs = ? WHERE id = ?", (json.dumps(pr), r["id"]))
+        d.q("PRAGMA user_version = 2")
     # First run with profiles: makes one profile per old login and moves there watch progress over
     if d.q("SELECT COUNT(*) AS n FROM profiles")[0]["n"]:
         return
@@ -312,13 +330,31 @@ def ip_allowed(ip):
     return any(addr in n for n in allowed_nets() if n.version == addr.version)
 
 
+def ua_family(ua):
+    """Browser plus os, like chrome on windows. Stays the same through browser updates but not across browsers,
+    so cookies copied into another browser (edge and brave copy chromes on first run) dont carry the admin over"""
+    ua = str(ua or "")
+    br = next((n for k, n in (("KinoAndroid", "kinoapp"), ("Silk", "silk"), ("Edg", "edge"), ("OPR", "opera"), ("Brave", "brave"),
+                               ("SamsungBrowser", "samsung"), ("Firefox", "firefox"), ("Chrome", "chrome"), ("Safari", "safari")) if k in ua), "other")
+    os_ = next((n for k, n in (("Android", "android"), ("iPhone", "ios"), ("iPad", "ios"), ("Windows", "windows"), ("Mac OS", "mac"),
+                               ("CrOS", "chromeos"), ("Linux", "linux")) if k in ua), "other")
+    return f"{br}/{os_}"
+
+
+def browser_key(request):
+    # The long lived device cookie plus the browser type, a session only counts on the device it was made on
+    return f"{request.cookies.get(DEVICE_COOKIE, '')}|{ua_family(request.headers.get('user-agent'))}"
+
+
 def admin_user(request):
     tok = request.cookies.get("kino_admin")
     if not tok:
         return None
-    rows = db().q("SELECT s.username, s.expires FROM sessions s JOIN users u ON u.username = s.username "
+    rows = db().q("SELECT s.username, s.expires, s.device FROM sessions s JOIN users u ON u.username = s.username "
                   "WHERE s.token_hash = ? AND u.role = 'admin'", (tok_hash(tok),))
     if not rows or rows[0]["expires"] < time.time():
+        return None
+    if rows[0]["device"] and not hmac.compare_digest(rows[0]["device"], tok_hash(browser_key(request))):
         return None
     return rows[0]["username"]
 
@@ -331,17 +367,30 @@ def require_admin(request: Request):
 
 
 def profile_row(pid):
-    rows = db().q("SELECT id, name, icon, prefs, kids FROM profiles WHERE id = ?", (pid,))
-    if not rows:
+    rows = db().q("SELECT id, name, icon, prefs, kids, pin, pending FROM profiles WHERE id = ?", (pid,))
+    if not rows or rows[0]["pending"]:
         return None
     r = rows[0]
     prefs = {**DEFAULT_PREFS, **(json.loads(r["prefs"] or "{}"))}
-    return {"id": r["id"], "name": r["name"], "icon": r["icon"], "prefs": prefs, "kids": bool(r["kids"])}
+    return {"id": r["id"], "name": r["name"], "icon": r["icon"], "prefs": prefs, "kids": bool(r["kids"]), "locked": bool(r["pin"])}
+
+
+def profile_cookie(pid, request):
+    return f"{pid}.{sign('profile', pid, browser_key(request))[:32]}"
+
+
+def cookie_profile(request):
+    # The cookie is signed and tied to this device, so nobody can switch into a locked profile by changing the number
+    # in it, and a copied cookie on another device just lands on the profile picker
+    raw = request.cookies.get("kino_profile", "")
+    pid, _, sig = raw.partition(".")
+    if not pid.isdigit() or not hmac.compare_digest(sig, sign("profile", int(pid), browser_key(request))[:32]):
+        return None
+    return profile_row(int(pid))
 
 
 def current_profile(request: Request):
-    pid = request.cookies.get("kino_profile", "")
-    p = profile_row(int(pid)) if pid.isdigit() else None
+    p = cookie_profile(request)
     if not p:
         raise HTTPException(409, "Pick a profile first")
     return p
@@ -480,6 +529,7 @@ def slim_meta(m, kind):
         "id": i, "kind": kind, "name": m.get("name"), "description": m.get("description"),
         "genres": m.get("genres") or m.get("genre") or [], "releaseInfo": m.get("releaseInfo") or m.get("year"),
         "runtime": m.get("runtime"), "rating": m.get("imdbRating"), "cast": (m.get("cast") or [])[:10],
+        "popularity": (m.get("popularities") or {}).get("moviedb") or m.get("popularity"),
         "director": m.get("director"), "poster": poster_for(m),
         "background": m.get("background") or (f"https://images.metahub.space/background/medium/{i}/img" if i.startswith("tt") else None),
         "logo": m.get("logo") or (f"https://images.metahub.space/logo/medium/{i}/img" if i.startswith("tt") else None),
@@ -860,6 +910,7 @@ async def session_reaper():
         for sid, s in list(SESS.items()):
             if time.time() - s["last"] > 90:
                 kill_session(sid)
+        voice_unload()
 
 
 # ---------------------------------------------------------------- app
@@ -938,25 +989,89 @@ def pub_profile(p):
 
 @app.get("/api/me")
 async def me(request: Request):
-    pid = request.cookies.get("kino_profile", "")
-    p = profile_row(int(pid)) if pid.isdigit() else None
-    return {"profile": p, "admin": admin_user(request), "ip": client_ip(request)}
+    return {"profile": cookie_profile(request), "admin": admin_user(request), "ip": client_ip(request)}
 
 
 @app.get("/api/profiles")
 async def profiles(request: Request):
-    rows = db().q("SELECT id, name, icon, kids FROM profiles ORDER BY id")
-    return {"profiles": [{**dict(r), "kids": bool(r["kids"])} for r in rows], "admin": admin_user(request)}
+    rows = db().q("SELECT id, name, icon, kids, pin, pending FROM profiles ORDER BY id")
+    out = {"profiles": [{"id": r["id"], "name": r["name"], "icon": r["icon"], "kids": bool(r["kids"]), "locked": bool(r["pin"])}
+                        for r in rows if not r["pending"]], "admin": admin_user(request)}
+    if admin_user(request):
+        out["pending"] = [{"id": r["id"], "name": r["name"], "icon": r["icon"]} for r in rows if r["pending"]]
+    return out
 
 
 @app.post("/api/profiles/{pid}/select")
-async def profile_select(pid: int):
+async def profile_select(pid: int, request: Request):
     p = profile_row(pid)
     if not p:
         raise HTTPException(404, "That profile doesn't exist anymore")
+    if p["locked"]:
+        try:
+            b = await request.json()
+        except Exception:
+            b = {}
+        ip = client_ip(request)
+        tries = [t for t in PIN_TRIES.get(ip, []) if time.time() - t < 300]
+        if len(tries) >= 8:
+            raise HTTPException(429, "Too many wrong codes, wait a few minutes and try again")
+        row = db().q("SELECT pin FROM profiles WHERE id = ?", (pid,))
+        code = str(b.get("pin") or "")
+        if not code:
+            raise HTTPException(401, "This profile is locked")
+        if not re.fullmatch(r"\d{4}", code) or not check_pw(code, row[0]["pin"]):
+            PIN_TRIES[ip] = tries + [time.time()]
+            raise HTTPException(403, "That code isn't right")
+        PIN_TRIES.pop(ip, None)
     resp = JSONResponse({"ok": True, "profile": p})
-    set_cookie(resp, "kino_profile", str(pid), 365 * 86400)
+    set_cookie(resp, "kino_profile", profile_cookie(pid, request), 365 * 86400)
     return resp
+
+
+PIN_TRIES = {}
+
+
+@app.post("/api/profile/pin")
+async def profile_pin(request: Request, p=Depends(current_profile)):
+    """Sets, changes or removes this profile's 4 digit code. Changing or removing it needs the old one"""
+    b = await request.json()
+    new, old = str(b.get("pin") or ""), str(b.get("old") or "")
+    row = db().q("SELECT pin FROM profiles WHERE id = ?", (p["id"],))
+    if row[0]["pin"] and not (re.fullmatch(r"\d{4}", old) and check_pw(old, row[0]["pin"])):
+        raise HTTPException(403, "The current code isn't right")
+    if new and not re.fullmatch(r"\d{4}", new):
+        raise HTTPException(400, "The code has to be 4 numbers")
+    db().q("UPDATE profiles SET pin = ? WHERE id = ?", (hash_pw(new) if new else None, p["id"]))
+    return {"ok": True, "profile": profile_row(p["id"])}
+
+
+@app.post("/api/admin/profiles/{pid}/pin-reset")
+async def profile_pin_reset(pid: int, admin=Depends(require_admin)):
+    # The admin can take a lock off but never sees the code, its only stored as a hash
+    db().q("UPDATE profiles SET pin = NULL WHERE id = ?", (pid,))
+    log.info("kino profile %s lock removed by %s", pid, admin)
+    return {"ok": True}
+
+
+@app.post("/api/profiles/request")
+async def profile_request(request: Request):
+    """Someone asks for there own profile, it shows up for the admin to approve"""
+    b = await request.json()
+    if db().q("SELECT COUNT(*) AS n FROM profiles WHERE pending = 1")[0]["n"] >= 5:
+        raise HTTPException(429, "There are already a few profiles waiting, ask the admin to look at them")
+    if db().q("SELECT COUNT(*) AS n FROM profiles")[0]["n"] >= 12:
+        raise HTTPException(400, "Kino already has the maximum of 12 profiles")
+    db().q("INSERT INTO profiles (name, icon, prefs, created, kids, pending) VALUES (?,?,?,?,?,?)",
+           (clean_name(b.get("name")), clean_icon(b.get("icon", 0)), json.dumps(DEFAULT_PREFS), time.time(), 0, 1))
+    log.info("kino profile requested from %s", client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/admin/profiles/{pid}/approve")
+async def profile_approve(pid: int, admin=Depends(require_admin)):
+    db().q("UPDATE profiles SET pending = 0 WHERE id = ?", (pid,))
+    return {"ok": True}
 
 
 def clean_name(n):
@@ -987,8 +1102,11 @@ async def profile_update(request: Request, p=Depends(current_profile)):
             prefs[k] = str(v or "")[:30]
         elif k == "sub_size" and v in ("s", "m", "l"):
             prefs[k] = v
-        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched"):
+        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats"):
             prefs[k] = bool(v)
+        elif k == "still_watching":
+            # Minutes without touching anything before the player asks if anyones still there, 0 is off
+            prefs[k] = int(v) if str(v).isdigit() and int(v) in (0, 30, 60, 90, 120, 180, 240) else 0
     db().q("UPDATE profiles SET name = ?, icon = ?, prefs = ? WHERE id = ?", (name, icon, json.dumps(prefs), p["id"]))
     return {"ok": True, "profile": profile_row(p["id"])}
 
@@ -1017,7 +1135,7 @@ async def profile_admin_edit(pid: int, request: Request, admin=Depends(require_a
 
 @app.delete("/api/admin/profiles/{pid}")
 async def profile_delete(pid: int, admin=Depends(require_admin)):
-    if db().q("SELECT COUNT(*) AS n FROM profiles")[0]["n"] <= 1:
+    if db().q("SELECT COUNT(*) AS n FROM profiles WHERE pending = 0")[0]["n"] <= 1 and not db().q("SELECT 1 FROM profiles WHERE id = ? AND pending = 1", (pid,)):
         raise HTTPException(400, "Keep at least one profile")
     for t in ("watch", "ratings", "mylist"):
         db().q(f"DELETE FROM {t} WHERE profile_id = ?", (pid,))
@@ -1045,8 +1163,8 @@ async def admin_login(request: Request):
     FAILS.pop(ip, None)
     tok = secrets.token_urlsafe(32)
     exp = time.time() + SESSION_DAYS * 86400
-    db().q("INSERT INTO sessions VALUES (?,?,?,?,?,?)",
-           (tok_hash(tok), user, time.time(), exp, ip, request.headers.get("user-agent", "")[:200]))
+    db().q("INSERT INTO sessions (token_hash, username, created, expires, ip, ua, device) VALUES (?,?,?,?,?,?,?)",
+           (tok_hash(tok), user, time.time(), exp, ip, request.headers.get("user-agent", "")[:200], tok_hash(browser_key(request))))
     db().q("DELETE FROM sessions WHERE expires < ?", (time.time(),))
     log.info("kino login ok user=%s ip=%s", user, ip)
     resp = JSONResponse({"ok": True, "admin": user})
@@ -1166,14 +1284,19 @@ def next_unwatched(t, wm):
     return None
 
 
-def continue_list(summ, wm):
+def continue_list(summ, wm, pid=None):
     out, seen = [], set()
     rows = sorted(wm.values(), key=lambda r: r["updated"], reverse=True)
     by_id = {s["id"]: s for s in summ}
+    # Things someone removed from Continue Watching stay gone until they watch them again
+    hidden = {r["key"]: r["at"] for r in db().q("SELECT key, at FROM cont_hidden WHERE profile_id = ?", (pid,))} if pid else {}
     for r in rows:
         if r["file_id"].startswith("s"):
             st = db().q("SELECT * FROM streams WHERE id = ?", (r["file_id"],))
             show = show_of(st[0]["video_id"]) if st else None
+            if show and hidden.get(show, 0) >= r["updated"]:
+                seen.add(show)
+                continue
             if st and not r["watched"] and r["dur"] and 0.02 < r["pos"] / r["dur"] < 0.93 and show not in seen:
                 st = dict(st[0])
                 seen.add(show)
@@ -1185,6 +1308,9 @@ def continue_list(summ, wm):
             continue
         f = LIB["files"].get(r["file_id"])
         if not f or f["title_id"] in seen:
+            continue
+        if hidden.get(f["title_id"], 0) >= r["updated"]:
+            seen.add(f["title_id"])
             continue
         t = LIB["titles"].get(f["title_id"])
         s = by_id.get(f["title_id"])
@@ -1209,9 +1335,27 @@ def continue_list(summ, wm):
     return out
 
 
+@app.post("/api/continue/hide")
+async def continue_hide(request: Request, p=Depends(current_profile)):
+    b = await request.json()
+    fid = str(b.get("file_id") or "")
+    if fid.startswith("s"):
+        key = show_of(stream_row(fid)["video_id"])
+    elif fid in LIB["files"]:
+        key = LIB["files"][fid]["title_id"]
+    else:
+        raise HTTPException(404, "Unknown file")
+    db().q("INSERT OR REPLACE INTO cont_hidden VALUES (?,?,?)", (p["id"], key, time.time()))
+    return {"ok": True}
+
+
 @app.get("/api/library")
 async def library(p=Depends(current_profile)):
     summ, wm, rm = all_summaries(p["id"])
+    pool = addon_pool(p["id"], lib_by_meta_id(summ))
+    if p.get("kids"):
+        pool = [s for s in pool if kids_ok(s["genres"], s["imdb"])]
+    summ = summ + pool
     summ.sort(key=lambda x: x["added"], reverse=True)
     return {"titles": summ, "scanned_at": LIB["scanned_at"], "scanning": LIB["scanning"],
             "error": LIB["error"], "files": len(LIB["files"]), "mounted": box_mounted()}
@@ -1241,7 +1385,7 @@ async def home(request: Request, p=Depends(current_profile)):
     by_score = sorted(visible + pool, key=lambda s: s["score"], reverse=True)
     recent = sorted(summ + pool, key=lambda s: s["added"], reverse=True)
 
-    cont = continue_list(summ, wm)
+    cont = continue_list(summ, wm, p["id"])
     first = next((c for c in cont if c.get("background")), None)
     if first:
         # The hero always starts with whatever was watched last, in its own continue style
@@ -1258,6 +1402,9 @@ async def home(request: Request, p=Depends(current_profile)):
             shelves.append({"id": "picks", "title": f"Top Picks for {p['name']}", "style": "poster", "items": picks})
     if mine:
         shelves.append({"id": "mylist", "title": "My List", "style": "poster", "items": mine[:24]})
+    fam = family_liked(p, summ)
+    if len(fam) >= 2:
+        shelves.append({"id": "family", "title": "Loved by the Family", "style": "poster", "items": fam[:20]})
     shelves.append({"id": "recent", "title": "Recently Added", "style": "wide", "items": recent[:16]})
 
     # Because you watched, based on the last thing they finished or loved
@@ -1277,7 +1424,7 @@ async def home(request: Request, p=Depends(current_profile)):
     if shows:
         shelves.append({"id": "shows", "title": "TV Shows", "style": "poster", "items": shows[:24], "more": "#/shows"})
 
-    rated = sorted([s for s in visible if imdb_score(s) >= 7.5 and s["rating"]], key=imdb_score, reverse=True)
+    rated = sorted([s for s in visible + pool if imdb_score(s) >= 7.5 and s["rating"]], key=imdb_score, reverse=True)
     if len(rated) >= 3:
         shelves.append({"id": "acclaimed", "title": "Critically Acclaimed", "style": "poster", "items": rated[:16]})
 
@@ -1300,11 +1447,34 @@ async def home(request: Request, p=Depends(current_profile)):
             "mounted": box_mounted()}
 
 
+def family_liked(p, summ):
+    """What the other profiles liked or loved, loved ones first and then by how many people liked it"""
+    by_id = {s["id"]: s for s in summ}
+    votes = {}
+    rows = db().q("SELECT r.title_id, r.value, r.updated, pr.name FROM ratings r JOIN profiles pr ON pr.id = r.profile_id "
+                  "WHERE r.profile_id != ? AND r.value > 0 AND pr.pending = 0", (p["id"],))
+    for r in rows:
+        if r["title_id"] not in by_id or by_id[r["title_id"]]["my_rating"] == -1:
+            continue
+        v = votes.setdefault(r["title_id"], {"love": 0, "like": 0, "names": [], "at": 0})
+        v["love" if r["value"] == 2 else "like"] += 1
+        v["names"].append(r["name"])
+        v["at"] = max(v["at"], r["updated"] or 0)
+    out = []
+    for tid, v in sorted(votes.items(), key=lambda kv: (kv[1]["love"], kv[1]["love"] + kv[1]["like"], kv[1]["at"]), reverse=True):
+        s = dict(by_id[tid])
+        who = v["names"][:2]
+        s["family"] = ("Loved by " if v["love"] else "Liked by ") + " and ".join(who) + (f" +{len(v['names']) - 2}" if len(v["names"]) > 2 else "")
+        s["loved"] = bool(v["love"])
+        out.append(s)
+    return out
+
+
 def addon_pool(pid, have):
     """Catalog titles from addons that have streams, shaped like library titles. added is when Kino first saw them"""
     out, ids = {}, []
     for a, c in home_catalogs():
-        if not supports(a["m"], "stream") or c.get("type") not in ("movie", "series"):
+        if c.get("type") not in ("movie", "series"):
             continue
         for m in (cached_catalog(a, c) or [])[:60]:
             mid = isinstance(m, dict) and m.get("id")
@@ -1380,34 +1550,58 @@ def addon_shelves(summ, kids=False):
     return out
 
 
+def name_score(q, name):
+    """How well a title name matches what was typed, exact beats starts with beats contains"""
+    n, q = norm(name), norm(q)
+    if not n or not q:
+        return 0
+    if n == q or n == "the " + q:
+        return 100
+    if n.startswith(q):
+        return 70 - min(20, len(n) - len(q)) / 2
+    if f" {q}" in f" {n}":
+        return 50
+    if q in n:
+        return 35
+    words = q.split()
+    if all(w in n for w in words):
+        return 25
+    return 0
+
+
+def people_of(m):
+    d = m.get("director")
+    return list(m.get("cast") or []), [d] if isinstance(d, str) else list(d or [])
+
+
 @app.get("/api/search")
 async def search(q: str, p=Depends(current_profile)):
     q = norm(q)[:60]
     if not q:
-        return {"titles": [], "episodes": []}
-    words = q.split()
+        return {"titles": [], "episodes": [], "people": []}
     summ, wm, rm = all_summaries(p["id"])
-    scored = []
+    scored, people = [], {}
     for s in summ:
-        name = norm(s["name"])
-        sc = 0
-        if name.startswith(q):
-            sc += 100
-        elif q in name:
-            sc += 60
-        elif all(w in name for w in words):
-            sc += 40
+        sc = name_score(q, s["name"])
         m = meta_for(LIB["titles"][s["id"]]) or {}
-        people = norm(" ".join(m.get("cast") or []) + " " + " ".join([m.get("director")] if isinstance(m.get("director"), str) else (m.get("director") or [])))
-        if q in people:
-            sc += 30
+        cast, directors = people_of(m)
+        for role, names in (("Actor", cast), ("Director", directors)):
+            for nm in names:
+                if q in norm(nm) and len(q) >= 3:
+                    pe = people.setdefault(nm, {"name": nm, "role": role, "count": 0, "poster": None})
+                    pe["count"] += 1
+                    pe["poster"] = pe["poster"] or s["poster"]
+                    sc = max(sc, 30)
         if any(q == norm(g) or q in norm(g) for g in s["genres"]):
-            sc += 20
+            sc = max(sc, 20)
         if sc == 0 and len(q) > 3 and q in norm(s.get("description") or ""):
-            sc += 5
+            sc = 5
         if sc:
-            scored.append((sc + imdb_score(s) / 10, s))
+            # Things in the library get a small push over the same match from an addon, ratings break ties
+            scored.append((sc + 8 + imdb_score(s), s))
     scored.sort(key=lambda x: x[0], reverse=True)
+    for sc, s in scored:
+        s["score"] = round(sc, 2)
 
     eps = []
     ok_ids = {s["id"] for s in summ}
@@ -1422,7 +1616,73 @@ async def search(q: str, p=Depends(current_profile)):
             if v and v.get("name") and q in norm(v["name"]):
                 eps.append({"title_id": t["id"], "file_id": fid, "show": m.get("name"), "name": v["name"],
                             "season": f["season"], "episode": f["episode"], "thumbnail": v.get("thumbnail")})
-    return {"titles": [s for _, s in scored[:40]], "episodes": eps[:20]}
+    ppl = sorted(people.values(), key=lambda x: (norm(x["name"]).startswith(q), x["count"]), reverse=True)
+    return {"titles": [s for _, s in scored[:60]], "episodes": eps[:20], "people": ppl[:12]}
+
+
+# ---- voice search for browsers that cant do it themselves (firefox, brave, safari on some macs)
+VOICE = {"model": None, "used": 0, "lock": threading.Lock()}
+
+
+def voice_model():
+    with VOICE["lock"]:
+        if VOICE["model"] is None:
+            from faster_whisper import WhisperModel
+            # The tiny english model, about 75 MB, gets downloaded the first time someone uses voice search
+            VOICE["model"] = WhisperModel("tiny.en", device="cpu", compute_type="int8", cpu_threads=2, download_root=str(DATA_DIR / "whisper"))
+        VOICE["used"] = time.time()
+        return VOICE["model"]
+
+
+def voice_unload():
+    # Gives the memory back after 10 minutes without voice searches
+    if VOICE["model"] is not None and time.time() - VOICE["used"] > 600:
+        with VOICE["lock"]:
+            VOICE["model"] = None
+
+
+def transcribe(raw, hint):
+    import numpy as np
+    pcm = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", "pipe:0", "-t", "15", "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
+                         input=raw, capture_output=True, timeout=30).stdout
+    audio = np.frombuffer(pcm, dtype=np.float32)
+    if len(audio) < 16000 * 0.3:
+        return ""
+    segs, _ = voice_model().transcribe(audio, language="en", beam_size=1, vad_filter=False, initial_prompt=hint or None)
+    return " ".join(s.text for s in segs).strip()
+
+
+@app.post("/api/voice")
+async def voice(request: Request, p=Depends(current_profile)):
+    raw = await request.body()
+    if not raw or len(raw) > 3 * 1024 * 1024:
+        raise HTTPException(400, "That recording was empty or too long")
+    try:
+        import faster_whisper  # noqa: F401
+    except ImportError:
+        raise HTTPException(501, "Voice search isn't installed on the server yet, it gets added on the next update")
+    # Names from the library help it spell titles right, like Red Dwarf instead of red dwarf or read dwarf
+    names = [s["name"] for s in sorted(all_summaries(p["id"])[0], key=lambda s: s["last_activity"] or s["added"], reverse=True)[:40]]
+    try:
+        text = await asyncio.to_thread(transcribe, raw, ", ".join(names))
+    except Exception as e:
+        log.warning("voice search failed: %s", e)
+        raise HTTPException(500, "Voice search didn't work, try again")
+    return {"text": re.sub(r"[.?!]+$", "", text)}
+
+
+@app.get("/api/person")
+async def person(name: str, p=Depends(current_profile)):
+    """Everything in the library with this actor or director in it"""
+    want = norm(name)
+    summ, _, _ = all_summaries(p["id"])
+    out = []
+    for s in summ:
+        cast, directors = people_of(meta_for(LIB["titles"][s["id"]]) or {})
+        if any(norm(n) == want for n in cast + directors):
+            out.append(s)
+    out.sort(key=lambda s: str(s.get("releaseInfo") or ""), reverse=True)
+    return {"name": name, "titles": out}
 
 
 @app.get("/api/search/addons")
@@ -1437,17 +1697,60 @@ async def search_addons(q: str, p=Depends(current_profile)):
             hits = await asyncio.wait_for(addon_search(None, q), timeout=9)
         except asyncio.TimeoutError:
             hits = []
-        seen = set()
+        seen, rank = {}, {}
         for a, c, m in hits:
             mid = m.get("id")
-            if not mid or mid in seen or mid in have:
+            if not mid or mid in have:
                 continue
-            seen.add(mid)
+            # Each addon already lists its results most popular first, so the position counts too
+            pos = rank[(a["id"], c.get("id"), c.get("type"))] = rank.get((a["id"], c.get("id"), c.get("type")), -1) + 1
             item = {**ext_preview(m, c["type"]), "source": a["m"].get("name")}
             if p.get("kids") and not kids_ok(item["genres"], mid):
                 continue
-            external.append(item)
-    return {"external": external[:30]}
+            try:
+                r = float(item["rating"] or 0)
+            except (TypeError, ValueError):
+                r = 0
+            sc = name_score(q, item["name"]) + r * 2.5 - pos * 1.5 + (6 if item["poster"] else 0)
+            if mid in seen:
+                # Found by more than one addon, keeps the best score
+                seen[mid]["score"] = max(seen[mid]["score"], sc)
+                continue
+            item["score"] = round(sc, 2)
+            seen[mid] = item
+        external = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
+        await rank_by_popularity(external[:12])
+        external.sort(key=lambda x: x["score"], reverse=True)
+    return {"external": external[:40]}
+
+
+async def rank_by_popularity(items):
+    """Search catalogs dont say how popular something is, so the best few get there full details looked up (cached for
+    days) and the well known ones move up. Red Dwarf the show beats the unaired 1992 american pilot this way"""
+    todo = [i for i in items if str(i.get("imdb") or "").startswith("tt")]
+    if not todo:
+        return
+    async def one(i):
+        try:
+            return await asyncio.wait_for(meta_lookup(i["kind"], i["imdb"]), timeout=4)
+        except Exception:
+            return None
+    metas = await asyncio.gather(*(one(i) for i in todo))
+    for i, m in zip(todo, metas):
+        if not m or not same_title(i["name"], m.get("name")):
+            i["score"] = round(i["score"] - 6, 2)    # nothing known about it, usually something obscure
+            continue
+        try:
+            r = float(m.get("rating") or 0)
+        except (TypeError, ValueError):
+            r = 0
+        pop = m.get("popularity") or 0
+        try:
+            pop = float(pop)
+        except (TypeError, ValueError):
+            pop = 0
+        i["score"] = round(i["score"] + (0 if i.get("rating") else r * 2.5) + 6 * math.log10(1 + max(0.0, pop)), 2)
+        i["rating"] = i.get("rating") or m.get("rating")
 
 
 @app.get("/api/title/{tid}")
@@ -1558,8 +1861,9 @@ async def file_info(fid: str, request: Request, p=Depends(current_profile)):
         raise HTTPException(500, f"Couldn't read the file: {e}")
     v = pr.get("video") or {}
     a = next((x for x in pr["audio"] if x.get("default")), pr["audio"][0] if pr["audio"] else None)
+    # Dolby Vision files always go through the server so the dolby layer can be taken off, see play_start
     direct = ("mp4" in pr["container"] or "mov" in pr["container"]) and v.get("codec") in ("h264", "hevc") \
-        and (a is None or a.get("codec") in ("aac", "mp3"))
+        and (a is None or a.get("codec") in ("aac", "mp3")) and not v.get("dovi")
     subs = [{"id": s["id"], "label": s["label"], "lang": s["label"], "kind": "file"} for s in f["ext_subs"]]
     for s in pr["subs"]:
         if s["codec"] in TEXT_SUB_CODECS:
@@ -1616,7 +1920,8 @@ async def file_info(fid: str, request: Request, p=Depends(current_profile)):
             "default_audio": a["n"] if a else 0, "direct": direct, "subs": subs, "badges": badges(pr),
             "download": dl, "resume": row[0]["pos"] if row and not row[0]["watched"] else 0,
             "season": f["season"], "episode": f["episode"], "title_id": f["title_id"],
-            "intro": intro, "credits": credits, "next": nxt, "prefs": p["prefs"], "is_admin": bool(admin_user(request))}
+            "intro": intro, "credits": credits, "next": nxt, "prefs": p["prefs"], "is_admin": bool(admin_user(request)),
+            "art": {k: (meta_for(t) or {}).get(k) for k in ("background", "logo", "poster")} if t else {}, "show": (meta_for(t) or {}).get("name") if t else None}
 
 
 MIME = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".mkv": "video/x-matroska",
@@ -1704,13 +2009,26 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
         raise HTTPException(429, "Too many people are watching right now, try again in a minute")
 
     codec = v.get("codec")
+    # The player says if this screen can decode hevc, if it cant a 1080p or smaller file gets converted instead
+    if codec == "hevc" and body.get("hevc") is False and (v.get("height") or 9999) <= 1080:
+        codec = "convert"
+    if codec == "hevc" and body.get("hevc") is False:
+        raise HTTPException(415, "This screen can't play this 4K HEVC file and it's too big to convert here. Try another version, or the app on a newer device")
     if codec in ("h264", "hevc", "av1", "vp9"):
         vargs = ["-c:v", "copy"] + (["-tag:v", "hvc1"] if codec == "hevc" else [])
+        if codec == "hevc" and v.get("dovi"):
+            # Dolby Vision layers come off so screens without it get the normal HDR picture, not colour noise
+            vargs += ["-bsf:v", "filter_units=remove_types=62|63"]
     elif (v.get("height") or 9999) <= 1080:
         # Old codecs like xvid get converted, only up to 1080p cause the vps has no gpu
         vargs = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p"]
     else:
         raise HTTPException(415, f"{codec} video above 1080p can't be converted on this server, use Download instead")
+
+    if t > 0 and vargs[:2] == ["-c:v", "copy"]:
+        # Copied video can only start on a keyframe but the audio starts exactly where you asked, so seeking used to put
+        # the sound a few seconds out. Starting both on the keyframe keeps them together and the player gets the real start
+        t = await keyframe_before(f["path"], t)
 
     sid = secrets.token_hex(8)
     out = HLS_DIR / sid
@@ -1744,6 +2062,26 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
         kill_session(sid)
         raise HTTPException(504, "The Storage Box took too long to respond, try again")
     return {"sid": sid, "url": f"/api/hls/{sid}/index.m3u8", "offset": t}
+
+
+async def keyframe_before(path, t):
+    """The keyframe at or just before t, ffprobe seeks there and reads one packet so its quick even over the network"""
+    try:
+        proc = await asyncio.create_subprocess_exec("ffprobe", "-v", "error", "-select_streams", "v:0", "-read_intervals", f"{t:.3f}%+#1",
+                                                    "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", path,
+                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        for line in out.decode(errors="ignore").splitlines():
+            pts, _, flags = line.partition(",")
+            k = float(pts)
+            if "K" in flags and t - 30 <= k <= t + 0.01:
+                return max(0.0, k)
+    except (asyncio.TimeoutError, ValueError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return t
 
 
 HLS_NAME = re.compile(r"^(index\.m3u8|init\.mp4|seg\d{5}\.m4s)$")
@@ -2150,8 +2488,30 @@ async def meta_lookup(kind, mid):
     return got
 
 
-async def addon_meta(kind, mid):
+def same_title(a, b):
+    wa, wb = set(norm(a).split()) - {"the", "a", "of", "and"}, set(norm(b).split()) - {"the", "a", "of", "and"}
+    return bool(wa & wb) or not wa or not wb
+
+
+def listed_meta(mid, name, kind):
+    """The details an addon catalog or search gave for this id, from whatever is cached"""
+    for _, hit in list(ADDON_CACHE.items()):
+        j = hit[1] if isinstance(hit, tuple) and len(hit) > 1 else None
+        for m in (j.get("metas") or []) if isinstance(j, dict) else []:
+            if isinstance(m, dict) and m.get("id") == mid and same_title(name, m.get("name")):
+                got = slim_meta(m, kind)
+                got["id"] = mid
+                # The image links made from the id would show the wrong title too, so only the addons own ones are used
+                own = lambda u: None if not u or "metahub" in str(u) else https_url(u)
+                got["poster"], got["background"], got["logo"] = own(m.get("poster")), own(m.get("background")), own(m.get("logo"))
+                return got
+    return None
+
+
+async def addon_meta(kind, mid, skip_cinemeta=False):
     for a in addon_rows():
+        if skip_cinemeta and "cinemeta" in str(a["url"]).lower():
+            continue
         if supports(a["m"], "meta", kind, mid):
             try:
                 j = await addon_call(a, "meta", kind, mid, ttl=86400)
@@ -2294,7 +2654,7 @@ async def addons_remove(aid: int, admin=Depends(require_admin)):
 
 
 @app.get("/api/external/{kind}/{mid:path}")
-async def external_title(kind: str, mid: str, stay: int = 0, p=Depends(current_profile)):
+async def external_title(kind: str, mid: str, stay: int = 0, name: str = "", p=Depends(current_profile)):
     if kind not in ("movie", "series"):
         raise HTTPException(404, "Unknown type")
     for t in ([] if stay else LIB["titles"].values()):
@@ -2302,6 +2662,11 @@ async def external_title(kind: str, mid: str, stay: int = 0, p=Depends(current_p
         if m and m.get("id") == mid:
             return {"library_id": t["id"]}
     m = await meta_lookup(kind, mid)
+    if m and name and not same_title(name, m.get("name")):
+        # Some addons list a title under the wrong imdb id (red dwarf usa came up as a twisted sister concert), so
+        # when cinemeta's name has nothing in common with the tile that was clicked the addons own details win
+        log.info("meta for %s is %r but the tile said %r, using the addon's details", mid, m.get("name"), name)
+        m = await addon_meta(kind, mid, skip_cinemeta=True) or listed_meta(mid, name, kind) or m
     if not m:
         raise HTTPException(404, "Couldn't find details for that title")
     if p.get("kids") and not kids_ok(m.get("genres"), mid):
@@ -2559,7 +2924,7 @@ async def stream_file_info(sid, p, request):
               "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
               "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
               "title_id": None, "intro": None, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"],
-              "prefs": p["prefs"], "is_admin": bool(admin_user(request))}
+              "prefs": p["prefs"], "is_admin": bool(admin_user(request)), "art": art_for_id(show_of(r["video_id"]), r["poster"])}
     if r["url"].startswith("torbox:"):
         _, pr = await tb_probe(r)
         a = next((x for x in pr["audio"] if x.get("default")), pr["audio"][0] if pr["audio"] else None)
@@ -2575,7 +2940,16 @@ async def stream_file_info(sid, p, request):
             "download": f"/api/rstream/{sid}?dl=1", "resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
             "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
             "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
-            "title_id": None, "intro": None, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"], "ext": ext, "prefs": p["prefs"], "is_admin": bool(admin_user(request))}
+            "title_id": None, "intro": None, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"], "ext": ext, "prefs": p["prefs"], "is_admin": bool(admin_user(request)),
+            "art": common["art"]}
+
+
+def art_for_id(mid, poster=None):
+    # Pictures for the loading screen
+    mid = str(mid or "")
+    if mid.startswith("tt"):
+        return {"background": f"https://images.metahub.space/background/medium/{mid}/img", "logo": f"https://images.metahub.space/logo/medium/{mid}/img", "poster": poster}
+    return {"background": None, "logo": None, "poster": poster}
 
 
 async def tb_open(url, headers):

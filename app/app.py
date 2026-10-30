@@ -4596,20 +4596,22 @@ async def ext_play(fid: str, name: str, request: Request):
     return range_response(file_or_404(fid)["path"], request)
 
 
-GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light"><meta name="robots" content="noindex, nofollow"><title>Kino</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml"><link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png"><link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="stylesheet" href="/static/app.css?v=__V__"></head><body class="gate-body"><main class="gate" id="gate">
-<div class="gate-card glass-card"><div class="gate-ic"></div><h1>This Device Isn't Allowed Yet</h1>
+<div class="gate-card glass-card"><div class="gate-mark">__WORDMARK__</div><h1>This Device Isn't Allowed Yet</h1>
 <p class="secondary">Kino only opens on your family's networks or on devices the admin has approved. Ask for access and give the admin this code.</p>
 <div class="gate-code" id="gateCode">···-···</div>
 <form id="gateForm" class="gate-form"><input id="gateName" maxlength="40" placeholder="Name this device, like Mum's iPad" required>
 <button class="btn primary" type="submit">Ask for Access</button></form>
 <p class="note" id="gateMsg"></p></div></main><script src="/static/gate.js?v=__V__"></script></body></html>"""
+GATE_WORDMARK = (Path(__file__).with_name("static") / "wordmark.svg").read_text()
 
 
 @app.get("/gate")
 async def gate_page():
-    return Response(GATE_HTML.replace("__V__", STATIC_VERSION["v"]), media_type="text/html", headers={"Cache-Control": "no-store"})
+    return Response(GATE_HTML.replace("__V__", STATIC_VERSION["v"]).replace("__WORDMARK__", GATE_WORDMARK), media_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/gate/status")

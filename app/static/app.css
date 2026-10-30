@@ -986,13 +986,36 @@ body.with-side .hero-dots { left: auto; }
 .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 
 /* ---- gate page for devices that aren't allowed */
-.gate-body { min-height: 100vh; display: grid; place-items: center; padding: 20px; background: radial-gradient(120% 80% at 50% 0%, var(--bg-3), var(--page-bg)); }
-.gate-card { width: min(460px, 100%); text-align: center; padding: 36px 28px 28px; border-radius: 32px; background: var(--bg-2); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35), inset 0 1px 0 var(--glass-hi); animation: sheetIn 0.6s var(--spring); }
+.gate-body { min-height: 100vh; min-height: 100dvh; display: flex; padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); background: radial-gradient(120% 80% at 50% 0%, var(--bg-3), var(--page-bg)); }
+/* the main wrapper fills the screen and the card is centred in it, auto margins keep it centred and still let a short screen scroll */
+.gate { flex: 1; display: flex; width: 100%; }
+.gate-card { width: min(460px, 100%); margin: auto; text-align: center; padding: 36px 28px 28px; border-radius: 32px; background: var(--bg-2); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35), inset 0 1px 0 var(--glass-hi); animation: sheetIn 0.6s var(--spring); }
 .gate-card h1 { font-size: 26px; margin: 0 0 10px; letter-spacing: -0.02em; }
-.gate-ic { width: 64px; height: 64px; margin: 0 auto 18px; border-radius: 18px; background: linear-gradient(145deg, #ff6b6b, #f9a03f); }
+.gate-mark { display: flex; justify-content: center; margin: 0 auto 22px; color: var(--label); }
+.gate-mark .wordmark { height: 34px; width: auto; display: block; }
 .gate-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 34px; font-weight: 700; letter-spacing: 0.12em; margin: 22px 0; padding: 14px; border-radius: 18px; background: var(--fill); }
-.gate-form { display: grid; gap: 10px; }
-.gate-form input { height: 50px; border-radius: 14px; border: 0; background: var(--fill); padding: 0 16px; font-size: 16px; color: var(--label); outline: none; }
+.gate-form { display: flex; flex-direction: column; gap: 16px; }
+.gate-form input { height: 50px; width: 100%; box-sizing: border-box; border-radius: 14px; border: 0; background: var(--fill); padding: 0 16px; font-size: 16px; color: var(--label); outline: none; }
+.gate-form .btn { width: 100%; margin: 0; }
+.gate-card .note { margin: 16px 0 0; min-height: 1.2em; }
+/* short screens (a tv, a phone held sideways) get a tighter card so it fits without scrolling */
+@media (max-height: 600px) {
+  .gate-card { padding: 20px 24px 18px; border-radius: 26px; }
+  .gate-mark { margin-bottom: 12px; } .gate-mark .wordmark { height: 24px; }
+  .gate-card h1 { font-size: 21px; margin-bottom: 6px; }
+  .gate-card p.secondary { font-size: 14px; margin: 0; }
+  .gate-code { font-size: 26px; margin: 12px 0; padding: 8px; }
+  .gate-form { gap: 12px; } .gate-form input { height: 44px; }
+  .gate-card .note { margin-top: 10px; }
+}
+@media (max-height: 430px) {
+  .gate-body { padding-top: 12px; padding-bottom: 12px; }
+  .gate-card { padding: 14px 22px 14px; }
+  .gate-mark .wordmark { height: 20px; }
+  .gate-code { font-size: 22px; margin: 8px 0; padding: 6px; }
+  .gate-form { gap: 10px; } .gate-form input { height: 40px; } .gate-form .btn { height: 40px; }
+}
+body.tv .gate-form .btn:focus-visible, body.tv .gate-form input:focus-visible { outline: 3px solid var(--label); outline-offset: 2px; }
 
 /* ---- tablets: same rail, a touch tighter */
 @media (max-width: 1100px) and (min-width: 761px) {

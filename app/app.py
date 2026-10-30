@@ -82,7 +82,7 @@ KIND_DIRS = {"torrents", "webdl", "usenet"}
 IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.space",
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
-AVATAR_COUNT = 18  # Has to match the AVATARS list in app.js
+AVATAR_COUNT = 36  # Has to match the AVATARS list in app.js
 DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -195,6 +195,10 @@ def migrate():
         d.q("ALTER TABLE profiles ADD COLUMN pin TEXT")        # scrypt hash of the 4 digit code, nobody can read it back
     if "pending" not in cols:
         d.q("ALTER TABLE profiles ADD COLUMN pending INTEGER DEFAULT 0")  # asked for by someone, waiting for the admin
+    for c in ("folder", "members", "image"):
+        # folder groups profiles on the picker, members makes it a joint profile ([a, b]), image is a picture icon
+        if c not in cols:
+            d.q(f"ALTER TABLE profiles ADD COLUMN {c} TEXT")
     ecols = [r["name"] for r in d.q("PRAGMA table_info(embed_sources)")]
     for c in ("items", "title_key", "image_key"):
         if c not in ecols:
@@ -389,13 +393,45 @@ def require_admin(request: Request):
     return u
 
 
+def members_of(r):
+    try:
+        m = json.loads(r["members"] or "[]")
+    except Exception:
+        m = []
+    return [int(x) for x in m if str(x).isdigit()] if isinstance(m, list) else []
+
+
+def prof_public(r, rows=None):
+    """What anyone can see about a profile, joint ones get there members icons so they can be drawn overlapping"""
+    ms = members_of(r)
+    out = {"id": r["id"], "name": r["name"], "icon": r["icon"], "image": r["image"] or "", "folder": r["folder"] or "",
+           "kids": bool(r["kids"]), "locked": bool(r["pin"])}
+    if ms:
+        by = {x["id"]: x for x in (rows or db().q("SELECT * FROM profiles WHERE id IN (%s)" % ",".join("?" * len(ms)), ms))}
+        mem = [by[m] for m in ms if m in by]
+        out["members"] = [{"id": m["id"], "name": m["name"], "icon": m["icon"], "image": m["image"] or ""} for m in mem]
+        # A joint profile is locked when either person locked theirs, and either of there codes opens it
+        out["locked"] = any(m["pin"] for m in mem)
+    return out
+
+
 def profile_row(pid):
-    rows = db().q("SELECT id, name, icon, prefs, kids, pin, pending FROM profiles WHERE id = ?", (pid,))
+    rows = db().q("SELECT * FROM profiles WHERE id = ?", (pid,))
     if not rows or rows[0]["pending"]:
         return None
     r = rows[0]
     prefs = {**DEFAULT_PREFS, **(json.loads(r["prefs"] or "{}"))}
-    return {"id": r["id"], "name": r["name"], "icon": r["icon"], "prefs": prefs, "kids": bool(r["kids"]), "locked": bool(r["pin"])}
+    return {**prof_public(r), "prefs": prefs}
+
+
+def group_ids(pid):
+    """The profile plus, for a joint one, the two people in it. Reads merge all of them"""
+    r = db().q("SELECT members FROM profiles WHERE id = ?", (pid,))
+    return [pid] + [m for m in (members_of(r[0]) if r else []) if m != pid]
+
+
+def ids_sql(ids):
+    return ",".join("?" * len(ids))
 
 
 def profile_cookie(pid, request):
@@ -1203,8 +1239,9 @@ def history_item(r):
 
 @app.get("/api/history")
 async def history(before: float = 0, p=Depends(current_profile)):
-    rows = db().q("SELECT file_id, pos, dur, watched, updated FROM watch WHERE profile_id = ? AND (? = 0 OR updated < ?) "
-                  "ORDER BY updated DESC LIMIT 80", (p["id"], before, before))
+    ids = group_ids(p["id"])
+    rows = db().q(f"SELECT file_id, pos, dur, watched, MAX(updated) AS updated FROM watch WHERE profile_id IN ({ids_sql(ids)}) "
+                  "AND (? = 0 OR updated < ?) GROUP BY file_id ORDER BY updated DESC LIMIT 80", (*ids, before, before))
     items = []
     for r in rows:
         it = history_item(r)
@@ -1219,9 +1256,11 @@ async def history(before: float = 0, p=Depends(current_profile)):
 @app.delete("/api/history")
 async def history_remove(file_id: str = "", p=Depends(current_profile)):
     # Taking something out of history also takes away its progress and watched tick
+    ids = group_ids(p["id"])
     if file_id:
-        db().q("DELETE FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], file_id))
+        db().q(f"DELETE FROM watch WHERE profile_id IN ({ids_sql(ids)}) AND file_id = ?", (*ids, file_id))
     else:
+        # Clearing all of it on a joint profile only clears what was watched together, not each persons own history
         db().q("DELETE FROM watch WHERE profile_id = ?", (p["id"],))
         db().q("DELETE FROM cont_hidden WHERE profile_id = ?", (p["id"],))
     return {"ok": True}
@@ -1248,12 +1287,31 @@ async def me(request: Request):
 
 @app.get("/api/profiles")
 async def profiles(request: Request):
-    rows = db().q("SELECT id, name, icon, kids, pin, pending FROM profiles ORDER BY id")
-    out = {"profiles": [{"id": r["id"], "name": r["name"], "icon": r["icon"], "kids": bool(r["kids"]), "locked": bool(r["pin"])}
-                        for r in rows if not r["pending"]], "admin": admin_user(request)}
+    rows = db().q("SELECT * FROM profiles ORDER BY id")
+    live = [r for r in rows if not r["pending"]]
+    out = {"profiles": [prof_public(r, live) for r in live], "admin": admin_user(request)}
+    out["folders"] = sorted({r["folder"] for r in live if r["folder"]}, key=str.lower)
     if admin_user(request):
-        out["pending"] = [{"id": r["id"], "name": r["name"], "icon": r["icon"]} for r in rows if r["pending"]]
+        out["pending"] = [prof_public(r, live) for r in rows if r["pending"]]
     return out
+
+
+def pin_ok(pid, code):
+    """Checks a code against a profile, for a joint one either persons code works"""
+    r = db().q("SELECT pin, members FROM profiles WHERE id = ?", (pid,))
+    if not r:
+        return False
+    ids = members_of(r[0])
+    hashes = [x["pin"] for x in db().q(f"SELECT pin FROM profiles WHERE id IN ({ids_sql(ids)})", ids)] if ids else [r[0]["pin"]]
+    return any(h and check_pw(code, h) for h in hashes)
+
+
+def pin_guard(request):
+    ip = client_ip(request)
+    tries = [t for t in PIN_TRIES.get(ip, []) if time.time() - t < 300]
+    if len(tries) >= 8:
+        raise HTTPException(429, "Too many wrong codes, wait a few minutes and try again")
+    return ip, tries
 
 
 @app.post("/api/profiles/{pid}/select")
@@ -1266,15 +1324,11 @@ async def profile_select(pid: int, request: Request):
             b = await request.json()
         except Exception:
             b = {}
-        ip = client_ip(request)
-        tries = [t for t in PIN_TRIES.get(ip, []) if time.time() - t < 300]
-        if len(tries) >= 8:
-            raise HTTPException(429, "Too many wrong codes, wait a few minutes and try again")
-        row = db().q("SELECT pin FROM profiles WHERE id = ?", (pid,))
+        ip, tries = pin_guard(request)
         code = str(b.get("pin") or "")
         if not code:
             raise HTTPException(401, "This profile is locked")
-        if not re.fullmatch(r"\d{4}", code) or not check_pw(code, row[0]["pin"]):
+        if not re.fullmatch(r"\d{4}", code) or not pin_ok(pid, code):
             PIN_TRIES[ip] = tries + [time.time()]
             raise HTTPException(403, "That code isn't right")
         PIN_TRIES.pop(ip, None)
@@ -1290,6 +1344,8 @@ PIN_TRIES = {}
 async def profile_pin(request: Request, p=Depends(current_profile)):
     """Sets, changes or removes this profile's 4 digit code. Changing or removing it needs the old one"""
     b = await request.json()
+    if p.get("members"):
+        raise HTTPException(400, "A joint profile uses the codes of the people in it, change those instead")
     new, old = str(b.get("pin") or ""), str(b.get("old") or "")
     row = db().q("SELECT pin FROM profiles WHERE id = ?", (p["id"],))
     if row[0]["pin"] and not (re.fullmatch(r"\d{4}", old) and check_pw(old, row[0]["pin"])):
@@ -1314,10 +1370,11 @@ async def profile_request(request: Request):
     b = await request.json()
     if db().q("SELECT COUNT(*) AS n FROM profiles WHERE pending = 1")[0]["n"] >= 5:
         raise HTTPException(429, "There are already a few profiles waiting, ask the admin to look at them")
-    if db().q("SELECT COUNT(*) AS n FROM profiles")[0]["n"] >= 12:
+    if db().q("SELECT COUNT(*) AS n FROM profiles WHERE members IS NULL OR members = ''")[0]["n"] >= 12:
         raise HTTPException(400, "Kino already has the maximum of 12 profiles")
-    db().q("INSERT INTO profiles (name, icon, prefs, created, kids, pending) VALUES (?,?,?,?,?,?)",
-           (clean_name(b.get("name")), clean_icon(b.get("icon", 0)), json.dumps(DEFAULT_PREFS), time.time(), 0, 1))
+    db().q("INSERT INTO profiles (name, icon, prefs, created, kids, pending, image, folder) VALUES (?,?,?,?,?,?,?,?)",
+           (clean_name(b.get("name")), clean_icon(b.get("icon", 0)), json.dumps(DEFAULT_PREFS), time.time(), 0, 1,
+            clean_image(b.get("image")), clean_folder(b.get("folder"))))
     log.info("kino profile requested from %s", client_ip(request))
     return {"ok": True}
 
@@ -1335,6 +1392,31 @@ def clean_name(n):
     return n
 
 
+def clean_folder(f):
+    return re.sub(r"\s+", " ", str(f or "")).strip()[:24]
+
+
+# Picture icons can only come from the places the icon search uses, so a profile cant be pointed at some random url
+AV_IMG_HOSTS = {"m.media-amazon.com", "images.metahub.space", "i.imgflip.com"}
+SI_VER = "16.36.0"  # simple-icons, the brand logos. Pinned so the list and the icons always match
+
+
+def clean_image(v):
+    v = str(v or "").strip()
+    if not v:
+        return ""
+    kind, _, rest = v.partition("|")
+    if kind == "img":
+        u = urlparse(rest)
+        if u.scheme == "https" and u.hostname in AV_IMG_HOSTS and len(rest) < 500:
+            return v
+    elif kind == "logo":
+        slug, _, hx = rest.partition("|")
+        if re.fullmatch(r"[a-z0-9_-]{1,60}", slug) and re.fullmatch(r"[0-9A-Fa-f]{6}", hx):
+            return f"logo|{slug}|{hx.upper()}"
+    raise HTTPException(400, "That picture can't be used as an icon")
+
+
 def clean_icon(i):
     try:
         i = int(i)
@@ -1350,6 +1432,8 @@ async def profile_update(request: Request, p=Depends(current_profile)):
     b = await request.json()
     name = clean_name(b.get("name", p["name"]))
     icon = clean_icon(b.get("icon", p["icon"]))
+    image = clean_image(b.get("image", p.get("image")))
+    folder = clean_folder(b.get("folder", p.get("folder")))
     prefs = dict(p["prefs"])
     for k, v in (b.get("prefs") or {}).items():
         if k in ("audio_lang", "sub_lang"):
@@ -1361,17 +1445,18 @@ async def profile_update(request: Request, p=Depends(current_profile)):
         elif k == "still_watching":
             # Minutes without touching anything before the player asks if anyones still there, 0 is off
             prefs[k] = int(v) if str(v).isdigit() and int(v) in (0, 30, 60, 90, 120, 180, 240) else 0
-    db().q("UPDATE profiles SET name = ?, icon = ?, prefs = ? WHERE id = ?", (name, icon, json.dumps(prefs), p["id"]))
+    db().q("UPDATE profiles SET name = ?, icon = ?, prefs = ?, image = ?, folder = ? WHERE id = ?", (name, icon, json.dumps(prefs), image, folder, p["id"]))
     return {"ok": True, "profile": profile_row(p["id"])}
 
 
 @app.post("/api/admin/profiles")
 async def profile_add(request: Request, admin=Depends(require_admin)):
     b = await request.json()
-    if db().q("SELECT COUNT(*) AS n FROM profiles")[0]["n"] >= 12:
+    if db().q("SELECT COUNT(*) AS n FROM profiles WHERE members IS NULL OR members = ''")[0]["n"] >= 12:
         raise HTTPException(400, "That's the maximum of 12 profiles")
-    db().q("INSERT INTO profiles (name, icon, prefs, created, kids) VALUES (?,?,?,?,?)",
-           (clean_name(b.get("name")), clean_icon(b.get("icon", 0)), json.dumps(DEFAULT_PREFS), time.time(), 1 if b.get("kids") else 0))
+    db().q("INSERT INTO profiles (name, icon, prefs, created, kids, image, folder) VALUES (?,?,?,?,?,?,?)",
+           (clean_name(b.get("name")), clean_icon(b.get("icon", 0)), json.dumps(DEFAULT_PREFS), time.time(), 1 if b.get("kids") else 0,
+            clean_image(b.get("image")), clean_folder(b.get("folder"))))
     log.info("kino profile added by %s", admin)
     return {"ok": True}
 
@@ -1382,6 +1467,10 @@ async def profile_admin_edit(pid: int, request: Request, admin=Depends(require_a
     if not profile_row(pid):
         raise HTTPException(404, "That profile doesn't exist")
     db().q("UPDATE profiles SET name = ?, icon = ? WHERE id = ?", (clean_name(b.get("name")), clean_icon(b.get("icon")), pid))
+    if "image" in b:
+        db().q("UPDATE profiles SET image = ? WHERE id = ?", (clean_image(b["image"]), pid))
+    if "folder" in b:
+        db().q("UPDATE profiles SET folder = ? WHERE id = ?", (clean_folder(b["folder"]), pid))
     if "kids" in b:
         db().q("UPDATE profiles SET kids = ? WHERE id = ?", (1 if b["kids"] else 0, pid))
     return {"ok": True}
@@ -1389,13 +1478,193 @@ async def profile_admin_edit(pid: int, request: Request, admin=Depends(require_a
 
 @app.delete("/api/admin/profiles/{pid}")
 async def profile_delete(pid: int, admin=Depends(require_admin)):
-    if db().q("SELECT COUNT(*) AS n FROM profiles WHERE pending = 0")[0]["n"] <= 1 and not db().q("SELECT 1 FROM profiles WHERE id = ? AND pending = 1", (pid,)):
+    if db().q("SELECT COUNT(*) AS n FROM profiles WHERE pending = 0 AND (members IS NULL OR members = '')")[0]["n"] <= 1 and not db().q("SELECT 1 FROM profiles WHERE id = ? AND (pending = 1 OR members LIKE '[%')", (pid,)):
         raise HTTPException(400, "Keep at least one profile")
-    for t in ("watch", "ratings", "mylist"):
-        db().q(f"DELETE FROM {t} WHERE profile_id = ?", (pid,))
-    db().q("DELETE FROM profiles WHERE id = ?", (pid,))
+    # Joint profiles with this person in them go too, the other person keeps everything they watched
+    gone = [pid] + [r["id"] for r in db().q("SELECT id, members FROM profiles") if pid in members_of(r)]
+    for g in gone:
+        drop_profile(g)
     log.info("kino profile %s deleted by %s", pid, admin)
     return {"ok": True}
+
+
+def drop_profile(pid):
+    for t in ("watch", "ratings", "mylist", "cont_hidden", "search_recent", "live_fav"):
+        db().q(f"DELETE FROM {t} WHERE profile_id = ?", (pid,))
+    db().q("DELETE FROM profiles WHERE id = ?", (pid,))
+
+
+@app.put("/api/admin/folders")
+async def folder_rename(request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    old, new = clean_folder(b.get("old")), clean_folder(b.get("new"))
+    if not old:
+        raise HTTPException(400, "Pick a folder to rename")
+    db().q("UPDATE profiles SET folder = ? WHERE folder = ?", (new or None, old))
+    return {"ok": True}
+
+
+# ---- joint profiles
+# Two people watching together get there own profile that sees both there histories, ratings, lists and interests.
+# What they watch on it gets saved to both of them as well, so it shows up on there own profiles too
+
+@app.post("/api/profiles/joint")
+async def joint_create(request: Request):
+    b = await request.json()
+    try:
+        a, c = int(b.get("a")), int(b.get("b"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Pick the two profiles to join")
+    if a == c:
+        raise HTTPException(400, "Pick two different profiles")
+    rows = {r["id"]: r for r in db().q("SELECT * FROM profiles WHERE id IN (?, ?) AND pending = 0", (a, c))}
+    if len(rows) < 2:
+        raise HTTPException(404, "One of those profiles doesn't exist anymore")
+    if any(members_of(r) for r in rows.values()):
+        raise HTTPException(400, "A joint profile can't be joined again, pick the people themselves")
+    for r in db().q("SELECT members FROM profiles"):
+        if sorted(members_of(r)) == sorted([a, c]):
+            raise HTTPException(400, f"{rows[a]['name']} and {rows[c]['name']} already have a joint profile")
+    if db().q("SELECT COUNT(*) AS n FROM profiles WHERE members IS NOT NULL AND members != ''")[0]["n"] >= 12:
+        raise HTTPException(400, "That's the most joint profiles Kino can have, split one first")
+    # Both people have to agree, so a locked profile needs its own code. The admin can skip that
+    if not admin_user(request):
+        ip, tries = pin_guard(request)
+        pins = b.get("pins") or {}
+        for pid in (a, c):
+            if rows[pid]["pin"]:
+                code = str(pins.get(str(pid)) or "")
+                if not re.fullmatch(r"\d{4}", code) or not check_pw(code, rows[pid]["pin"]):
+                    PIN_TRIES[ip] = tries + [time.time()]
+                    raise HTTPException(403, f"{rows[pid]['name']}'s code isn't right")
+        PIN_TRIES.pop(ip, None)
+    name = clean_name(b.get("name") or f"{rows[a]['name']} & {rows[c]['name']}")
+    folder = clean_folder(b.get("folder") if "folder" in b else (rows[a]["folder"] or rows[c]["folder"]))
+    # If either of them is a kids profile the joint one is too, so nothing gets past the kids rules by joining
+    kids = 1 if rows[a]["kids"] or rows[c]["kids"] else 0
+    prefs = {**DEFAULT_PREFS, **json.loads(rows[a]["prefs"] or "{}")}
+    prefs.pop("interests", None), prefs.pop("dismissed", None), prefs.pop("reset_at", None)
+    mem = json.dumps([a, c])
+    db().q("INSERT INTO profiles (name, icon, prefs, created, kids, folder, members) VALUES (?,?,?,?,?,?,?)",
+           (name, rows[a]["icon"], json.dumps(prefs), time.time(), kids, folder or None, mem))
+    jid = db().q("SELECT id FROM profiles WHERE members = ? ORDER BY id DESC LIMIT 1", (mem,))[0]["id"]
+    log.info("kino joint profile %s made from %s and %s", jid, a, c)
+    resp = JSONResponse({"ok": True, "profile": profile_row(jid)})
+    set_cookie(resp, "kino_profile", profile_cookie(jid, request), 365 * 86400)
+    return resp
+
+
+@app.post("/api/profiles/{pid}/check-pin")
+async def profile_check_pin(pid: int, request: Request):
+    """Checks someones code without switching to there profile, used when two people join there profiles"""
+    b = await request.json()
+    ip, tries = pin_guard(request)
+    code = str(b.get("pin") or "")
+    if not re.fullmatch(r"\d{4}", code) or not pin_ok(pid, code):
+        PIN_TRIES[ip] = tries + [time.time()]
+        raise HTTPException(403, "That code isn't right")
+    return {"ok": True}
+
+
+@app.post("/api/profiles/{jid}/split")
+async def joint_split(jid: int, request: Request):
+    """Ends a joint profile. Each persons own history stays as it is, the joint ones list and ratings go"""
+    r = db().q("SELECT * FROM profiles WHERE id = ?", (jid,))
+    if not r or not members_of(r[0]):
+        raise HTTPException(404, "That isn't a joint profile")
+    try:
+        b = await request.json()
+    except Exception:
+        b = {}
+    if not admin_user(request) and prof_public(r[0])["locked"]:
+        ip, tries = pin_guard(request)
+        code = str(b.get("pin") or "")
+        if not re.fullmatch(r"\d{4}", code) or not pin_ok(jid, code):
+            PIN_TRIES[ip] = tries + [time.time()]
+            raise HTTPException(403, "That code isn't right")
+        PIN_TRIES.pop(ip, None)
+    drop_profile(jid)
+    log.info("kino joint profile %s split", jid)
+    return {"ok": True}
+
+
+# ---- picture icons: posters, memes and brand logos, searched here so the browser never talks to those sites itself
+
+AV_SRC = {}  # name -> (time, data)
+
+
+async def av_json(name, url, ttl=86400):
+    hit = AV_SRC.get(name)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    f = DATA_DIR / f"av-{name}.json"
+    if f.exists() and time.time() - f.stat().st_mtime < ttl:
+        data = read_json(str(f))
+    else:
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=15, headers={"User-Agent": "kino-dashboard"}) as c:
+                r = await c.get(url)
+            r.raise_for_status()
+            data = r.json()
+            f.write_text(json.dumps(data))
+        except Exception as e:
+            log.warning("kino icon source %s failed: %s", name, e)
+            data = read_json(str(f)) if f.exists() else None
+    AV_SRC[name] = (time.time(), data)
+    return data
+
+
+POPULAR_LOGOS = ["netflix", "spotify", "apple", "google", "youtube", "playstation", "xbox", "nintendo", "steam", "twitch",
+                 "discord", "tesla", "nike", "adidas", "lego", "starbucks", "mcdonalds", "bmw", "ferrari", "porsche", "f1",
+                 "premierleague", "github", "reddit", "tiktok", "instagram", "snapchat", "whatsapp", "android", "linux",
+                 "firefox", "airbnb", "uber", "dropbox", "bbciplayer", "hbo", "paramountplus", "crunchyroll", "plex", "kodi"]
+
+
+def light_hex(hx):
+    r, g, b = (int(hx[i:i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b > 165
+
+
+@app.get("/api/avatars/search")
+async def avatar_search(src: str, q: str = ""):
+    q = re.sub(r"\s+", " ", q).strip()[:60]
+    nq = norm(q)
+    out = []
+    if OFFLINE_META:
+        return {"items": []}
+    if src == "movies":
+        async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers={"User-Agent": "kino-dashboard"}) as c:
+            urls = [f"{CINEMETA}/catalog/{k}/top/search={quote(q)}.json" for k in ("movie", "series")] if q \
+                else [f"{CINEMETA}/catalog/{k}/top.json" for k in ("movie", "series")]
+            res = await asyncio.gather(*[c.get(u) for u in urls], return_exceptions=True)
+        lists = [(r.json().get("metas") or []) if not isinstance(r, Exception) and r.status_code == 200 else [] for r in res]
+        # Movies and shows mixed together, best matches of each first
+        for pair in itertools.zip_longest(*lists):
+            for m in pair:
+                if m and m.get("poster") and urlparse(m["poster"]).hostname in AV_IMG_HOSTS:
+                    out.append({"name": m.get("name") or "", "image": "img|" + m["poster"]})
+    elif src == "memes":
+        d = await av_json("memes", "https://api.imgflip.com/get_memes") or {}
+        for m in (d.get("data") or {}).get("memes") or []:
+            if (not nq or nq in norm(m.get("name", ""))) and str(m.get("url", "")).startswith("https://i.imgflip.com/"):
+                out.append({"name": m["name"], "image": "img|" + m["url"]})
+    elif src == "logos":
+        d = await av_json("logos", f"https://cdn.jsdelivr.net/npm/simple-icons@{SI_VER}/data/simple-icons.json", ttl=30 * 86400) or []
+        icons = d if isinstance(d, list) else d.get("icons") or []
+        by_slug = {i.get("slug"): i for i in icons if i.get("slug")}
+        if not nq:
+            pick = [by_slug[s] for s in POPULAR_LOGOS if s in by_slug]
+        else:
+            def score(i):
+                t, names = norm(i.get("title", "")), [norm(a) for a in ((i.get("aliases") or {}).get("aka") or [])]
+                return 0 if t == nq or nq in names else 1 if t.startswith(nq) else 2 if nq in t or any(nq in a for a in names) else 9
+            pick = sorted((i for i in icons if score(i) < 9), key=lambda i: (score(i), len(i.get("title", ""))))
+        for i in pick:
+            if re.fullmatch(r"[0-9A-Fa-f]{6}", i.get("hex") or "") and re.fullmatch(r"[a-z0-9_-]{1,60}", i["slug"]):
+                out.append({"name": i.get("title") or i["slug"], "image": f"logo|{i['slug']}|{i['hex'].upper()}"})
+    else:
+        raise HTTPException(400, "Unknown icon source")
+    return {"items": out[:48], "logo_base": f"https://cdn.jsdelivr.net/npm/simple-icons@{SI_VER}/icons/"}
 
 
 @app.post("/api/admin/login")
@@ -1444,11 +1713,34 @@ def meta_for(t):
 
 
 def watch_map(pid):
-    return {r["file_id"]: dict(r) for r in db().q("SELECT file_id, pos, dur, watched, updated FROM watch WHERE profile_id = ?", (pid,))}
+    ids = group_ids(pid)
+    out = {}
+    # For a joint profile the newest progress of any of them wins, and something counts as watched if anyone watched it
+    for r in db().q(f"SELECT file_id, pos, dur, watched, updated FROM watch WHERE profile_id IN ({ids_sql(ids)}) ORDER BY updated", ids):
+        old = out.get(r["file_id"])
+        out[r["file_id"]] = {**dict(r), "watched": max(r["watched"] or 0, (old or {}).get("watched") or 0)}
+    return out
 
 
 def rating_map(pid):
-    return {r["title_id"]: r["value"] for r in db().q("SELECT title_id, value FROM ratings WHERE profile_id = ?", (pid,))}
+    ids = group_ids(pid)
+    out = {}
+    # The joint profiles own rating goes first, then the members ones
+    for r in db().q(f"SELECT profile_id, title_id, value FROM ratings WHERE profile_id IN ({ids_sql(ids)})", ids):
+        if r["profile_id"] == pid or r["title_id"] not in out:
+            out[r["title_id"]] = r["value"]
+    return out
+
+
+def watch_row(pid, fid, cols="pos, dur, watched"):
+    ids = group_ids(pid)
+    return db().q(f"SELECT {cols} FROM watch WHERE profile_id IN ({ids_sql(ids)}) AND file_id = ? ORDER BY updated DESC LIMIT 1", (*ids, fid))
+
+
+def put_watch(pid, fid, pos, dur, done, now=None):
+    # Watching on a joint profile counts for both people in it
+    for i in group_ids(pid):
+        db().q("INSERT OR REPLACE INTO watch VALUES (?,?,?,?,?,?)", (i, fid, pos, dur, done, now or time.time()))
 
 
 def title_summary(t, meta, wm=None, rm=None):
@@ -1628,6 +1920,20 @@ def prof_prefs(pid):
     return json.loads(r[0]["prefs"] or "{}") if r else {}
 
 
+def group_interests(pid, pr=None):
+    """Interests of the profile, and for a joint one the members ones too"""
+    own = pr or prof_prefs(pid)
+    out, have = [], {norm(x) for x in own.get("dismissed", [])}
+    for i, gid in enumerate(group_ids(pid)):
+        for x in (own if i == 0 else prof_prefs(gid)).get("interests", []):
+            if i == 0:
+                have.discard(norm(x["name"]))
+            if norm(x["name"]) not in have:
+                have.add(norm(x["name"]))
+                out.append(x)
+    return out
+
+
 def save_prefs(pid, pr):
     db().q("UPDATE profiles SET prefs = ? WHERE id = ?", (json.dumps(pr), pid))
 
@@ -1717,7 +2023,7 @@ async def interests_get(p=Depends(current_profile)):
     summ, _, _ = all_summaries(p["id"])
     pick_up_interests(p, summ)
     pr = prof_prefs(p["id"])
-    mine = pr.get("interests", [])
+    mine = group_interests(p["id"], pr)
     have = {norm(i["name"]) for i in mine}
     gs = sorted(lib_genres(summ).items(), key=lambda x: -x[1])
     ppl = sorted(lib_people().items(), key=lambda x: -x[1])
@@ -1750,7 +2056,8 @@ async def interests_remove(name: str, p=Depends(current_profile)):
     pr = prof_prefs(p["id"])
     gone = [i for i in pr.get("interests", []) if norm(i["name"]) == norm(name)]
     pr["interests"] = [i for i in pr.get("interests", []) if norm(i["name"]) != norm(name)]
-    if any(i.get("auto") for i in gone):
+    if any(i.get("auto") for i in gone) or not gone:
+        # not gone means it came from someone in a joint profile, so it only stops counting here
         # Picked up on its own, so it isnt picked up again
         pr.setdefault("dismissed", []).append(name)
     save_prefs(p["id"], pr)
@@ -1771,9 +2078,10 @@ async def home(request: Request, p=Depends(current_profile)):
     now = time.time()
     pick_up_interests(p, summ)
     pr = prof_prefs(p["id"])
-    ints = pr.get("interests", [])
+    ints = group_interests(p["id"], pr)
     since = pr.get("reset_at") or 0
-    rated_at = {r["title_id"]: r["updated"] for r in db().q("SELECT title_id, updated FROM ratings WHERE profile_id = ?", (p["id"],))} if since else {}
+    gid = group_ids(p["id"])
+    rated_at = {r["title_id"]: r["updated"] for r in db().q(f"SELECT title_id, MAX(updated) AS updated FROM ratings WHERE profile_id IN ({ids_sql(gid)}) GROUP BY title_id", gid)} if since else {}
     weights = genre_weights(summ, since, rated_at)
     has_signal = any(v > 0 for v in weights.values()) or bool(ints)
     visible = [s for s in summ if s["my_rating"] != -1]
@@ -2065,7 +2373,7 @@ def family_liked(p, summ):
     by_id = {s["id"]: s for s in summ}
     votes = {}
     rows = db().q("SELECT r.title_id, r.value, r.updated, pr.name FROM ratings r JOIN profiles pr ON pr.id = r.profile_id "
-                  "WHERE r.profile_id != ? AND r.value > 0 AND pr.pending = 0", (p["id"],))
+                  f"WHERE r.profile_id NOT IN ({ids_sql(group_ids(p['id']))}) AND r.value > 0 AND pr.pending = 0", group_ids(p["id"]))
     for r in rows:
         if r["title_id"] not in by_id or by_id[r["title_id"]]["my_rating"] == -1:
             continue
@@ -2429,13 +2737,14 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
 
 def set_watched(pid, fids, watched):
     now = time.time()
+    ids = group_ids(pid)
     for fid in fids:
         if watched:
-            row = db().q("SELECT dur FROM watch WHERE profile_id = ? AND file_id = ?", (pid, fid))
-            dur = row[0]["dur"] if row else 0
-            db().q("INSERT OR REPLACE INTO watch VALUES (?,?,?,?,?,?)", (pid, fid, dur, dur, 1, now))
+            row = db().q(f"SELECT MAX(dur) AS dur FROM watch WHERE profile_id IN ({ids_sql(ids)}) AND file_id = ?", (*ids, fid))
+            dur = (row[0]["dur"] if row else 0) or 0
+            put_watch(pid, fid, dur, dur, 1, now)
         else:
-            db().q("DELETE FROM watch WHERE profile_id = ? AND file_id = ?", (pid, fid))
+            db().q(f"DELETE FROM watch WHERE profile_id IN ({ids_sql(ids)}) AND file_id = ?", (*ids, fid))
 
 
 @app.post("/api/watched")
@@ -2555,7 +2864,7 @@ async def file_info(fid: str, request: Request, p=Depends(current_profile)):
     exp = int(time.time()) + 6 * 3600
     owner = f"p{p['id']}"
     dl = f"/api/dl/{fid}?u={owner}&exp={exp}&sig={sign(fid, owner, exp)}"
-    row = db().q("SELECT pos, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], fid))
+    row = watch_row(p["id"], fid, "pos, watched")
     return {"id": fid, "name": f["name"], "size": f["size"], "duration": pr["duration"], "video": v,
             "audio": [{"n": x["n"], "lang": lang_name(x["lang"]) if x.get("lang") else "",
                        "label": " ".join(str(y) for y in (x.get("title") or lang_name(x.get("lang")),
@@ -2861,7 +3170,7 @@ async def progress(request: Request, p=Depends(current_profile)):
         # Played for a minute, so this source works and goes first next time
         db().q("INSERT INTO stream_health (id, good, bad) VALUES (?, ?, 0) ON CONFLICT(id) DO UPDATE SET good = excluded.good", (fid, time.time()))
     done = 1 if dur and pos / dur > 0.93 else 0
-    db().q("INSERT OR REPLACE INTO watch VALUES (?,?,?,?,?,?)", (p["id"], fid, pos, dur, done, time.time()))
+    put_watch(p["id"], fid, pos, dur, done)
     return {"ok": True}
 
 
@@ -3740,7 +4049,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         db().q("INSERT OR REPLACE INTO streams VALUES (?,?,?,?,?,?,?,?,?,?)",
                (sid, url, kind, vid, meta.get("name") or vid, f["name"][:200], "TorBox", meta.get("poster"),
                 str(meta.get("releaseInfo") or "")[:4], time.time()))
-        w = db().q("SELECT pos, dur, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
+        w = watch_row(p["id"], sid, "pos, dur, watched")
         facts = stream_facts({"behaviorHints": {"videoSize": f["size"]}}, "https://x/" + quote(f["name"]), f["name"])
         out.append({"id": sid, **facts, "plays": True, "torbox": True, "addon": "TorBox",
                     "progress": dict(w[0]) if w else None, "_url": url})
@@ -3770,7 +4079,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
             db().q("INSERT OR REPLACE INTO streams VALUES (?,?,?,?,?,?,?,?,?,?)",
                    (sid, url, kind, vid, meta.get("name") or vid, label[:200], a["m"].get("name"), meta.get("poster"),
                     str(meta.get("releaseInfo") or "")[:4], time.time()))
-            w = db().q("SELECT pos, dur, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
+            w = watch_row(p["id"], sid, "pos, dur, watched")
             out.append({"id": sid, **stream_facts(st, url, label), "addon": a["m"].get("name"),
                         "progress": dict(w[0]) if w else None, "_url": url})
     # TorBox copies first, then a source that played fine before, then ones not tried yet, and ones that failed last.
@@ -3878,7 +4187,7 @@ async def stream_file_info(sid, p, request):
         m = show if cur else await meta_lookup(r["kind"], show_of(r["video_id"]))
         if not kids_ok((m or {}).get("genres"), show_of(r["video_id"])):
             raise HTTPException(404, "That title isn't available on this profile")
-    w = db().q("SELECT pos, watched FROM watch WHERE profile_id = ? AND file_id = ?", (p["id"], sid))
+    w = watch_row(p["id"], sid, "pos, watched")
     common = {"resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
               "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
               "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
@@ -4064,7 +4373,8 @@ def list_key_for(t, meta):
 
 
 def in_list(pid, key):
-    return bool(db().q("SELECT 1 FROM mylist WHERE profile_id = ? AND key = ?", (pid, key)))
+    ids = group_ids(pid)
+    return bool(db().q(f"SELECT 1 FROM mylist WHERE profile_id IN ({ids_sql(ids)}) AND key = ?", (*ids, key)))
 
 
 @app.post("/api/mylist")
@@ -4097,7 +4407,8 @@ async def mylist_get(p=Depends(current_profile)):
 
 @app.delete("/api/mylist")
 async def mylist_remove(key: str, p=Depends(current_profile)):
-    db().q("DELETE FROM mylist WHERE profile_id = ? AND key = ?", (p["id"], key))
+    ids = group_ids(p["id"])
+    db().q(f"DELETE FROM mylist WHERE profile_id IN ({ids_sql(ids)}) AND key = ?", (*ids, key))
     return {"ok": True}
 
 
@@ -4105,7 +4416,11 @@ def mylist_items(p, summ, wm):
     """My List resolved against the library, plus shows in the list that got new episodes since they were last looked at"""
     by_meta, by_id = lib_by_meta_id(summ), {s["id"]: s for s in summ}
     items, fresh = [], []
-    for r in db().q("SELECT * FROM mylist WHERE profile_id = ? ORDER BY added DESC", (p["id"],)):
+    ids, seen_keys = group_ids(p["id"]), set()
+    for r in db().q(f"SELECT * FROM mylist WHERE profile_id IN ({ids_sql(ids)}) ORDER BY added DESC", ids):
+        if r["key"] in seen_keys:
+            continue
+        seen_keys.add(r["key"])
         s = by_meta.get(r["key"]) or by_id.get(r["title_id"] or (r["key"][4:] if r["key"].startswith("lib:") else ""))
         if s:
             items.append(s)
@@ -4160,7 +4475,8 @@ def storage_state():
 @app.get("/api/admin/storage")
 async def storage_review(admin=Depends(require_admin)):
     st = storage_state()
-    profiles = [r["id"] for r in db().q("SELECT id FROM profiles")]
+    # Joint profiles dont count, what they watch is already saved to both people in them
+    profiles = [r["id"] for r in db().q("SELECT id FROM profiles WHERE pending = 0 AND (members IS NULL OR members = '')")]
     watched = {}
     for r in db().q("SELECT profile_id, file_id, updated FROM watch WHERE watched = 1"):
         watched.setdefault(r["file_id"], {})[r["profile_id"]] = r["updated"]

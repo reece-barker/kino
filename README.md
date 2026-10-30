@@ -5,6 +5,9 @@ Netflix style family library for the storage box, with the torbox sync, server s
 ## How people get in
 
 - Family dont need a login. If there internet address is on the allow list they see the **Who's watching?** screen and pick a profile.
+- Profiles can sit in folders like Barker Family or Stroll Family, the picker groups them under each folder name. Set it on the profile's Edit sheet.
+- **Watch Together** on the picker joins two profiles into a joint one like "Tina & Trevor". It sees both people's history, ratings, My List and interests, and what's watched on it is saved to both of them. Locked profiles need their own code to join, either code opens the joint one, and it can be split any time.
+- Profile icons can be one of Kino's own, a movie or show poster, a meme (imgflip) or a brand logo (simple-icons), all searchable on the Edit sheet.
 - Each profile has its own continue watching, watched ticks, thumbs up or down, recommendations and playback settings (audio and subtitle language, subtitle size, autoplay, skip intros).
 - The **Admin** button in the corner of the profile screen is the only login. It unlocks the Sync and Server pages, adding and deleting profiles, the allow list, fix match, deleting from the library and marking intros.
 - Add family networks under Settings > Allowed networks. A small root helper (`kino-allowlist`) rewrites the nginx list within a few seconds, the app checks the same list as a second lock.

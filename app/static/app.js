@@ -83,11 +83,48 @@
     ["Crown", "#b8860b", "#ffd700", '<path d="M9 21l12 11 11-17 11 17 12-11-4.5 27h-37z" fill="#fff"/><rect x="13.5" y="50" width="37" height="4.5" rx="2.2" fill="#fff"/><circle cx="32" cy="38" r="3" fill="#b8860b"/>'],
     ["Leaf", "#134e5e", "#71b280", '<path d="M51 11C26 11 13 23.5 13 40.5c0 4.2 1 8.3 3.2 11.4 3.2-12.6 11.6-22 23-27.2C30 32 23.6 40.5 20.5 53c3 1.1 6.3 1.6 9.5 1.6C49 54.6 53.3 33.6 51 11z" fill="#fff"/>'],
     ["Dice", "#e53935", "#e35d5b", '<rect x="13" y="13" width="38" height="38" rx="9" fill="#fff"/><circle cx="23.5" cy="23.5" r="3.8" fill="#e53935"/><circle cx="32" cy="32" r="3.8" fill="#e53935"/><circle cx="40.5" cy="40.5" r="3.8" fill="#e53935"/><circle cx="40.5" cy="23.5" r="3.8" fill="#e53935"/><circle cx="23.5" cy="40.5" r="3.8" fill="#e53935"/>'],
+    ["Pizza", "#ff9966", "#ff5e62", '<path d="M12 17c13-6.5 27-6.5 40 0L32 56z" fill="#fff"/><path d="M12 17c13-6.5 27-6.5 40 0l-2.6 5.6c-11.6-5.2-23.2-5.2-34.8 0z" fill="#ffd166"/><circle cx="27" cy="30" r="3.6" fill="#ff5e62"/><circle cx="37.5" cy="34" r="3.6" fill="#ff5e62"/><circle cx="31" cy="42" r="3.2" fill="#ff5e62"/>'],
+    ["Robot", "#43cea2", "#185a9d", '<rect x="16" y="20" width="32" height="28" rx="7" fill="#fff"/><rect x="30" y="11" width="4" height="9" fill="#fff"/><circle cx="32" cy="10" r="3.5" fill="#fff"/><circle cx="25" cy="32" r="4" fill="#185a9d"/><circle cx="39" cy="32" r="4" fill="#185a9d"/><rect x="25" y="40" width="14" height="3" rx="1.5" fill="#185a9d"/><rect x="10" y="28" width="4" height="12" rx="2" fill="#fff"/><rect x="50" y="28" width="4" height="12" rx="2" fill="#fff"/>'],
+    ["Heart", "#ff416c", "#ff4b2b", '<path d="M32 53S10 39.5 10 24.5A11.5 11.5 0 0132 18a11.5 11.5 0 0122 6.5C54 39.5 32 53 32 53z" fill="#fff"/>'],
+    ["Diamond", "#00c6ff", "#0072ff", '<path d="M20 14h24l10 12-22 26L10 26z" fill="#fff"/><path d="M10 26h44M24 14l-4 12 12 26 12-26-4-12" stroke="#0072ff" stroke-width="2.2" fill="none" stroke-linejoin="round" opacity=".55"/>'],
+    ["Sun", "#f7b733", "#fc4a1a", '<circle cx="32" cy="32" r="11" fill="#fff"/><path d="M32 9v7M32 48v7M9 32h7M48 32h7M15.7 15.7l5 5M43.3 43.3l5 5M15.7 48.3l5-5M43.3 20.7l5-5" stroke="#fff" stroke-width="4" stroke-linecap="round"/>'],
+    ["Cloud", "#89f7fe", "#66a6ff", '<path d="M20 47a10 10 0 01-1.2-19.9A14 14 0 0146 23.5 11.5 11.5 0 0147 47z" fill="#fff"/>'],
+    ["Camera", "#606c88", "#3f4c6b", '<rect x="10" y="20" width="44" height="30" rx="6" fill="#fff"/><path d="M24 21l3-7h10l3 7z" fill="#fff"/><circle cx="32" cy="35" r="9" fill="#3f4c6b"/><circle cx="32" cy="35" r="4.6" fill="#fff"/>'],
+    ["Ticket", "#f7971e", "#ffd200", '<path d="M10 20h44v8a4 4 0 000 8v8H10v-8a4 4 0 000-8z" fill="#fff"/><path d="M40 22v20" stroke="#f7971e" stroke-width="2.6" stroke-dasharray="3 3"/>'],
+    ["Football", "#11998e", "#0f9b0f", '<circle cx="32" cy="32" r="21" fill="#fff"/><path d="M32 23.5l8 5.8-3 9.4H27l-3-9.4z" fill="#222"/><path d="M32 23.5V12M40 29.3l10.5-3.4M37 38.7l6.5 9M27 38.7l-6.5 9M24 29.3l-10.5-3.4" stroke="#222" stroke-width="2.4"/>'],
+    ["Headphones", "#7f00ff", "#e100ff", '<path d="M14 40v-6a18 18 0 0136 0v6" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><rect x="10" y="36" width="11" height="17" rx="4" fill="#fff"/><rect x="43" y="36" width="11" height="17" rx="4" fill="#fff"/>'],
+    ["Paw", "#c79081", "#a0522d", '<ellipse cx="32" cy="42" rx="11" ry="9" fill="#fff"/><ellipse cx="18" cy="30" rx="5" ry="6.5" fill="#fff"/><ellipse cx="46" cy="30" rx="5" ry="6.5" fill="#fff"/><ellipse cx="25" cy="19" rx="5" ry="6.5" fill="#fff"/><ellipse cx="39" cy="19" rx="5" ry="6.5" fill="#fff"/>'],
+    ["Rainbow", "#a18cd1", "#fb8ad1", '<path d="M10 46a22 22 0 0144 0" fill="none" stroke="#fff" stroke-width="5.5" stroke-linecap="round"/><path d="M18 46a14 14 0 0128 0" fill="none" stroke="#fff" stroke-width="5.5" stroke-linecap="round" opacity=".75"/><path d="M26 46a6 6 0 0112 0" fill="none" stroke="#fff" stroke-width="5.5" stroke-linecap="round" opacity=".5"/>'],
+    ["Coffee", "#603813", "#b29f94", '<path d="M14 25h30v13a12 12 0 01-12 12h-6a12 12 0 01-12-12z" fill="#fff"/><path d="M44 29h3a6 6 0 010 12h-4" fill="none" stroke="#fff" stroke-width="4"/><path d="M22 10c-2 3 2 5 0 8M30 10c-2 3 2 5 0 8M38 10c-2 3 2 5 0 8" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" opacity=".8"/>'],
+    ["Ice Cream", "#f857a6", "#ff5858", '<path d="M22 33h20L32 57z" fill="#ffd8a8"/><circle cx="32" cy="22" r="11" fill="#fff"/><circle cx="23.5" cy="29.5" r="6.5" fill="#fff"/><circle cx="40.5" cy="29.5" r="6.5" fill="#fff"/>'],
+    ["Skull", "#434343", "#000000", '<path d="M32 10c-12 0-20 8-20 19 0 6 3 10 7 12v7h26v-7c4-2 7-6 7-12 0-11-8-19-20-19z" fill="#fff"/><circle cx="24.5" cy="30" r="5" fill="#222"/><circle cx="39.5" cy="30" r="5" fill="#222"/><path d="M30 38h4l-2 4z" fill="#222"/><path d="M26.5 48v5M32 48v5M37.5 48v5" stroke="#222" stroke-width="2.4"/>'],
+    ["Fish", "#36d1dc", "#5b86e5", '<path d="M8 32c8-12 24-14 36-4l10-8v24l-10-8C32 46 16 44 8 32z" fill="#fff"/><circle cx="20" cy="30" r="2.8" fill="#5b86e5"/>'],
+    ["Panda", "#2c3e50", "#4ca1af", '<circle cx="17" cy="18" r="7" fill="#fff"/><circle cx="47" cy="18" r="7" fill="#fff"/><circle cx="32" cy="35" r="19" fill="#fff"/><ellipse cx="25" cy="33" rx="4" ry="5" fill="#333"/><ellipse cx="39" cy="33" rx="4" ry="5" fill="#333"/><ellipse cx="32" cy="43" rx="4" ry="3" fill="#333"/>'],
+    ["Trophy", "#f09819", "#edde5d", '<path d="M20 10h24v12a12 12 0 01-24 0z" fill="#fff"/><path d="M20 14h-6a7 7 0 007 10M44 14h6a7 7 0 01-7 10" fill="none" stroke="#fff" stroke-width="3.5"/><rect x="29" y="33" width="6" height="10" fill="#fff"/><rect x="20" y="43" width="24" height="8" rx="2" fill="#fff"/>'],
   ];
-  const avatar = (i, cls = "") => {
-    const a = AV[i] || AV[0];
-    return `<span class="av ${cls}" style="--a:${a[1]};--b:${a[2]}" aria-hidden="true"><svg viewBox="0 0 64 64">${a[3]}</svg></span>`;
-  };
+  // Picture icons are "img|url" (posters and memes) or "logo|slug|hex" (brand logos from simple-icons)
+  const LOGO_BASE = "https://cdn.jsdelivr.net/npm/simple-icons@16.36.0/icons/";
+  const lightHex = (h) => { const n = parseInt(h, 16); return 0.2126 * (n >> 16) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255) > 165; };
+  const darker = (h) => { const n = parseInt(h, 16); const d = (v) => Math.round(v * 0.62).toString(16).padStart(2, "0"); return d(n >> 16) + d((n >> 8) & 255) + d(n & 255); };
+  function avParts(p) {
+    const v = (p && p.image) || "";
+    if (v.startsWith("logo|")) {
+      const [, slug, hx] = v.split("|");
+      return { cls: `av-logo ${lightHex(hx) ? "light" : ""}`, style: `--a:#${hx};--b:#${darker(hx)}`, html: `<img src="${img(LOGO_BASE + slug + ".svg")}" alt="" loading="lazy" data-fallback="hide">` };
+    }
+    if (v.startsWith("img|")) return { cls: "av-img", style: "", html: `<img src="${img(v.slice(4), 0, 240)}" alt="" loading="lazy" data-fallback="hide">` };
+    const a = AV[p ? p.icon : 0] || AV[0];
+    return { cls: "", style: `--a:${a[1]};--b:${a[2]}`, html: `<svg viewBox="0 0 64 64">${a[3]}</svg>` };
+  }
+  // A profiles icon. Joint profiles without there own picture show both peoples icons overlapping
+  function pav(p, cls = "") {
+    if (p && !p.image && p.members && p.members.length > 1) {
+      return `<span class="av av-duo ${cls}" aria-hidden="true">${p.members.slice(0, 2).map((m) => { const x = avParts(m); return `<span class="av-half ${x.cls}" style="${x.style}">${x.html}</span>`; }).join("")}</span>`;
+    }
+    const x = avParts(p);
+    return `<span class="av ${cls} ${x.cls}" style="${x.style}" aria-hidden="true">${x.html}</span>`;
+  }
+  const avatar = (i, cls = "") => pav({ icon: i }, cls);
 
   // ---------------------------------------------------------- helpers
   const $ = (s, r = document) => r.querySelector(s);
@@ -301,7 +338,7 @@
     chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
       <span class="side-shine" aria-hidden="true"></span>
       <div class="menu-wrap side-top">
-        <button class="side-me" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu">${avatar(p.icon, "xs")}<span class="side-lbl side-name">${esc(p.name)}</span><span class="side-lbl side-time" id="sideTime">${clockNow()}</span></button>
+        <button class="side-me" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu">${pav(p, "xs")}<span class="side-lbl side-name">${esc(p.name)}</span><span class="side-lbl side-time" id="sideTime">${clockNow()}</span></button>
         <div class="menu drop side-menu" id="avatarMenu" hidden>
           <a href="#/profiles" class="mi">${ic("people")} Switch Profile</a>
           ${kidsMode() ? "" : isAdmin() ? `<button class="mi" id="adminOut">${ic("lock")} Sign Out of Admin</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin Sign In</button>`}
@@ -322,7 +359,7 @@
     <nav class="tabbar" aria-label="Sections">
       ${[["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ...(F.live ? [["live", "Live", "live"]] : []), ["search", "Search", "search"]].map(([k, l, i]) =>
         `<a class="tb-item" href="#/${k}" data-k="${k}">${ic(i)}<span>${l}</span></a>`).join("")}
-      <button class="tb-item" id="tbMore" data-k="more">${avatar(p.icon, "xs")}<span>${esc(p.name)}</span></button>
+      <button class="tb-item" id="tbMore" data-k="more">${pav(p, "xs")}<span>${esc(p.name)}</span></button>
     </nav>`;
     wireSide();
   }
@@ -411,7 +448,7 @@
     $("#tbMore").onclick = () => {
       const p = ME.profile;
       const row = (href, icon, label) => `<a class="more-row" href="${href}" data-close>${ic(icon)}<span>${label}</span>${ic("chevron")}</a>`;
-      const sh = sheet(`<div class="more-head">${avatar(p.icon, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
+      const sh = sheet(`<div class="more-head">${pav(p, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
         <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
           ${isAdmin() ? row("#/sync", "refresh", "Sync") + row("#/server", "server", "Server") : ""}
           ${row("#/profiles", "people", "Switch Profile")}</div>
@@ -489,38 +526,111 @@
     window.onscroll = null;
     const r = await api("/api/profiles");
     ME.admin = r.admin;
-    app.innerHTML = `<main class="who">
+    const tile = (p) => `<button class="who-tile ${p.members ? "joint" : ""}" data-pid="${p.id}" aria-label="${manage ? "Edit" : "Watch as"} ${esc(p.name)}">
+          <span class="who-av">${pav(p, "lg")}${manage ? `<span class="who-edit">${ic("pencil")}</span>` : ""}${p.kids ? `<span class="who-kids">Kids</span>` : ""}${p.locked && !manage ? `<span class="who-lock">${ic("lock")}</span>` : ""}</span>
+          <span class="who-name">${esc(p.name)}</span></button>`;
+    // Profiles without a folder go first, then each folder in name order with its heading
+    const groups = [["", r.profiles.filter((p) => !p.folder)], ...r.folders.map((f) => [f, r.profiles.filter((p) => p.folder === f)])].filter((g) => g[1].length);
+    const singles = r.profiles.filter((p) => !p.members);
+    const extra = (!!ME.admin ? `<button class="who-tile add" id="addProfile" aria-label="Add a profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Add Profile</span></button>`
+      : manage ? "" : `<button class="who-tile add" id="askProfile" aria-label="Ask for your own profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Ask for a Profile</span></button>`)
+      + (!manage && singles.length > 1 ? `<button class="who-tile add" id="jointProfile" aria-label="Watch together, join two profiles"><span class="who-av"><span class="av lg addav">${ic("people")}</span></span><span class="who-name">Watch Together</span></button>` : "");
+    app.innerHTML = `<main class="who ${r.folders.length ? "foldered" : ""}">
       <h1 class="who-title">${manage ? "Manage Profiles" : "Who's Watching?"}</h1>
-      <div class="who-grid ${manage ? "managing" : ""}">
-        ${r.profiles.map((p) => `<button class="who-tile" data-pid="${p.id}" aria-label="${manage ? "Edit" : "Watch as"} ${esc(p.name)}">
-          <span class="who-av">${avatar(p.icon, "lg")}${manage ? `<span class="who-edit">${ic("pencil")}</span>` : ""}${p.kids ? `<span class="who-kids">Kids</span>` : ""}${p.locked && !manage ? `<span class="who-lock">${ic("lock")}</span>` : ""}</span>
-          <span class="who-name">${esc(p.name)}</span></button>`).join("")}
-        ${!!ME.admin ? `<button class="who-tile add" id="addProfile" aria-label="Add a profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Add Profile</span></button>`
-          : manage ? "" : `<button class="who-tile add" id="askProfile" aria-label="Ask for your own profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Ask for a Profile</span></button>`}
-      </div>
+      <div class="who-groups">${groups.map(([f, ps], gi) => `<section class="who-group" ${f ? `aria-label="${esc(f)}"` : ""}>${r.folders.length ? `<h2 class="who-folder" ${f ? "" : `aria-hidden="true"`}>${f ? esc(f) : "&nbsp;"}</h2>` : ""}
+        <div class="who-grid ${manage ? "managing" : ""}">${ps.map(tile).join("")}${gi === groups.length - 1 && !r.folders.length ? extra : ""}</div></section>`).join("")}</div>
+      ${r.folders.length || !groups.length ? `<div class="who-grid who-extra">${extra}</div>` : ""}
       <div class="who-actions">${manage ? `<button class="btn primary" id="doneManage">Done</button>` : ME.admin ? `<button class="btn outline" id="manageBtn">Manage Profiles</button>` : ""}</div>
     </main>`;
     $$(".who-tile[data-pid]").forEach((b) => (b.onclick = async () => {
       const p = r.profiles.find((x) => x.id === Number(b.dataset.pid));
-      if (manage) return editProfile(p, () => pageProfiles(true));
+      if (manage) return editProfile(p, () => pageProfiles(true), r.folders);
       let res;
       if (p.locked) {
-        res = await pinPad(`Enter ${p.name}'s Code`, (code) => api(`/api/profiles/${p.id}/select`, { pin: code }));
+        const who = p.members ? p.members.map((m) => m.name).join("'s or ") + "'s" : p.name + "'s";
+        res = await pinPad(`Enter ${who} Code`, (code) => api(`/api/profiles/${p.id}/select`, { pin: code }));
         if (!res) return;
       } else res = await api(`/api/profiles/${p.id}/select`, {});
       ME.profile = res.profile; ME.features = null;
       location.hash = "#/home";
       if (location.hash === "#/home") route();
     }));
-    const add = $("#addProfile"); if (add) add.onclick = () => editProfile(null, () => pageProfiles(manage));
+    const add = $("#addProfile"); if (add) add.onclick = () => editProfile(null, () => pageProfiles(manage), r.folders);
     const ask = $("#askProfile"); if (ask) ask.onclick = () => askProfile();
+    const jp = $("#jointProfile"); if (jp) jp.onclick = () => jointSheet(r);
     const mb = $("#manageBtn"); if (mb) mb.onclick = () => pageProfiles(true);
     const dm = $("#doneManage"); if (dm) dm.onclick = () => pageProfiles(false);
-    const ai = $("#adminIn2"); if (ai) ai.onclick = () => adminLogin(() => pageProfiles(manage));
-    const ao = $("#adminOut2"); if (ao) ao.onclick = async () => { await api("/api/admin/logout", {}); ME.admin = null; pageProfiles(manage); };
     const first = $(".who-tile"); if (first) first.focus();
     fitWho();
   }
+
+  // Watch Together: two people pick there profiles and get a joint one like "Tina & Trevor". Locked ones need there own
+  // code, so nobody can join someone elses profile without them
+  function jointSheet(r, pre = {}) {
+    const singles = r.profiles.filter((p) => !p.members);
+    let picked = (pre.picked || []).filter((id) => singles.some((p) => p.id === id));
+    const byId = (id) => singles.find((p) => p.id === id);
+    const s = sheet(`<h2>Watch Together</h2>
+      <p class="secondary">Pick the two people watching. You get a joint profile that knows what both of you like.</p>
+      <div class="jp-grid" role="group" aria-label="Who's watching together">${singles.map((p) => `<button class="jp-pick" data-jp="${p.id}" aria-pressed="false">${pav(p, "md")}<span>${esc(p.name)}</span>${p.locked ? `<span class="jp-lock">${ic("lock")}</span>` : ""}</button>`).join("")}</div>
+      <div class="jp-preview" id="jpPreview" hidden></div>
+      <div class="jp-warn" role="note">
+        <b>${ic("info")} What joining shares</b>
+        <ul>
+          <li>The joint profile sees both of your watch history, ratings, My List and interests, and recommends from all of it.</li>
+          <li>Anything watched on it is saved to both of your own profiles too.</li>
+          <li>Removing something from its history or My List removes it for both of you.</li>
+          <li>Anyone who opens it can see both histories. If either of you has a code, either code opens it.</li>
+          <li>If one of you is a kids profile, the joint profile is a kids profile too.</li>
+          <li>You can split it any time from its Settings, your own profiles keep everything.</li>
+        </ul>
+      </div>
+      <div class="form-err" id="jpErr" role="alert">${esc(pre.err || "")}</div>
+      <div class="actions end"><button class="btn secondary small" data-close>Cancel</button><button class="btn primary small" id="jpGo" disabled>${ic("people")} Join Profiles</button></div>`, { wide: true });
+    const draw = () => {
+      $$(".jp-pick", s.el).forEach((b) => b.setAttribute("aria-pressed", picked.includes(Number(b.dataset.jp))));
+      const pv = $("#jpPreview", s.el), go = $("#jpGo", s.el);
+      go.disabled = picked.length !== 2;
+      if (picked.length !== 2) { pv.hidden = true; return; }
+      const [a, b] = picked.map(byId);
+      const fold = pre.folder ?? (a.folder || b.folder || "");
+      pv.hidden = false;
+      pv.innerHTML = `${pav({ members: [a, b] }, "md")}
+        <label class="field grow"><span class="lbl">Name</span><input id="jpName" maxlength="24" value="${esc(pre.name || `${a.name} & ${b.name}`)}"></label>
+        <label class="field grow"><span class="lbl">Folder</span><input id="jpFolder" maxlength="24" list="jpFolders" placeholder="No folder" value="${esc(fold)}"></label>
+        <datalist id="jpFolders">${r.folders.map((f) => `<option value="${esc(f)}">`).join("")}</datalist>`;
+    };
+    $$(".jp-pick", s.el).forEach((b) => (b.onclick = () => {
+      const id = Number(b.dataset.jp);
+      if (picked.includes(id)) picked = picked.filter((x) => x !== id);
+      else picked = [...picked, id].slice(-2);
+      pre.name = undefined;
+      draw();
+    }));
+    draw();
+    $("#jpGo", s.el).onclick = async () => {
+      const [a, b] = picked.map(byId);
+      const name = $("#jpName", s.el).value, folder = $("#jpFolder", s.el).value;
+      const keep = { picked, name, folder };
+      s.close();
+      // Each locked person types there own code, its checked straight away so a typo doesnt waste the other code
+      const pins = {};
+      for (const p of [a, b]) {
+        if (!p.locked || ME.admin) continue;
+        const code = await pinPad(`${p.name}'s Code`, async (c) => { await api(`/api/profiles/${p.id}/check-pin`, { pin: c }); return c; }, `${p.name} has to agree to joining`);
+        if (!code) return jointSheet(r, keep);
+        pins[p.id] = code;
+      }
+      try {
+        const res = await api("/api/profiles/joint", { a: a.id, b: b.id, pins, name, folder });
+        ME.profile = res.profile; ME.features = null;
+        toast(`${res.profile.name} is ready`);
+        location.hash = "#/home";
+        if (location.hash === "#/home") route();
+      } catch (e) { jointSheet(r, { ...keep, err: e.message }); }
+    };
+  }
+
   // Shrinks the profile icons until the whole picker fits on screen, so there's never any scrolling on it
   function fitWho() {
     const who = $(".who");
@@ -569,62 +679,100 @@
     });
   }
 
+  // The icon chooser on the profile sheets: kino's own icons, or a picture searched from movies and shows, memes or brand logos
+  const ICON_TABS = [["icons", "Icons"], ["movies", "Movies & TV"], ["memes", "Memes"], ["logos", "Logos"]];
+  const iconBox = (st) => `<div class="ib">
+      <div class="ib-tabs" role="tablist">${ICON_TABS.map(([k, l]) => `<button role="tab" data-ibt="${k}" aria-selected="${k === "icons"}">${l}</button>`).join("")}</div>
+      <label class="field ib-q" hidden><span class="sr">Search</span><input id="ibQ" type="search" placeholder="Search" autocomplete="off" spellcheck="false"></label>
+      <div class="icon-grid ib-grid" role="radiogroup" aria-label="Profile icon">${iconGrid(st)}</div></div>`;
+  const iconGrid = (st) => AV.map((a, i) => `<button class="icon-pick" role="radio" aria-checked="${!st.image && i === st.icon}" data-i="${i}" aria-label="${a[0]}">${avatar(i, "md")}</button>`).join("");
+  function wireIconBox(root, st, changed) {
+    let tab = "icons", seq = 0, timer = 0;
+    const grid = $(".ib-grid", root), qBox = $(".ib-q", root), q = $("#ibQ", root);
+    const wirePicks = () => $$(".icon-pick", grid).forEach((b) => (b.onclick = () => {
+      if (b.dataset.i != null) { st.icon = Number(b.dataset.i); st.image = ""; }
+      else st.image = b.dataset.img;
+      $$(".icon-pick", grid).forEach((x) => x.setAttribute("aria-checked", x === b));
+      changed();
+    }));
+    const search = async () => {
+      const my = ++seq;
+      grid.innerHTML = Array.from({ length: 12 }, () => `<span class="sk ib-sk"></span>`).join("");
+      let items = [];
+      try { items = (await api(`/api/avatars/search?src=${tab}&q=${encodeURIComponent(q.value)}`)).items; }
+      catch (e) { if (my === seq) grid.innerHTML = `<p class="secondary ib-empty">${esc(e.message)}</p>`; return; }
+      if (my !== seq) return;
+      grid.innerHTML = items.length ? items.map((it) => `<button class="icon-pick" role="radio" aria-checked="${st.image === it.image}" data-img="${esc(it.image)}" aria-label="${esc(it.name)}" title="${esc(it.name)}">${pav({ image: it.image }, "md")}</button>`).join("")
+        : `<p class="secondary ib-empty">Nothing found${q.value ? ` for "${esc(q.value)}"` : ""}.</p>`;
+      wirePicks();
+    };
+    $$("[data-ibt]", root).forEach((b) => (b.onclick = () => {
+      tab = b.dataset.ibt;
+      $$("[data-ibt]", root).forEach((x) => x.setAttribute("aria-selected", x === b));
+      qBox.hidden = tab === "icons";
+      q.placeholder = tab === "movies" ? "Search movies and shows" : tab === "memes" ? "Search memes" : "Search brands, like Netflix";
+      if (tab === "icons") { seq++; grid.innerHTML = iconGrid(st); wirePicks(); } else search();
+    }));
+    q.oninput = () => { clearTimeout(timer); timer = setTimeout(search, 350); };
+    q.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); clearTimeout(timer); search(); } };
+    wirePicks();
+  }
+
   // Anyone can ask for there own profile, the admin approves it in Settings
   function askProfile() {
-    let icon = Math.floor(Math.random() * AV.length);
+    const st = { icon: Math.floor(Math.random() * AV.length), image: "" };
     const s = sheet(`<h2>Ask for a Profile</h2><p class="secondary">Pick a name and an icon. It shows up once the admin approves it.</p>
-      <div class="edit-top"><span id="apPreview">${avatar(icon, "lg")}</span>
+      <div class="edit-top"><span id="apPreview">${pav(st, "lg")}</span>
         <label class="field grow"><span class="sr">Name</span><input id="apName" maxlength="24" placeholder="Your name"></label></div>
-      <div class="icon-grid" role="radiogroup" aria-label="Profile icon">${AV.map((a, i) => `<button class="icon-pick" role="radio" aria-checked="${i === icon}" data-i="${i}" aria-label="${a[0]}">${avatar(i, "md")}</button>`).join("")}</div>
+      ${iconBox(st)}
       <div class="form-err" id="apErr" role="alert"></div>
       <div class="actions end"><button class="btn secondary small" data-close>Cancel</button><button class="btn primary small" id="apSend">Ask</button></div>`, { wide: true });
-    $$(".icon-pick", s.el).forEach((b) => (b.onclick = () => {
-      icon = Number(b.dataset.i);
-      $$(".icon-pick", s.el).forEach((x) => x.setAttribute("aria-checked", x === b));
-      $("#apPreview", s.el).innerHTML = avatar(icon, "lg");
-    }));
+    wireIconBox(s.el, st, () => ($("#apPreview", s.el).innerHTML = pav(st, "lg")));
     $("#apSend", s.el).onclick = async () => {
-      try { await api("/api/profiles/request", { name: $("#apName", s.el).value, icon }); s.close(); toast("Asked the admin, your profile shows up once it's approved", 5000); }
+      try { await api("/api/profiles/request", { name: $("#apName", s.el).value, icon: st.icon, image: st.image }); s.close(); toast("Asked the admin, your profile shows up once it's approved", 5000); }
       catch (e) { $("#apErr", s.el).textContent = e.message; }
     };
   }
 
-  // Edit or add a profile: name and icon. Editing your own works for everyone, adding and deleting is admin only
-  function editProfile(p, done) {
-    const isNew = !p;
-    let icon = p ? p.icon : Math.floor(Math.random() * AV.length);
-    const s = sheet(`<h2>${isNew ? "Add Profile" : "Edit Profile"}</h2>
-      <div class="edit-top"><span id="epPreview">${avatar(icon, "lg")}</span>
-        <label class="field grow"><span class="sr">Name</span><input id="epName" maxlength="24" placeholder="Name" value="${esc(p ? p.name : "")}"></label></div>
+  // Edit or add a profile: name, folder and icon. Editing your own works for everyone, adding and deleting is admin only
+  function editProfile(p, done, folders) {
+    const isNew = !p, joint = !!(p && p.members);
+    const st = { icon: p ? p.icon : Math.floor(Math.random() * AV.length), image: p ? p.image || "" : "", members: p && p.members };
+    const s = sheet(`<h2>${isNew ? "Add Profile" : joint ? "Edit Joint Profile" : "Edit Profile"}</h2>
+      <div class="edit-top"><span id="epPreview">${pav(st, "lg")}</span>
+        <div class="grow edit-fields">
+          <label class="field"><span class="sr">Name</span><input id="epName" maxlength="24" placeholder="Name" value="${esc(p ? p.name : "")}"></label>
+          <label class="field"><span class="sr">Folder</span><input id="epFolder" maxlength="24" list="epFolders" placeholder="Folder, like Barker Family" value="${esc(p ? p.folder || "" : "")}"></label>
+          <datalist id="epFolders">${(folders || []).map((f) => `<option value="${esc(f)}">`).join("")}</datalist>
+        </div></div>
       ${ME.admin ? `<label class="set-row kids-row"><span><b>Kids Profile</b><span class="secondary">Only shows family and animated titles, and hides admin tools</span></span><input type="checkbox" class="switch" id="epKids" ${p && p.kids ? "checked" : ""}></label>` : ""}
-      <h3 class="sheet-sub">Choose an Icon</h3>
-      <div class="icon-grid" role="radiogroup" aria-label="Profile icon">${AV.map((a, i) => `<button class="icon-pick" role="radio" aria-checked="${i === icon}" data-i="${i}" aria-label="${a[0]}">${avatar(i, "md")}</button>`).join("")}</div>
+      <h3 class="sheet-sub">Choose an Icon${joint ? ` <button class="linkish" id="epDuo" ${st.image ? "" : "hidden"}>Use Both Icons</button>` : ""}</h3>
+      ${iconBox(st)}
       <div class="form-err" id="epErr" role="alert"></div>
       <div class="actions between">
-        ${!isNew && isAdmin() ? `<button class="btn danger small" id="epDel">${ic("trash")} Delete Profile</button>` : "<span></span>"}
+        ${!isNew && joint ? `<button class="btn danger small" id="epSplit">${ic("people")} Split Profile</button>` : !isNew && isAdmin() ? `<button class="btn danger small" id="epDel">${ic("trash")} Delete Profile</button>` : "<span></span>"}
         <div class="actions"><button class="btn secondary small" data-close>Cancel</button><button class="btn primary small" id="epSave">Save</button></div>
       </div>`, { wide: true });
-    $$(".icon-pick", s.el).forEach((b) => (b.onclick = () => {
-      icon = Number(b.dataset.i);
-      $$(".icon-pick", s.el).forEach((x) => x.setAttribute("aria-checked", x === b));
-      $("#epPreview", s.el).innerHTML = avatar(icon, "lg");
-    }));
+    const redraw = () => { $("#epPreview", s.el).innerHTML = pav(st, "lg"); const d = $("#epDuo", s.el); if (d) d.hidden = !st.image; };
+    wireIconBox(s.el, st, redraw);
+    const duo = $("#epDuo", s.el);
+    if (duo) duo.onclick = () => { st.image = ""; $$(".icon-pick", s.el).forEach((x) => x.setAttribute("aria-checked", "false")); redraw(); };
+    if (!folders) api("/api/profiles").then((r) => { const dl = $("#epFolders", s.el); if (dl) dl.innerHTML = r.folders.map((f) => `<option value="${esc(f)}">`).join(""); }).catch(() => {});
     $("#epSave", s.el).onclick = async () => {
-      const name = $("#epName", s.el).value;
-      const kb = $("#epKids", s.el), kids = kb ? kb.checked : undefined;
+      const body = { name: $("#epName", s.el).value, icon: st.icon, image: st.image, folder: $("#epFolder", s.el).value };
+      const kb = $("#epKids", s.el);
       try {
-        if (isNew) await api("/api/admin/profiles", { name, icon, kids: !!kids });
-        else if (ME.admin && kb) {
-          await api(`/api/admin/profiles/${p.id}`, { name, icon, kids }, "PUT");
+        if (isNew) await api("/api/admin/profiles", { ...body, kids: !!(kb && kb.checked) });
+        else if (ME.admin) {
+          await api(`/api/admin/profiles/${p.id}`, { ...body, ...(kb ? { kids: kb.checked } : {}) }, "PUT");
           if (ME.profile && ME.profile.id === p.id) ME.profile = (await api("/api/me")).profile;
         }
-        else if (ME.profile && ME.profile.id === p.id) { const r = await api("/api/profile", { name, icon }, "PUT"); ME.profile = r.profile; }
-        else if (isAdmin()) await api(`/api/admin/profiles/${p.id}`, { name, icon }, "PUT");
+        else if (ME.profile && ME.profile.id === p.id) { const r = await api("/api/profile", body, "PUT"); ME.profile = r.profile; }
         else {
           // Not admin and not your own profile, switch to it first then save
           const sel = await api(`/api/profiles/${p.id}/select`, {});
           ME.profile = sel.profile;
-          const r = await api("/api/profile", { name, icon }, "PUT"); ME.profile = r.profile;
+          const r = await api("/api/profile", body, "PUT"); ME.profile = r.profile;
         }
         s.close(); toast(isNew ? "Profile added" : "Profile saved"); done && done();
       } catch (e) { $("#epErr", s.el).textContent = e.message; }
@@ -632,10 +780,26 @@
     const del = $("#epDel", s.el);
     if (del) del.onclick = async () => {
       s.close();
-      if (!(await confirmSheet(`Delete ${p.name}?`, "Their watch history, ratings and settings are deleted too. This can't be undone.", "Delete Profile"))) return editProfile(p, done);
+      if (!(await confirmSheet(`Delete ${p.name}?`, "Their watch history, ratings and settings are deleted too, and any joint profile they're in. This can't be undone.", "Delete Profile"))) return editProfile(p, done, folders);
       try { await api(`/api/admin/profiles/${p.id}`, undefined, "DELETE"); if (ME.profile && ME.profile.id === p.id) ME.profile = null; toast("Profile deleted"); done && done(); }
       catch (e) { toast(e.message, 5000); }
     };
+    const sp = $("#epSplit", s.el);
+    if (sp) sp.onclick = () => { s.close(); splitJoint(p, done); };
+  }
+
+  // Ends a joint profile. Both people keep everything on there own profiles
+  async function splitJoint(p, done) {
+    const names = p.members.map((m) => m.name).join(" and ");
+    if (!(await confirmSheet(`Split ${p.name}?`, `${names} keep everything they watched on their own profiles. The joint profile's My List, ratings and settings go.`, "Split Profile"))) return;
+    const go = (pin) => api(`/api/profiles/${p.id}/split`, pin ? { pin } : {});
+    try {
+      if (p.locked && !ME.admin) { if (!(await pinPad(`Enter ${p.members.map((m) => m.name).join("'s or ")}'s Code`, go))) return; }
+      else await go();
+      if (ME.profile && ME.profile.id === p.id) ME.profile = null;
+      toast(`${p.name} is split`);
+      done ? done() : (location.hash = "#/profiles");
+    } catch (e) { toast(e.message, 5000); }
   }
 
   // My List button, the same on library and addon title pages
@@ -2163,10 +2327,12 @@
       <h1 class="large-title">Settings</h1>
       <section class="card set-card">
         <h2 class="set-title">Profile</h2>
-        <div class="set-profile">${avatar(p.icon, "lg")}<div class="grow"><div class="set-name">${esc(p.name)}</div><div class="secondary">Everyone on this profile shares the watch history and these settings.</div></div>
+        <div class="set-profile">${pav(p, "lg")}<div class="grow"><div class="set-name">${esc(p.name)}</div><div class="secondary">${p.members ? `A joint profile for ${esc(p.members.map((m) => m.name).join(" and "))}. It sees both of their history and what they like, and what you watch here counts for both of them.` : "Everyone on this profile shares the watch history and these settings."}</div></div>
           <button class="btn secondary small" id="editMe">${ic("pencil")} Edit</button></div>
-        <div class="set-row"><span><b>Profile Lock</b><span class="secondary">${p.locked ? "A 4 digit code is needed to open this profile" : "Ask for a 4 digit code when someone picks this profile"}</span></span>
-          <span class="actions">${p.locked ? `<button class="btn secondary small" id="pinChange">Change Code</button><button class="btn secondary small" id="pinOff">Remove</button>` : `<button class="btn secondary small" id="pinSet">${ic("lock")} Set Code</button>`}</span></div>
+        ${p.members ? `<div class="set-row"><span><b>Joint Profile</b><span class="secondary">${p.locked ? `Opens with ${esc(p.members.map((m) => m.name).join("'s or "))}'s code` : "Locks when either of you sets a code on your own profile"}</span></span>
+          <span class="actions"><button class="btn secondary small" id="splitMe">${ic("people")} Split</button></span></div>`
+        : `<div class="set-row"><span><b>Profile Lock</b><span class="secondary">${p.locked ? "A 4 digit code is needed to open this profile" : "Ask for a 4 digit code when someone picks this profile"}</span></span>
+          <span class="actions">${p.locked ? `<button class="btn secondary small" id="pinChange">Change Code</button><button class="btn secondary small" id="pinOff">Remove</button>` : `<button class="btn secondary small" id="pinSet">${ic("lock")} Set Code</button>`}</span></div>`}
       </section>
       <section class="card set-card" id="intCard"><h2 class="set-title">Your Interests</h2><div class="sk sk-line" style="width:60%"></div></section>
       <section class="card set-card">
@@ -2216,6 +2382,7 @@
       try { const r = await api("/api/profile/pin", { old, pin: code }); ME.profile = r.profile; toast(remove ? "Lock removed" : "Profile locked"); route(); }
       catch (e) { toast(e.message, 5000); }
     };
+    const sm = $("#splitMe"); if (sm) sm.onclick = () => splitJoint(p);
     const ps = $("#pinSet"), pc = $("#pinChange"), po = $("#pinOff");
     if (ps) ps.onclick = () => setPin(false);
     if (pc) pc.onclick = () => setPin(false);
@@ -2245,10 +2412,10 @@
     box.innerHTML = `
       <section class="card set-card">
         <h2 class="set-title">Profiles</h2>
-        ${pr.pending && pr.pending.length ? `<h3 class="sr-sub">Asked For</h3><div class="list">${pr.pending.map((p) => `<div class="li">${avatar(p.icon, "xs")}<span class="grow">${esc(p.name)}</span>
+        ${pr.pending && pr.pending.length ? `<h3 class="sr-sub">Asked For</h3><div class="list">${pr.pending.map((p) => `<div class="li">${pav(p, "xs")}<span class="grow">${esc(p.name)}</span>
           <button class="btn primary small" data-papprove="${p.id}">Approve</button><button class="btn secondary small" data-pdeny="${p.id}">Deny</button></div>`).join("")}</div><h3 class="sr-sub">Profiles</h3>` : ""}
-        <div class="list">${pr.profiles.map((p) => `<div class="li">${avatar(p.icon, "xs")}<span class="grow">${esc(p.name)}${p.locked ? ` <span class="badge">${ic("lock")} Locked</span>` : ""}</span>
-          ${p.locked ? `<button class="btn secondary small" data-unlock="${p.id}" title="Takes the code off, you never see what it was">Remove Lock</button>` : ""}
+        <div class="list">${pr.profiles.map((p) => `<div class="li">${pav(p, "xs")}<span class="grow">${esc(p.name)}${p.folder ? ` <span class="secondary">${esc(p.folder)}</span>` : ""}${p.locked ? ` <span class="badge">${ic("lock")} Locked</span>` : ""}</span>
+          ${p.locked && !p.members ? `<button class="btn secondary small" data-unlock="${p.id}" title="Takes the code off, you never see what it was">Remove Lock</button>` : ""}
           <button class="btn secondary small" data-editp="${p.id}">${ic("pencil")} Edit</button></div>`).join("")}</div>
         <div class="actions end"><button class="btn secondary small" id="addP">${ic("plus")} Add Profile</button></div>
       </section>
@@ -2273,14 +2440,14 @@
     drawDevices();
     drawAddons();
     drawLiveAdmin();
-    $$("[data-editp]", box).forEach((b) => (b.onclick = () => editProfile(pr.profiles.find((x) => x.id === Number(b.dataset.editp)), () => drawAdminSettings())));
+    $$("[data-editp]", box).forEach((b) => (b.onclick = () => editProfile(pr.profiles.find((x) => x.id === Number(b.dataset.editp)), () => drawAdminSettings(), pr.folders)));
     $$("[data-papprove]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/profiles/${b.dataset.papprove}/approve`, {}); toast("Profile approved"); drawAdminSettings(); }));
     $$("[data-pdeny]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/profiles/${b.dataset.pdeny}`, undefined, "DELETE"); toast("Request removed"); drawAdminSettings(); }));
     $$("[data-unlock]", box).forEach((b) => (b.onclick = async () => {
       if (!(await confirmSheet("Remove this lock?", "Anyone can open the profile again until they set a new code. You never get to see the old code.", "Remove Lock"))) return;
       await api(`/api/admin/profiles/${b.dataset.unlock}/pin-reset`, {}); toast("Lock removed"); drawAdminSettings();
     }));
-    $("#addP").onclick = () => editProfile(null, () => drawAdminSettings());
+    $("#addP").onclick = () => editProfile(null, () => drawAdminSettings(), pr.folders);
     $("#fillMine").onclick = () => { $("#ipCidr").value = mine; $("#ipLabel").focus(); };
     $("#ipForm").onsubmit = async (e) => {
       e.preventDefault();

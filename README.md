@@ -5,7 +5,7 @@ Netflix style family library for the storage box, with the torbox sync, server s
 ## How people get in
 
 - Family dont need a login. If there internet address is on the allow list they see the **Who's watching?** screen and pick a profile.
-- Profiles can sit in folders like Barker Family or Stroll Family, the picker groups them under each folder name. Set it on the profile's Edit sheet.
+- Profiles can sit in folders like Barker Family or Stroll Family, the picker shows each folder as one iOS style folder tile with its first 4 profiles inside, and tapping it opens the rest. Set it on the profile's Edit sheet.
 - **Watch Together** on the picker joins two profiles into a joint one like "Tina & Trevor". It sees both people's history, ratings, My List and interests, and what's watched on it is saved to both of them. Locked profiles need their own code to join, either code opens the joint one, and it can be split any time.
 - Profile icons can be one of Kino's own, a movie or show poster, a meme (imgflip) or a brand logo (simple-icons), all searchable on the Edit sheet.
 - Each profile has its own continue watching, watched ticks, thumbs up or down, recommendations and playback settings (audio and subtitle language, subtitle size, autoplay, skip intros).

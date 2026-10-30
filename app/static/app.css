@@ -1590,13 +1590,7 @@ body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none
 body.tv .who-tile:hover:not(:focus-visible) .av-duo .av-half:first-child { box-shadow: none; }
 body.tv .who-tile:hover:not(:focus-visible) .av-duo .av-half:last-child { box-shadow: 0 0 0 4px var(--page-bg, #000); }
 
-/* folders sit next to each other and wrap, each with its name above it */
-.who-groups { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: clamp(16px, 3.5vh, 36px) clamp(28px, 5vw, 80px); max-width: min(1400px, 96vw); }
-.who-group { display: flex; flex-direction: column; align-items: center; max-width: 100%; }
-.who-group .who-grid { max-width: 100%; }
-.who-extra { margin-top: clamp(16px, 3.5vh, 36px); }
 .av.av-duo { display: inline-block; vertical-align: top; }
-.who-folder { font-size: clamp(13px, 1.9vh, 15px); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--label-2); margin: 0 0 clamp(10px, 2vh, 18px); }
 .who-tile.joint .who-name { max-width: 190px; }
 
 .jp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; margin: 14px 0; }
@@ -1631,7 +1625,6 @@ body.tv .who-tile:hover:not(:focus-visible) .av-duo .av-half:last-child { box-sh
   .jp-preview .field { min-width: 0; flex: 1 1 100%; }
   .ib-grid { max-height: 38vh; }
 }
-@media (max-width: 600px) { .who-folder[aria-hidden] { display: none; } }
 @media (max-width: 600px) {
   .ib-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -4px 10px; padding: 0 4px; }
   .ib-tabs::-webkit-scrollbar { display: none; }
@@ -1649,3 +1642,19 @@ body.tv .who-tile:hover:not(:focus-visible) .av-duo .av-half:last-child { box-sh
   .jp-warn ul { margin-top: 4px; }
   .jp-warn li + li { margin-top: 1px; }
 }
+
+/* folders on the picker look like an ios folder: a rounded square with the first 4 profiles inside */
+.fold-ic { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 7%; padding: 9%; box-sizing: border-box; border-radius: 22%;
+  width: var(--who-av, clamp(96px, 12vw, 150px)); height: var(--who-av, clamp(96px, 12vw, 150px)); background: var(--bg-3); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1); }
+.fold-cell { display: block; min-width: 0; min-height: 0; }
+.fold-cell .av { width: 100%; height: 100%; border-radius: 22%; box-shadow: none; }
+.fold-cell .av-duo .av-half:last-child { box-shadow: 0 0 0 1.5px var(--bg-3); }
+.fold-count { position: absolute; right: -6px; bottom: -6px; min-width: 26px; height: 26px; padding: 0 7px; box-sizing: border-box; border-radius: 999px; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--label); color: var(--page-bg); box-shadow: 0 0 0 3px var(--page-bg); }
+.who-tile:hover .fold-ic, .who-tile:focus-visible .fold-ic { box-shadow: 0 0 0 4px var(--label), 0 20px 40px rgba(0, 0, 0, 0.6); }
+body.tv .who-tile:hover:not(:focus-visible) .fold-ic { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1); }
+.fold-title { text-align: center; margin: 0 0 18px; }
+.fold-grid { justify-content: center; padding: 8px 4px 6px; }
+.sheet .fold-grid .av.lg { width: clamp(72px, 20vw, 100px); height: clamp(72px, 20vw, 100px); }
+.fold-rename { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
+.fold-rename .field { margin: 0; }
+@media (max-height: 600px) { .sheet .fold-grid .av.lg { width: 68px; height: 68px; } .fold-title { margin-bottom: 8px; } }

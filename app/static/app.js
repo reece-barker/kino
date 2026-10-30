@@ -529,32 +529,52 @@
     const tile = (p) => `<button class="who-tile ${p.members ? "joint" : ""}" data-pid="${p.id}" aria-label="${manage ? "Edit" : "Watch as"} ${esc(p.name)}">
           <span class="who-av">${pav(p, "lg")}${manage ? `<span class="who-edit">${ic("pencil")}</span>` : ""}${p.kids ? `<span class="who-kids">Kids</span>` : ""}${p.locked && !manage ? `<span class="who-lock">${ic("lock")}</span>` : ""}</span>
           <span class="who-name">${esc(p.name)}</span></button>`;
-    // Profiles without a folder go first, then each folder in name order with its heading
-    const groups = [["", r.profiles.filter((p) => !p.folder)], ...r.folders.map((f) => [f, r.profiles.filter((p) => p.folder === f)])].filter((g) => g[1].length);
+    const loose = r.profiles.filter((p) => !p.folder);
     const singles = r.profiles.filter((p) => !p.members);
+    // A folder is one tile that looks like an ios folder, with up to 4 of its profiles inside. Opening it shows them all
+    const folderTile = (f) => {
+      const ps = r.profiles.filter((p) => p.folder === f);
+      return `<button class="who-tile folder" data-folder="${esc(f)}" aria-label="Open the ${esc(f)} folder, ${ps.length} profile${ps.length === 1 ? "" : "s"}">
+        <span class="who-av"><span class="fold-ic">${ps.slice(0, 4).map((p) => `<span class="fold-cell">${pav(p)}</span>`).join("")}</span>${ps.length > 4 ? `<span class="fold-count">+${ps.length - 4}</span>` : ""}</span>
+        <span class="who-name">${esc(f)}</span></button>`;
+    };
     const extra = (!!ME.admin ? `<button class="who-tile add" id="addProfile" aria-label="Add a profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Add Profile</span></button>`
       : manage ? "" : `<button class="who-tile add" id="askProfile" aria-label="Ask for your own profile"><span class="who-av"><span class="av lg addav">${ic("plus")}</span></span><span class="who-name">Ask for a Profile</span></button>`)
       + (!manage && singles.length > 1 ? `<button class="who-tile add" id="jointProfile" aria-label="Watch together, join two profiles"><span class="who-av"><span class="av lg addav">${ic("people")}</span></span><span class="who-name">Watch Together</span></button>` : "");
-    app.innerHTML = `<main class="who ${r.folders.length ? "foldered" : ""}">
+    app.innerHTML = `<main class="who">
       <h1 class="who-title">${manage ? "Manage Profiles" : "Who's Watching?"}</h1>
-      <div class="who-groups">${groups.map(([f, ps], gi) => `<section class="who-group" ${f ? `aria-label="${esc(f)}"` : ""}>${r.folders.length ? `<h2 class="who-folder" ${f ? "" : `aria-hidden="true"`}>${f ? esc(f) : "&nbsp;"}</h2>` : ""}
-        <div class="who-grid ${manage ? "managing" : ""}">${ps.map(tile).join("")}${gi === groups.length - 1 && !r.folders.length ? extra : ""}</div></section>`).join("")}</div>
-      ${r.folders.length || !groups.length ? `<div class="who-grid who-extra">${extra}</div>` : ""}
+      <div class="who-grid ${manage ? "managing" : ""}">${loose.map(tile).join("")}${r.folders.map(folderTile).join("")}${extra}</div>
       <div class="who-actions">${manage ? `<button class="btn primary" id="doneManage">Done</button>` : ME.admin ? `<button class="btn outline" id="manageBtn">Manage Profiles</button>` : ""}</div>
     </main>`;
-    $$(".who-tile[data-pid]").forEach((b) => (b.onclick = async () => {
-      const p = r.profiles.find((x) => x.id === Number(b.dataset.pid));
+    // from is the folder it was opened out of, so cancelling a code puts you back in the folder
+    const pick = async (p, from) => {
       if (manage) return editProfile(p, () => pageProfiles(true), r.folders);
       let res;
       if (p.locked) {
         const who = p.members ? p.members.map((m) => m.name).join("'s or ") + "'s" : p.name + "'s";
         res = await pinPad(`Enter ${who} Code`, (code) => api(`/api/profiles/${p.id}/select`, { pin: code }));
-        if (!res) return;
+        if (!res) return from && openFolder(from);
       } else res = await api(`/api/profiles/${p.id}/select`, {});
+      closeSheet();
       ME.profile = res.profile; ME.features = null;
       location.hash = "#/home";
       if (location.hash === "#/home") route();
-    }));
+    };
+    const openFolder = (f) => {
+      const ps = r.profiles.filter((p) => p.folder === f);
+      const s = sheet(`<h2 class="fold-title">${esc(f)}</h2>
+        <div class="who-grid fold-grid ${manage ? "managing" : ""}">${ps.map(tile).join("")}</div>
+        ${manage && ME.admin ? `<div class="fold-rename"><label class="field grow"><span class="sr">Folder name</span><input id="fRen" maxlength="24" value="${esc(f)}"></label><button class="btn secondary small" id="fRenGo">Rename Folder</button></div><div class="form-err" id="fRenErr" role="alert"></div>` : ""}
+        <div class="actions end"><button class="btn secondary small" data-close>Close</button></div>`);
+      $$(".who-tile[data-pid]", s.el).forEach((b) => (b.onclick = () => pick(r.profiles.find((x) => x.id === Number(b.dataset.pid)), f)));
+      const rn = $("#fRenGo", s.el);
+      if (rn) rn.onclick = async () => {
+        try { await api("/api/admin/folders", { old: f, new: $("#fRen", s.el).value }, "PUT"); s.close(); pageProfiles(true); }
+        catch (e) { $("#fRenErr", s.el).textContent = e.message; }
+      };
+    };
+    $$(".who-tile[data-pid]", app).forEach((b) => (b.onclick = () => pick(r.profiles.find((x) => x.id === Number(b.dataset.pid)))));
+    $$(".who-tile[data-folder]", app).forEach((b) => (b.onclick = () => openFolder(b.dataset.folder)));
     const add = $("#addProfile"); if (add) add.onclick = () => editProfile(null, () => pageProfiles(manage), r.folders);
     const ask = $("#askProfile"); if (ask) ask.onclick = () => askProfile();
     const jp = $("#jointProfile"); if (jp) jp.onclick = () => jointSheet(r);

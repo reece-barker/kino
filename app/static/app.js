@@ -1777,10 +1777,22 @@
       $$("[data-playep]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playep, t.videos.find((v) => v.id === b.dataset.playep))));
       $$("[data-saveep]").forEach((b) => (b.onclick = () => saveEpisode(b.dataset.saveep, t)));
     };
-    $("#extSeasons").innerHTML = seasonPick(t.season_list, target.season, t.videos);
-    $("#seasonPick").onchange = (e) => drawEps(Number(e.target.value));
-    drawEps(target.season);
-    drawStreams(kind, target.id, t, target);
+    // The seasons and episodes wait for the Play button and the sources, so the page doesn't fill in the bottom while the top is still
+    // loading. They show as placeholders until then (and by 10 seconds at the latest, when a slow addon is still being asked)
+    $("#extSeasons").innerHTML = `<span class="sk sk-btn short" aria-hidden="true"></span>`;
+    $("#eps").setAttribute("aria-busy", "true");
+    $("#eps").innerHTML = Array.from({ length: 4 }, () => `<div class="ep" aria-hidden="true"><div class="sk" style="aspect-ratio:16/9;border-radius:14px"></div><div class="sk sk-line" style="width:60%;margin-top:10px"></div></div>`).join("");
+    let shown = false;
+    const reveal = () => {
+      if (shown || n !== ROUTE_N || !$("#eps")) return;
+      shown = true;
+      $("#eps").removeAttribute("aria-busy");
+      $("#extSeasons").innerHTML = seasonPick(t.season_list, target.season, t.videos);
+      $("#seasonPick").onchange = (e) => drawEps(Number(e.target.value));
+      drawEps(target.season);
+    };
+    const wait = setTimeout(reveal, 10000);
+    drawStreams(kind, target.id, t, target).catch(() => {}).finally(() => { clearTimeout(wait); reveal(); });
   }
 
   // A video from youtubio or another addon with its own kind of stuff. One video goes straight to its sources like a

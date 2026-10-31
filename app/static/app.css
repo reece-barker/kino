@@ -1144,6 +1144,9 @@ body.pip .player-ui, body.pip .skip-intro, body.pip .up-next, body.pip .subs-lay
 .tile-x:hover { background: rgba(0, 0, 0, 0.8); }
 @media (hover: none) { .tile-x { opacity: 1; } }
 
+/* no dragging pictures out of the page, and no long press save menu on them */
+img, picture, video, canvas { -webkit-user-drag: none; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+
 /* back button on title pages for phones */
 .page-back { display: none; position: fixed; z-index: 45; top: calc(12px + env(safe-area-inset-top)); left: calc(12px + env(safe-area-inset-left));
   width: 40px; height: 40px; border-radius: 50%; place-items: center; font-size: 22px; color: #fff; background: rgba(0, 0, 0, 0.45); }

@@ -3,8 +3,12 @@
 # The dashboard itself cant touch nginx, it only writes a json file and this checks every entry before using it
 import ipaddress
 import json
+import os
+import secrets
 import shutil
+import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -13,9 +17,42 @@ DEST = Path("/etc/nginx/snippets/kino-allow.conf")
 APPLIED = Path("/var/lib/kino/allowlist-applied.json")
 
 
+def write_safe(path, text):
+    # The folder belongs to the kino user but this runs as root, so a plain write could be pointed at any file on the
+    # vps with a symlink. This writes a brand new temp file (never follows a link) and swaps it in, and says no if the
+    # real name is a symlink. Mode is 644 and not 640 because the file is owned by root and the dashboard has to read it
+    folder, name = os.path.dirname(str(path)), os.path.basename(str(path))
+    dfd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            if stat.S_ISLNK(os.lstat(name, dir_fd=dfd).st_mode):
+                raise OSError(f"{path} is a symlink, not writing to it")
+        except FileNotFoundError:
+            pass
+        tmp = f".{name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+                f.flush()
+                os.fchmod(f.fileno(), 0o644)
+            os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dfd)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(dfd)
+
+
 def report(ok, count=0, error=None):
-    APPLIED.write_text(json.dumps({"ok": ok, "count": count, "error": error, "applied_at": time.time()}))
-    APPLIED.chmod(0o644)
+    try:
+        write_safe(APPLIED, json.dumps({"ok": ok, "count": count, "error": error, "applied_at": time.time()}))
+    except OSError as e:
+        # The result is in the journal at least, the dashboard just wont see it
+        print(f"couldnt write {APPLIED}: {e} (ok={ok}, error={error})", file=sys.stderr, flush=True)
 
 
 def main():

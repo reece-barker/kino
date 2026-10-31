@@ -1,0 +1,7 @@
+[Unit]
+Description=Kino dashboard health check
+
+[Service]
+Type=oneshot
+ExecStart=/opt/kino-tools/kino-health
+TimeoutStartSec=2min

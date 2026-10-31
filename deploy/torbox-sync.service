@@ -19,3 +19,10 @@ StateDirectoryMode=0755
 TimeoutStartSec=infinity
 KillSignal=SIGTERM
 TimeoutStopSec=20
+# Runs as root so it gets a few locks, and it stays out of the way of the dashboard while a big sync is going.
+# No ProtectHome on purpose, sync.py its self lives in /root/torbox-sync and it wouldnt even start
+Nice=10
+IOSchedulingClass=idle
+CPUWeight=50
+PrivateTmp=yes
+NoNewPrivileges=yes

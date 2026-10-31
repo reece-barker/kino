@@ -102,7 +102,7 @@ systemctl restart polkit 2>/dev/null || true
 
 step "Allow list, mount watchdog and helpers"
 mkdir -p /opt/kino-tools /var/lib/kino
-install -m 755 "$HERE/deploy/kino-watchdog.py" "$HERE/deploy/kino-allowlist.py" /opt/kino-tools/
+install -m 755 "$HERE/deploy/kino-watchdog.py" "$HERE/deploy/kino-allowlist.py" "$HERE/deploy/kino-health" /opt/kino-tools/
 # The settings page keeps the allow list in a json file, the first time its filled from the nginx list you already have
 if [ ! -s /var/lib/kino/allowlist.json ]; then
   SRC=/etc/nginx/snippets/kino-allow.conf
@@ -116,12 +116,13 @@ PY
 fi
 chown -R kino:kino /var/lib/kino
 cp "$HERE"/deploy/kino-watchdog.service "$HERE"/deploy/kino-watchdog.timer \
-   "$HERE"/deploy/kino-allowlist.service "$HERE"/deploy/kino-allowlist.path /etc/systemd/system/
+   "$HERE"/deploy/kino-allowlist.service "$HERE"/deploy/kino-allowlist.path \
+   "$HERE"/deploy/kino-health.service "$HERE"/deploy/kino-health.timer /etc/systemd/system/
 
 step "Starting the dashboard service"
 cp "$HERE/deploy/kino.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable -q --now torbox-sync.timer kino-watchdog.timer kino-allowlist.path
+systemctl enable -q --now torbox-sync.timer kino-watchdog.timer kino-allowlist.path kino-health.timer
 systemctl enable -q kino.service
 systemctl restart kino.service
 for i in $(seq 1 30); do

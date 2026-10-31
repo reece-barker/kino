@@ -29,6 +29,9 @@ jobs:
           APKV=$("$AAPT" dump badging app/static/kino.apk | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")
           WANT=$(python3 -c "import json; print(json.load(open('app/static/kino-version.json'))['code'])")
           test "$APKV" = "$WANT" || { echo "kino.apk is versionCode $APKV but kino-version.json says $WANT, copy the new build into app/static"; exit 1; }
+          # And it has to be signed with the real kino key, a debug signed one cant update any installed app
+          APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner"
+          "$APKSIGNER" verify --print-certs app/static/kino.apk | grep -q "SHA-256 digest: 2613c04142023134fd4092b2c7f118f0f916eae175e0b9418558056ea50ab2e8" || { echo "kino.apk isnt signed with the Kino key, rebuild it with KINO_KEYSTORE set"; exit 1; }
           bash -n install.sh
           bash -n deploy/update.sh
 

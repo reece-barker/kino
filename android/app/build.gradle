@@ -9,8 +9,8 @@ android {
         applicationId "page.reece.kino"
         minSdk 24
         targetSdk 35
-        versionCode 13
-        versionName "2.2"
+        versionCode 14
+        versionName "2.3"
         // The address the app opens, change it here if kino ever moves
         buildConfigField "String", "KINO_URL", "\"https://kino.reece.page/\""
     }
@@ -35,6 +35,11 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            if (!System.getenv("KINO_KEYSTORE") && !System.getenv("CI") && !project.hasProperty("allowDebugSigned")
+                    && gradle.startParameter.taskNames.any { it.toLowerCase().contains("release") }) {
+                // A debug signed apk cant update any installed Kino, android refuses it, so a release build never falls back by accident
+                throw new GradleException("No KINO_KEYSTORE set, a release build needs the real Kino key (pass -PallowDebugSigned for a throwaway test build)")
+            }
             signingConfig System.getenv("KINO_KEYSTORE") ? signingConfigs.kino : signingConfigs.debug
         }
     }

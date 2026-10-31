@@ -109,9 +109,12 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             finish();
             return;
         }
-        base = info.optString("base").replaceAll("/+$", "");
+        // Always the real server, whatever the page sent. A base from the page could point at someone elses server and the
+        // kino cookie would be sent there with every request
+        base = BuildConfig.KINO_URL.replaceAll("/+$", "");
         ua = info.optString("ua");
         fid = info.optString("fid");
+        if (!fid.matches("[\\w.:-]{1,120}")) { finish(); return; }
         live = info.optBoolean("live");
         liveList = info.optJSONArray("channels");
         liveIdx = info.optInt("index", 0);
@@ -576,6 +579,10 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         else startDirect(at);
     }
 
+    private static String rel(String p) {
+        return p != null && p.startsWith("/") ? p : "/";
+    }
+
     private void startDirect(double at) {
         hls = false;
         offset = 0;
@@ -583,17 +590,17 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         JSONArray js = info.optJSONArray("subs");
         for (int i = 0; js != null && i < js.length(); i++) {
             JSONObject s = js.optJSONObject(i);
-            if (s != null) subs.add(new Engine.Sub(base + s.optString("url"), s.optString("label"), s.optString("lang")));
+            if (s != null) subs.add(new Engine.Sub(base + rel(s.optString("url")), s.optString("label"), s.optString("lang")));
         }
         JSONObject v = info.optJSONObject("video");
         String what = v == null ? "" : (v.optString("codec").toUpperCase(Locale.ROOT) + (v.optInt("height") >= 2000 ? " 4K" : v.optInt("height") >= 1000 ? " 1080p" : ""));
         if (live) {
             step("Tuning in", info.optString("title"));
-            eng.open(base + info.optString("url"), true, -1, subs);
+            eng.open(base + rel(info.optString("url")), true, -1, subs);
             return;
         }
         step(eng.name().equals("exo") ? "Direct play" : "Direct play with the Android player", what.trim());
-        eng.open(base + info.optString("url"), false, (long) (at * 1000), subs);
+        eng.open(base + rel(info.optString("url")), false, (long) (at * 1000), subs);
         if (speed != 1f) eng.speed(speed);
     }
 
@@ -612,7 +619,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                     sid = r.optString("sid");
                     offset = r.optDouble("offset", at);
                     step("Buffering", null);
-                    eng.open(base + r.optString("url"), true, 0, new ArrayList<>());
+                    eng.open(base + rel(r.optString("url")), true, 0, new ArrayList<>());
                     if (speed != 1f) eng.speed(speed);
                 });
             } catch (Exception e) {
@@ -778,6 +785,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     }
 
     private void seekTo(double t) {
+        if (eng == null) return;
         lastSeekAt = System.currentTimeMillis();
         t = Math.max(0, Math.min(t, dur() > 0 ? dur() - 1 : t));
         if (!hls) { eng.seek((long) (t * 1000)); return; }
@@ -1060,7 +1068,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         new Thread(() -> {
             try {
                 JSONObject r = new JSONObject(post("/api/extlink/" + Uri.encode(fid), "{}"));
-                Uri u = Uri.parse(base + r.getString("url"));
+                Uri u = Uri.parse(base + rel(r.getString("url")));
                 runOnUiThread(() -> {
                     Intent i = new Intent(Intent.ACTION_VIEW).setDataAndType(u, "video/*");
                     i.putExtra("title", info.optString("title") + (info.optString("sub").isEmpty() ? "" : "  " + info.optString("sub")));
@@ -1168,7 +1176,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         errorShown = false;
         closeDialog();
         relaunchLoading("Tuning in");
-        eng.open(base + "/api/live/" + ch.optString("id") + "/index.m3u8", true, -1, new ArrayList<>());
+        eng.open(base + "/api/live/" + Uri.encode(ch.optString("id")) + "/index.m3u8", true, -1, new ArrayList<>());
     }
     // Buffering watch: when this source keeps stopping to load it offers the next one, or moves on by itself
     private long bufStart, lastSeekAt, stallAskedAt, playedAt;
@@ -1429,6 +1437,19 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         super.onStop();
         // Leaving the app pauses it, coming back carries on. Not when VLC is in front, that one is playing it
         if (eng != null && !isFinishing()) { save(); eng.pause(); }
+        h.removeCallbacks(tick);
+        h.removeCallbacks(saver);
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (eng != null) {
+            h.removeCallbacks(tick);
+            h.removeCallbacks(saver);
+            h.post(tick);
+            h.postDelayed(saver, 10000);
+        }
     }
 
     @Override

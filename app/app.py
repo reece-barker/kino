@@ -3542,6 +3542,8 @@ async def stream_bad(sid: str, p=Depends(current_profile)):
     host = urlparse(r["url"]).hostname or ""
     if host_busy(host, 120):
         return {"ok": True, "busy": True, "host": host}
+    if time.time() - SLOW_START.get(r["url"], 0) < 180:
+        return {"ok": True, "busy": False, "slow": True, "host": host}  # it was still getting it ready, that may well be done next time
     db().q("INSERT INTO stream_health (id, good, bad) VALUES (?, 0, ?) ON CONFLICT(id) DO UPDATE SET bad = excluded.bad", (sid, time.time()))
     return {"ok": True, "busy": False, "host": host}
 
@@ -4651,7 +4653,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
                     str(meta.get("releaseInfo") or "")[:4], time.time()))
             w = watch_row(p["id"], sid, "pos, dur, watched")
             out.append({"id": sid, **stream_facts(st, url, label), "addon": a["m"].get("name"),
-                        "progress": dict(w[0]) if w else None, "_url": url})
+                        "progress": dict(w[0]) if w else None, "_url": url, "_hash": find_hash(st, url)})
     # TorBox copies first, then a source that played fine before, then ones not tried yet, and ones that failed last.
     # After that the ones that play in a browser, then the best quality
     health = {r["id"]: r for r in db().q("SELECT id, good, bad FROM stream_health WHERE id IN (%s)" % ",".join("?" * len(out)), [x["id"] for x in out])} if out else {}
@@ -4678,6 +4680,19 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
                 x["_ok"], x["why"], size = hit
                 if size and not x["bytes"]:
                     x["bytes"] = size  # the source's own size, for the ones whose addon didnt say
+    # TorBox: which sources can start right away and which would have to download first
+    if out and TORBOX_KEY and not inline:
+        hs = sorted({x["_hash"] for x in out if x.get("_hash")})
+        if hs:
+            cached, prog = await asyncio.gather(tb_cached(hs), tb_progress())
+            for x in out:
+                h = x.get("_hash")
+                if h:
+                    x["tb"], slow = tb_judge(h, cached.get(h), prog)
+                    if slow:
+                        x["slow"] = slow
+                    if x["tb"].get("seeds") is not None and x.get("seeders") is None:
+                        x["seeders"], x["peers"] = x["tb"]["seeds"], x["tb"].get("peers")
     for x in out:
         x["health"] = "dead" if x.get("_ok") is False else ("good", "untried", "failed")[rank(x)]
         x.pop("_ok", None)
@@ -4694,7 +4709,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         r = rank(x)
         if r == 2:
             return 4
-        if x["suspect"]:
+        if x["suspect"] or x.get("slow"):
             return 3
         if x.get("addon") in prio:
             return 0
@@ -4707,13 +4722,17 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
     for x in out:
         g = group(x)
         x["tier"] = (f"Priority: {names[min(4, prio[x['addon']])]}" + (", worked before" if rank(x) == 0 else "")) if g == 0 else "Worked before" if g == 1 else ""
-    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100) if group(x) == 0 else 0, rank(x) if group(x) == 0 else 0, not x["plays"],
+        if (x.get("tb") or {}).get("cached"):
+            x["tier"] = (x["tier"] + ", " if x["tier"] else "") + "Instant on TorBox"
+    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100) if group(x) == 0 else 0, rank(x) if group(x) == 0 else 0,
+                            0 if (x.get("tb") or {}).get("cached") else 1, not x["plays"],
                             -(x["seeders"] if x.get("seeders") is not None else -1), -x["height"], -(x["bytes"] or 0)))
     if video_type(kind):
         # Youtubio lists every quality twice (its own sponsor cutting player and the plain one), the top few is plenty
         out = out[:12]
     for x in out:
         x.pop("_url", None)
+        x.pop("_hash", None)
     res = {"streams": out, "dropped": dropped, "checked": len(rows), "partial": bool(quick and any(x["error"] == "took too long to answer" for x in report)), "fresh": fresh, "too_new": too_new}
     # What this title turned out to have, for hiding ones with nothing. Found something always counts, nothing only
     # counts for a film when every addon answered (shows get checked by there first episodes in the background)
@@ -4956,6 +4975,7 @@ async def tb_open(url, headers):
 
 async def pd_open(url, headers, kind="play"):
     """Opens a public domain video, following redirects but only ever to public domain hosts"""
+    first_url = url
     first = urlparse(url).hostname or ""
     wait = up_wait(first)
     if wait > 0:
@@ -4973,7 +4993,13 @@ async def pd_open(url, headers, kind="play"):
                 log.info("stream blocked, it went to %s which isn't in PD_HOSTS", url)
                 raise HTTPException(400, f"That stream sent Kino on to {host}, which isn't on the public domain list (PD_HOSTS)")
             await check_host(urlparse(url).hostname)
-            r = await client.send(client.build_request("GET", url, headers=headers), stream=True)
+            try:
+                # The first answer is waited for 15 seconds when playing. A debrid address that has to get the file ready first can sit there for
+                # minutes, or for ever when nobody is sharing it, so after that the player is told to take another source
+                r = await asyncio.wait_for(client.send(client.build_request("GET", url, headers=headers), stream=True), 15 if kind == "play" else 30)
+            except asyncio.TimeoutError:
+                SLOW_START[first_url] = time.time()
+                raise HTTPException(504, f"{urlparse(url).hostname or 'The source'} is taking too long to start this one, it is probably still getting it ready")
             up_note(urlparse(url).hostname or "", kind, r.status_code, retry_after(r.headers.get("retry-after")))
             if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                 await r.aclose()
@@ -4993,6 +5019,101 @@ async def rstream(sid: str, request: Request, dl: int = 0, p=Depends(current_pro
 
 def video_answer(status, ctype):
     return status in (200, 206) and (ctype.startswith("video/") or ctype in ("application/octet-stream", "application/ogg"))
+
+
+# ---- TorBox: can this source start right away? A source address from a debrid addon asks TorBox for the file when it is opened. If TorBox
+# already has it that is instant, if it doesnt it has to download it first, which can take a long time or never start (nobody is sharing it).
+# The torrent's hash is in the address of most of these. TorBox's checkcached says which ones it has, and mylist says how the ones already
+# asked for are getting on (state, seeds, peers). Anything that can't be told is left as it is
+HASH_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])")
+TB_SEEN = {}   # hash -> (when, cached)
+TB_LIST = {"at": 0, "by": {}}
+SLOW_START = {}  # source address -> when it took too long to start
+
+
+def find_hash(st, url):
+    h = st.get("infoHash")
+    if isinstance(h, str) and HASH_RE.fullmatch(h):
+        return h.lower()
+    for t in (url, json.dumps(st.get("behaviorHints") or {}), str(st.get("title") or ""), str(st.get("description") or "")):
+        m = HASH_RE.search(t or "")
+        if m:
+            return m.group(0).lower()
+    return None
+
+
+async def tb_cached(hashes):
+    """hash -> True (TorBox has it, starts right away) or False (it would have to download it). Left out when it can't be told"""
+    now = time.time()
+    out, ask = {}, []
+    for h in hashes:
+        hit = TB_SEEN.get(h)
+        if hit and now - hit[0] < (1800 if hit[1] else 180):
+            out[h] = hit[1]
+        else:
+            ask.append(h)
+    if ask and TORBOX_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=6, headers={"Authorization": f"Bearer {TORBOX_KEY}"}) as c:
+                r = await c.get(f"{TORBOX_API}/torrents/checkcached", params={"hash": ask[:100], "format": "object"})
+            if r.status_code == 200:
+                data = r.json().get("data")
+                have = {str(k).lower() for k, v in data.items() if v} if isinstance(data, dict) else {str(x).lower() for x in data or []}
+                for h in ask[:100]:
+                    TB_SEEN[h] = (now, h in have)
+                    out[h] = h in have
+            elif r.status_code == 429:
+                up_note(urlparse(TORBOX_API).hostname or "", "check", 429, retry_after(r.headers.get("retry-after")))
+        except Exception as e:
+            log.info("torbox cache check failed: %s", e)
+        if len(TB_SEEN) > 5000:
+            TB_SEEN.clear()
+    return out
+
+
+async def tb_progress():
+    """hash -> how a torrent already in the TorBox account is getting on: state, progress, seeds, peers, speed. 45 seconds are remembered"""
+    if not TORBOX_KEY:
+        return {}
+    if time.time() - TB_LIST["at"] < 45:
+        return TB_LIST["by"]
+    by = {}
+    try:
+        async with httpx.AsyncClient(timeout=8, headers={"Authorization": f"Bearer {TORBOX_KEY}"}) as c:
+            r = await c.get(f"{TORBOX_API}/torrents/mylist", params={"limit": 1000})
+        if r.status_code == 200:
+            for it in r.json().get("data") or []:
+                h = str(it.get("hash") or "").lower()
+                if h:
+                    by[h] = {"state": str(it.get("download_state") or ""), "progress": it.get("progress"), "seeds": it.get("seeds"), "peers": it.get("peers"),
+                             "speed": it.get("download_speed"), "done": bool(it.get("download_finished") or it.get("download_present"))}
+            TB_LIST.update(at=time.time(), by=by)
+    except Exception as e:
+        log.info("torbox list failed: %s", e)
+        TB_LIST["at"] = time.time() - 30  # try again in 15 seconds, not on every list
+    return TB_LIST["by"]
+
+
+def tb_judge(h, cached, prog):
+    """What to tell about a source from TorBox: (a label for the sheet, why it is slow or None)"""
+    p = prog.get(h)
+    if cached:
+        return {"cached": True, "state": "cached"}, None
+    info = {"cached": False if cached is False else None}
+    if p and p["done"]:
+        return {**info, "cached": True, "state": "in your account"}, None
+    if p:
+        state = p["state"].lower()
+        seeds = p["seeds"] if isinstance(p["seeds"], int) else None
+        peers = p["peers"] if isinstance(p["peers"], int) else None
+        pct = int(float(p["progress"]) * 100) if isinstance(p["progress"], (int, float)) and p["progress"] <= 1 else None
+        info.update(state=state, progress=pct, seeds=seeds, peers=peers)
+        if "stall" in state or (seeds == 0 and not (p.get("speed") or 0)):
+            return info, "stalled on TorBox, nobody is sharing it (no seeds)" + (f", {pct}% done" if pct else "")
+        return info, "still downloading on TorBox" + (f" ({pct}%" + (f", {seeds} seeds" if seeds is not None else "") + ")" if pct is not None else "")
+    if cached is False:
+        return info, "not on TorBox yet, it has to download first, which can take a long time or never start"
+    return info, None
 
 
 # Is a source answering right now? The first few candidates are asked for their first bytes when the sources list is made, so one that is dead

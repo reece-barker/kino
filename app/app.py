@@ -3967,15 +3967,9 @@ async def has_sources(kind, mid):
     """True, False, or None when it cant be sure (an addon didnt answer, or theres nothing to ask)"""
     vids = [mid] if kind == "movie" else [f"{mid}:1:1", f"{mid}:1:2"]
     rows = [a for a in addon_rows() if supports(a["m"], "stream", kind, vids[0])]
-    if not rows and not TORBOX_KEY:
+    if not rows:
         return None
-    meta = await meta_lookup(kind, mid) or {}
     for vid in vids:
-        try:
-            if await tb_matches(kind, vid, meta):
-                return True
-        except Exception:
-            return None
         for a in rows:
             try:
                 j = await addon_call(a, "stream", kind, vid, ttl=3 * 3600, timeout=30)
@@ -4440,22 +4434,8 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
             return a, [], "couldn't be reached" if isinstance(e, (httpx.ConnectError, socket.gaierror)) else "gave an error"
 
     out, dropped, report = [], 0, []
-    # Your own torbox copy goes first, it's nearly always better than a public domain one
-    try:
-        tb = await tb_matches(kind, vid, meta)
-    except Exception as e:
-        log.info("torbox lookup failed: %s", e)
-        tb = []
-    for f in sorted(tb, key=lambda f: -f["size"])[:6]:
-        url = f"torbox:{f['kind']}:{f['item']}:{f['file']}"
-        sid = "s" + short_id(f"{kind}:{vid}:{url}")[:15]
-        db().q("INSERT OR REPLACE INTO streams VALUES (?,?,?,?,?,?,?,?,?,?)",
-               (sid, url, kind, vid, meta.get("name") or vid, f["name"][:200], "TorBox", meta.get("poster"),
-                str(meta.get("releaseInfo") or "")[:4], time.time()))
-        w = watch_row(p["id"], sid, "pos, dur, watched")
-        facts = stream_facts({"behaviorHints": {"videoSize": f["size"]}}, "https://x/" + quote(f["name"]), f["name"])
-        out.append({"id": sid, **facts, "plays": True, "torbox": True, "addon": "TorBox",
-                    "progress": dict(w[0]) if w else None, "_url": url})
+    # Sources are the ones the addons send. TorBox copies are not a source of their own (what TorBox holds comes to the Storage Box through the
+    # sync, and then shows as the Library copy)
     got = [(inline[1], inline[2], None)] if inline else await asyncio.gather(*(one(a) for a in rows))
     for a, streams, err in got:
         rep_ = {"addon": a["m"].get("name"), "found": len(streams), "kept": 0, "other": [], "error": err}
@@ -4524,7 +4504,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
     res = {"streams": out, "dropped": dropped, "checked": len(rows), "partial": bool(quick and any(x["error"] == "took too long to answer" for x in report))}
     # What this title turned out to have, for hiding ones with nothing. Found something always counts, nothing only
     # counts for a film when every addon answered (shows get checked by there first episodes in the background)
-    if kind in ("movie", "series") and (rows or TORBOX_KEY) and not inline:
+    if kind in ("movie", "series") and rows and not inline:
         sid = show_of(vid) if kind == "series" else vid
         if out:
             note_sources(kind, sid, True)

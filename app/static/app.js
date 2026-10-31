@@ -1897,7 +1897,7 @@
           <button class="round-btn sm" data-close aria-label="Close">${ic("close")}</button></div>
         <div class="src-list">${r.streams.map((s, i) => {
           const p = s.progress && !s.progress.watched && s.progress.dur ? s.progress.pos / s.progress.dur : 0;
-          const meta = [s.format, s.bytes ? bytes(s.bytes) : "", s.addon].filter(Boolean);
+          const meta = [s.format, s.bytes ? bytes(s.bytes) : "", s.seeders != null ? `${s.seeders} seeder${s.seeders === 1 ? "" : "s"}` : "", s.peers != null ? `${s.peers} peer${s.peers === 1 ? "" : "s"}` : "", s.addon].filter(Boolean);
           return `<button class="src ${i === 0 ? "best" : ""}" data-src="${i}">
             <span class="src-q ${s.height >= 720 ? "hd" : ""}">${esc(s.quality)}</span>
             <span class="src-body"><b>${esc(nice(s.label))}</b>
@@ -1940,7 +1940,7 @@
       }).join("") || `<p class="secondary sr-empty">Not on the Storage Box.</p>`)
         + `<h3 class="sr-sub">From Addons</h3>` + (streams ? (streams.length ? streams.map((x, i) => {
         const p = x.progress && !x.progress.watched && x.progress.dur ? x.progress.pos / x.progress.dur : 0;
-        const meta = [x.format, x.bytes ? bytes(x.bytes) : "", x.addon].filter(Boolean);
+        const meta = [x.format, x.bytes ? bytes(x.bytes) : "", x.seeders != null ? `${x.seeders} seeder${x.seeders === 1 ? "" : "s"}` : "", x.peers != null ? `${x.peers} peer${x.peers === 1 ? "" : "s"}` : "", x.addon].filter(Boolean);
         return `<button class="src" data-str="${i}">
           <span class="src-q ${x.height >= 720 ? "hd" : ""}">${esc(x.quality)}</span>
           <span class="src-body"><b>${esc(nice(x.label))}</b><span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>
@@ -3508,6 +3508,8 @@
     $("#plStats").innerHTML = "";
     el.classList.toggle("no-stats", !LOAD.stats);
     el.hidden = false;
+    pl.el.classList.add("loading");  // the controls under the loading screen cant be used (or seen, or reached with a key) until it goes
+    hideMenus();
     requestAnimationFrame(() => el.classList.add("on"));
     clearInterval(LOAD.timer);
     LOAD.timer = setInterval(drawLoad, 500);
@@ -3550,6 +3552,7 @@
   function loadHide() {
     if (!LOAD.on) return;
     LOAD.on = false;
+    pl.el.classList.remove("loading");
     clearInterval(LOAD.timer);
     const el = $("#pLoad");
     el.classList.remove("on");
@@ -4303,6 +4306,9 @@
   $("#pBack").onclick = () => (pl.info && pl.info.live ? switchLive(-1) : seekTo(pos() - 10));
   $("#pFwd").onclick = () => (pl.info && pl.info.live ? switchLive(1) : seekTo(pos() + 10));
   $("#pClose").onclick = () => closePlayer();
+  $("#plClose").innerHTML = ic("close");
+  if (ANDROID && TV) $("#plClose").hidden = true;  // the remote has Back
+  $("#plClose").onclick = () => closePlayer();
   $("#skipIntro").onclick = () => { if (pl.info && pl.info.intro) { pl.introSkipped = true; seekTo(pl.info.intro.end); $("#skipIntro").hidden = true; } };
   $("#pFull").onclick = () => {
     if (document.fullscreenElement) return document.exitFullscreen();
@@ -4366,6 +4372,8 @@
 
   document.addEventListener("keydown", (e) => {
     if (pl.el.hidden || e.target.tagName === "INPUT" || sheetClose) return;
+    // While the loading screen is up only Escape does anything, the shortcuts would act on controls that arent there yet
+    if (LOAD.on && e.key !== "Escape") return;
     const onControl = TV && e.target.closest && e.target.closest(".player-row, .menu, .up-next, .player-top, .skip-intro");
     if ((e.key === " " || e.key === "k") && !onControl) { e.preventDefault(); toggle(); }
     else if (pl.info && pl.info.live && ["PageUp", "PageDown", "ChannelUp", "ChannelDown"].includes(e.key)) { e.preventDefault(); switchLive(e.key === "PageUp" || e.key === "ChannelUp" ? -1 : 1); }
@@ -4376,7 +4384,7 @@
     else if (e.key === "ArrowRight" && e.target !== scrub && !onControl) seekTo(pos() + seekStep(1));
     else if (e.key === "j" && !(pl.info && pl.info.live)) seekTo(pos() - 10);
     else if (e.key === "l" && !(pl.info && pl.info.live)) seekTo(pos() + 10);
-    else if (e.key === "c" && !$("#pSubs").hidden) $("#pSubs").click();
+    else if (e.key === "c" && !$("#pSubs").hidden && $("#pSubs").offsetParent) $("#pSubs").click();
     else if (/^[0-9]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey && total() && !(pl.info && pl.info.live)) seekTo(total() * Number(e.key) / 10);
     else if (e.key === "f") $("#pFull").click();
     else if (e.key === "m") $("#pMute").click();

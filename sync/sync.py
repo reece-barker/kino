@@ -28,6 +28,7 @@ DEST = Path(os.environ.get("TORBOX_DEST", "/srv/torbox")).resolve()
 STATE = DEST / ".state.json"
 STATUS = Path(os.environ.get("SYNC_STATUS", "/var/lib/torbox-sync/status.json"))
 PAUSE = Path(os.environ.get("PAUSE_FILE", "/var/lib/kino/pause.json"))
+DELETED = Path(os.environ.get("DELETED_FILE", "/var/lib/kino/deleted.json"))  # written by the dashboard when the admin deletes media
 REQUIRE_MOUNT = os.environ.get("REQUIRE_MOUNT", "1") == "1"
 MIN_FREE = 20 * 1024**3  # Keeps 20gb free so the storage box dosent fill up compleatly
 
@@ -155,6 +156,34 @@ def paused_until():
         return 0
 
 
+def load_deleted():
+    """What the admin deleted from the library (so it isnt fetched again) and what was let back in after being watched on TorBox.
+    Returns (blocked media key -> when it was deleted, allowed torbox file key -> when it was allowed)"""
+    blocked, allow = {}, {}
+    try:
+        j = json.loads(DELETED.read_text())
+    except Exception:
+        return blocked, allow
+    for t in j.get("tombs") or []:
+        mk, _ = media_key(t.get("rel") or "")
+        if mk:
+            blocked[mk] = max(blocked.get(mk, 0), t.get("at") or 0)
+    for a in j.get("allow") or []:
+        allow[a.get("key")] = a.get("at") or 0
+    return blocked, allow
+
+
+def item_time(item):
+    # When the item was added to TorBox, an item added after something was deleted is a new request for it and is let through
+    from datetime import datetime
+    for k in ("created_at", "cached_at"):
+        try:
+            return datetime.fromisoformat(str(item[k]).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+    return 0
+
+
 def load_state():
     # Remembers what we allready downloaded so the timer dosent grab everything twice
     if STATE.exists():
@@ -248,9 +277,11 @@ def main():
     status["state"] = "listing"
     write_status()
     state = load_state()
+    blocked, allow = load_deleted()
 
     # Builds the full todo list first so the dashboard can show "3 of 12"
     have = existing_library() if guessit else {}
+    skipped_deleted = []
     cands = []  # (kind, id_param, item_id, file, key, target, media_key, res)
     for kind, id_param in KINDS:
         for item in list_items(kind):
@@ -259,7 +290,8 @@ def main():
                 continue
             for f in item.get("files") or []:
                 key = f"{kind}:{item['id']}:{f['id']}"
-                if key in state:
+                # Done before is skipped, unless the dashboard let it back in after it was watched again (allowed later than it was fetched)
+                if key in state and not (key in allow and allow[key] > (state[key].get("at") or 0)):
                     continue
                 name = f.get("name") or ""
                 ext = Path(name).suffix.lower()
@@ -273,6 +305,11 @@ def main():
                     print(f"skipping suspicious path: {name}")
                     continue
                 mk, res = media_key(name) if ext in VIDEO_EXT else (None, 0)
+                # Deleted by the admin: not fetched again, unless this copy was only added to TorBox after the delete or was allowed back
+                if mk and mk in blocked and key not in allow and item_time(item) <= blocked[mk]:
+                    skipped_deleted.append({"name": target.name, "reason": "You deleted it"})
+                    continue
+                f = dict(f, _item=item.get("name"))
                 cands.append((kind, id_param, item["id"], f, key, target, mk, res))
 
     # Picks one copy per film or episode, the best quality, and the smaller file when the quality is the same
@@ -306,6 +343,7 @@ def main():
     for c in cands:
         if Path(c[3].get("name", "")).suffix.lower() in SUB_EXT and (c[0], c[2]) in keep_items:
             todo.append(c)
+    skipped += skipped_deleted
     status["skipped"] = skipped[:60]
     todo = [c[:6] for c in todo]
 
@@ -321,7 +359,9 @@ def main():
             print(f"downloading {target}", flush=True)
             url = get_link(kind, id_param, item_id, f["id"])
             download(url, target, f.get("size", 0), rel)
-            state[key] = {"path": str(target), "size": f.get("size", 0)}
+            # Which TorBox item it came from and when, so the dashboard can show where a file came from and the delete list can
+            # tell a new download from an old one
+            state[key] = {"path": str(target), "size": f.get("size", 0), "at": time.time(), "item": f.get("_item"), "kind": kind}
             save_state(state)  # Saved after every file so a crash dosent lose progress
             status["new"] += 1
             status["recent"] = ([{"name": target.name, "rel": rel, "size": f.get("size", 0), "at": time.time()}]

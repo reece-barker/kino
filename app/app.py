@@ -60,6 +60,7 @@ MEDIA_DIR = Path(env("MEDIA_DIR", "/srv/torbox"))
 DATA_DIR = Path(env("DATA_DIR", "/var/lib/kino"))
 SYNC_STATUS = Path(env("SYNC_STATUS", "/var/lib/torbox-sync/status.json"))
 PAUSE_FILE = Path(env("PAUSE_FILE", str(DATA_DIR / "pause.json")))
+DELETED_FILE = Path(env("DELETED_FILE", str(DATA_DIR / "deleted.json")))  # what the admin deleted, the sync reads it so it doesnt fetch it again
 ALLOWLIST = Path(env("ALLOWLIST_FILE", str(DATA_DIR / "allowlist.json")))
 ALLOWLIST_APPLIED = Path(env("ALLOWLIST_APPLIED", str(DATA_DIR / "allowlist-applied.json")))
 WATCHDOG_STATUS = Path(env("WATCHDOG_STATUS", "/var/lib/kino-watchdog/status.json"))
@@ -145,6 +146,12 @@ CREATE TABLE IF NOT EXISTS watch (profile_id INTEGER, file_id TEXT, pos REAL, du
 CREATE TABLE IF NOT EXISTS ratings (profile_id INTEGER, title_id TEXT, value INTEGER, updated REAL, PRIMARY KEY (profile_id, title_id));
 CREATE TABLE IF NOT EXISTS overrides (key TEXT PRIMARY KEY, kind TEXT, imdb_id TEXT, set_at REAL);
 CREATE TABLE IF NOT EXISTS intros (title_id TEXT, season INTEGER, start REAL, end REAL, PRIMARY KEY (title_id, season));
+CREATE TABLE IF NOT EXISTS deleted_media (id INTEGER PRIMARY KEY AUTOINCREMENT, rel TEXT, origin TEXT, name TEXT, title TEXT, ntitle TEXT,
+    year TEXT, season INTEGER, episode INTEGER, size INTEGER, at REAL, by TEXT);
+CREATE TABLE IF NOT EXISTS media_allow (key TEXT PRIMARY KEY, name TEXT, at REAL);
+CREATE TABLE IF NOT EXISTS media_origin (rel TEXT PRIMARY KEY, source TEXT, label TEXT, at REAL);
+CREATE TABLE IF NOT EXISTS play_sources (ntitle TEXT, year TEXT, season INTEGER, episode INTEGER, addon TEXT, label TEXT, at REAL,
+    PRIMARY KEY (ntitle, year, season, episode));
 CREATE TABLE IF NOT EXISTS addons (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE NOT NULL, manifest TEXT NOT NULL,
     enabled INTEGER DEFAULT 1, hidden TEXT DEFAULT '[]', added REAL, updated REAL);
 CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, kind TEXT, first REAL);
@@ -1208,6 +1215,7 @@ STATIC_VERSION = {"v": "1"}
 @asynccontextmanager
 async def lifespan(app):
     db()
+    await asyncio.to_thread(write_deleted_json)  # Keeps the sync's copy of what was deleted in step with the database
     if len(env("KINO_SECRET", "").strip()) < 16:
         log.warning("KINO_SECRET is missing or under 16 chars, using the generated one in %s, set a proper one in /etc/kino/kino.env", DATA_DIR / "secret.key")
     shutil.rmtree(HLS_DIR, ignore_errors=True)
@@ -4583,6 +4591,8 @@ async def stream_file_info(sid, p, request):
               "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
               "title_id": None, "intro": s_intro, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"],
               "prefs": p["prefs"], "is_admin": bool(admin_user(request)), "art": art_for_id(show_of(r["video_id"]), r["poster"])}
+    if r["kind"] in ("movie", "series"):
+        await asyncio.to_thread(note_played, r, cur)
     if r["url"].startswith("torbox:") or is_hls(r["url"]):
         _, pr = await (tb_probe(r) if r["url"].startswith("torbox:") else hls_probe(r))
         a = next((x for x in pr["audio"] if x.get("default")), pr["audio"][0] if pr["audio"] else None)
@@ -4725,6 +4735,7 @@ async def save_stream(sid, r, admin):
             await up.aclose()
             await client.aclose()
         tmp.rename(target)
+        db().q("INSERT OR REPLACE INTO media_origin VALUES (?,?,?,?)", (str(target.relative_to(MEDIA_DIR)), "archive.org", (r["addon"] if "addon" in r.keys() else None) or "Archive.org", time.time()))
         await rescan()
         # The file name might not match cinemeta on its own, so it gets pinned to the title it was saved from
         f = next((x for x in LIB["files"].values() if Path(x["path"]) == target), None)
@@ -4757,6 +4768,153 @@ async def stream_save(sid: str, admin=Depends(require_admin)):
 async def stream_save_status(sid: str, admin=Depends(require_admin)):
     return SAVES.get(sid) or {"state": "none"}
 
+
+
+# ---------------------------------------------------------------- downloaded media (admin)
+# Everything on the storage box, with where it came from, and delete. What gets deleted is remembered (deleted_media) and written to
+# deleted.json for the sync, so it doesnt just fetch the same film again. Playing it again from any source lets it download again
+SYNC_STATE = {"mt": None, "v": {}}
+
+
+def sync_origins():
+    """path -> torbox item the sync downloaded it from, read from the sync's own state file (.state.json on the box)"""
+    f = MEDIA_DIR / ".state.json"
+    try:
+        mt = f.stat().st_mtime
+        if SYNC_STATE["mt"] != mt:
+            j = json.loads(f.read_text())
+            SYNC_STATE.update(mt=mt, v={str(Path(v.get("path", ""))): {"key": k, "item": v.get("item"), "at": v.get("at")} for k, v in j.items() if isinstance(v, dict)})
+    except (OSError, ValueError):
+        pass
+    return SYNC_STATE["v"]
+
+
+def origin_of(path, rel):
+    """The sync's key for a file (kept with the delete so the same copy can be let back in), nothing the admin sees"""
+    o = sync_origins().get(str(Path(path)))
+    return {"key": o["key"]} if o else {"key": None}
+
+
+def source_of(f):
+    """Where a file on the box came from: the addon whose source was played for it (remembered when it was played), the archive.org
+    addon for ones saved from there, or just the Storage Box when nothing is known"""
+    r = db().q("SELECT label FROM media_origin WHERE rel = ?", (f["rel"],))
+    if r:
+        return r[0]["label"] or "Archive.org"
+    g = guess(f["rel"])
+    nt = norm(first(g.get("title")) or "")
+    se = (first(g.get("season")) if first(g.get("season")) is not None else -1, first(g.get("episode")) if first(g.get("episode")) is not None else -1)
+    if not nt:
+        return None
+    r = db().q("SELECT addon FROM play_sources WHERE ntitle = ? AND season = ? AND episode = ? ORDER BY (year = ?) DESC, at DESC LIMIT 1",
+               (nt, se[0], se[1], str(first(g.get("year")) or "")))
+    return r[0]["addon"] if r else None
+
+
+def write_deleted_json():
+    tombs = [{"rel": r["rel"], "key": r["origin"], "at": r["at"]} for r in db().q("SELECT rel, origin, at FROM deleted_media ORDER BY id")]
+    allow = [{"key": r["key"], "name": r["name"], "at": r["at"]} for r in db().q("SELECT key, name, at FROM media_allow")]
+    tmp = DELETED_FILE.with_suffix(".tmp")
+    try:
+        DELETED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({"tombs": tombs, "allow": allow}))
+        tmp.chmod(0o644)
+        tmp.replace(DELETED_FILE)
+    except OSError as e:
+        log.warning("couldnt write %s: %s", DELETED_FILE, e)
+
+
+@app.get("/api/admin/media")
+async def media_list(q: str = "", sort: str = "size", skip: int = 0, admin=Depends(require_admin)):
+    q = q.strip().lower()[:60]
+    rows = []
+    for f in list(LIB["files"].values()):
+        t = LIB["titles"].get(f["title_id"]) or {}
+        title = t.get("guess_name") or f["name"]
+        if q and q not in f"{title} {f['name']}".lower():
+            continue
+        rows.append((f, t, title))
+    key = {"size": lambda r: -r[0]["size"], "new": lambda r: -r[0]["mtime"], "name": lambda r: (r[2].lower(), r[0]["season"] or 0, r[0]["episode"] or 0)}.get(sort, lambda r: -r[0]["size"])
+    rows.sort(key=key)
+    out = []
+    for f, t, title in rows[max(0, skip):max(0, skip) + 100]:
+        out.append({"id": f["id"], "name": f["name"], "title": title, "year": t.get("year"), "kind": t.get("kind"), "season": f["season"], "episode": f["episode"],
+                    "size": f["size"], "added": f["mtime"], "quality": f["quality"], "source": source_of(f), "subs": len(f["ext_subs"])})
+    return {"files": out, "total": len(rows), "bytes": sum(r[0]["size"] for r in rows), "all": len(LIB["files"]), "deleted": db().q("SELECT COUNT(*) n FROM deleted_media")[0]["n"],
+            "next": skip + 100 if skip + 100 < len(rows) else None, "scanning": bool(LIB["scanning"])}
+
+
+@app.post("/api/admin/media/delete")
+async def media_delete(request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    ids = [str(i) for i in (b.get("ids") or [])][:200]
+    freed, done, failed = 0, 0, []
+    for fid in ids:
+        f = LIB["files"].get(fid)
+        if not f:
+            continue
+        try:
+            await asyncio.to_thread(remove_file, dict(f), admin)
+            log.info("kino deleted %s by %s", logsafe(f["rel"]), logsafe(admin))
+            freed += f["size"]; done += 1
+        except HTTPException as e:
+            failed.append({"name": f["name"], "error": str(e.detail)})
+        except OSError as e:
+            failed.append({"name": f["name"], "error": str(e)[:120]})
+    return {"deleted": done, "freed": freed, "failed": failed}
+
+
+@app.get("/api/admin/media/deleted")
+async def media_deleted(admin=Depends(require_admin)):
+    rows = db().q("SELECT id, name, title, year, season, episode, size, at, origin FROM deleted_media ORDER BY id DESC LIMIT 300")
+    return {"deleted": [dict(r) for r in rows]}
+
+
+@app.post("/api/admin/media/deleted/{did}/allow")
+async def media_allow_again(did: int, admin=Depends(require_admin)):
+    r = db().q("SELECT rel, origin, name FROM deleted_media WHERE id = ?", (did,))
+    if not r:
+        raise HTTPException(404, "That one isn't on the list anymore")
+    # The delete is forgotten, and the copy it came from is let past the sync's list of what it already has
+    db().q("DELETE FROM deleted_media WHERE id = ?", (did,))
+    if r[0]["origin"]:
+        db().q("INSERT OR REPLACE INTO media_allow VALUES (?,?,?)", (r[0]["origin"], r[0]["name"], time.time()))
+    await asyncio.to_thread(write_deleted_json)
+    return {"ok": True}
+
+
+def note_played(r, cur):
+    """Called when a source starts playing. Remembers which addon the media was played from (the manager shows that as its source),
+    and if it was deleted before, somebody wanting it again lets it back in: the delete is forgotten and the copy the sync had
+    (and the one just played, if it is in TorBox) is allowed to download on its next run"""
+    try:
+        nt = norm(r["name"] or "")
+        if not nt:
+            return
+        yr = str(r["year"] or "")[:4]
+        se, ep = (cur["season"], cur["episode"]) if cur else (-1, -1)
+        if r["addon"] and r["addon"] != "TorBox":
+            db().q("INSERT OR REPLACE INTO play_sources VALUES (?,?,?,?,?,?,?)", (nt, yr, se, ep, r["addon"], str(r["label"] or "")[:200], time.time()))
+        lifted = False
+        for t in db().q("SELECT id, ntitle, year, season, episode, origin FROM deleted_media WHERE ntitle = ?", (nt,)):
+            if cur:
+                if (t["season"], t["episode"]) != (se, ep):
+                    continue
+            elif t["episode"] is not None or (t["year"] and t["year"].isdigit() and yr.isdigit() and abs(int(t["year"]) - int(yr)) > 1):
+                continue
+            db().q("DELETE FROM deleted_media WHERE id = ?", (t["id"],))
+            if t["origin"]:
+                db().q("INSERT OR REPLACE INTO media_allow VALUES (?,?,?)", (t["origin"], str(r["label"] or r["name"])[:200], time.time()))
+            lifted = True
+        if r["url"].startswith("torbox:"):
+            _, kind, item, file = r["url"].split(":", 3)
+            if lifted:
+                db().q("INSERT OR REPLACE INTO media_allow VALUES (?,?,?)", (f"{kind}:{item}:{file}", str(r["label"] or r["name"])[:200], time.time()))
+        if lifted:
+            write_deleted_json()
+            log.info("kino lets %s download again, it was played", logsafe(r["name"]))
+    except Exception as e:
+        log.info("noting a played source failed: %s", e)
 
 
 # ---------------------------------------------------------------- my list
@@ -5304,13 +5462,22 @@ async def match_set(request: Request, admin=Depends(require_admin)):
     return {"ok": True}
 
 
-def remove_file(f):
+def remove_file(f, admin=""):
     p = Path(f["path"]).resolve()
     root = MEDIA_DIR.resolve()
-    # Never deletes anything outside the storage box library
-    if root not in p.parents:
+    # Never deletes anything outside the storage box library, or a link that points somewhere else
+    if root not in p.parents or Path(f["path"]).is_symlink():
         raise HTTPException(400, "That file is outside the library")
+    # Remembered before it goes: the sync reads this list (deleted.json) so it doesnt fetch the same thing again
+    o = origin_of(f["path"], f["rel"])
+    g = guess(f["rel"])
+    t = LIB["titles"].get(f["title_id"]) or {}
     p.unlink(missing_ok=True)
+    db().q("INSERT INTO deleted_media (rel, origin, name, title, ntitle, year, season, episode, size, at, by) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+           (f["rel"], o["key"], f["name"], t.get("guess_name") or f["name"], norm(first(g.get("title")) or ""), str(first(g.get("year")) or ""),
+            f["season"], f["episode"], f["size"], time.time(), str(admin)[:60]))
+    db().q("DELETE FROM media_origin WHERE rel = ?", (f["rel"],))
+    write_deleted_json()
     for s in f["ext_subs"]:
         sp = Path(s["path"]).resolve()
         if root in sp.parents:
@@ -5336,8 +5503,8 @@ def remove_file(f):
 @app.delete("/api/admin/file/{fid}")
 async def delete_file(fid: str, admin=Depends(require_admin)):
     f = file_or_404(fid)
-    await asyncio.to_thread(remove_file, f)
-    log.info("kino deleted %s by %s", f["rel"], admin)
+    await asyncio.to_thread(remove_file, f, admin)
+    log.info("kino deleted %s by %s", logsafe(f["rel"]), logsafe(admin))
     return {"ok": True}
 
 
@@ -5350,8 +5517,8 @@ async def delete_title(tid: str, admin=Depends(require_admin)):
     for fid in list(t["files"]):
         f = LIB["files"].get(fid)
         if f:
-            await asyncio.to_thread(remove_file, f)
-            log.info("kino deleted %s by %s", f["rel"], admin)
+            await asyncio.to_thread(remove_file, f, admin)
+            log.info("kino deleted %s by %s", logsafe(f["rel"]), logsafe(admin))
     db().q("DELETE FROM ratings WHERE title_id = ?", (tid,))
     return {"ok": True, "freed": freed}
 

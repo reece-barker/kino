@@ -778,6 +778,21 @@ body.blur-watched .tile.is-watched .tile-check { z-index: 2; }
 .sr-row b { display: block; font-size: 15px; }
 .sr-row .secondary { font-size: 13px; }
 .sr-size { white-space: nowrap; }
+.mm-bar { display: flex; gap: 8px; margin: 12px 0 4px; }
+.mm-row .grow { min-width: 0; }
+.mm-row .grow b, .mm-row .grow .secondary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-row .switch { flex: none; }
+.mm-foot { position: sticky; bottom: -20px; margin: 10px -24px -20px; padding: 12px 24px 20px; background: var(--bg-2); border-top: 0.5px solid var(--sep); }
+.mm-ask { margin: 0 0 10px; font-size: 15px; }
+@media (max-width: 760px) {
+  .mm-row { gap: 10px; align-items: flex-start; }
+  .mm-row .sr-size { font-size: 13px; margin-top: 2px; }
+  .mm-row .grow b, .mm-row .grow .secondary { white-space: normal; overflow-wrap: anywhere; }
+  .mm-row .switch { width: 42px; height: 26px; margin-top: 4px; }
+  .mm-row .switch::after { width: 22px; height: 22px; }
+  .mm-row .switch:checked::after { transform: translateX(16px); }
+}
+.mm-foot .actions { margin-top: 0; }
 
 
 /* ================================================================ v7 apple tv shell

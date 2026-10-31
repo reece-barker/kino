@@ -28,7 +28,8 @@ ProtectKernelModules=yes
 ProtectClock=yes
 ProtectHostname=yes
 PrivateDevices=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Netlink stays, the resolver and psutil can use it
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
 SystemCallArchitectures=native

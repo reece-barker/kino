@@ -757,14 +757,16 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             errorShown = true;
             loading = false;
             loadLayer.setVisibility(View.GONE);
-            new Thread(() -> { try { post("/api/live/" + fid + "/bad", "{}"); } catch (Exception ignored) { } }).start();
-            LinearLayout c = dialog("This channel isn't working", "It might be off air right now, or the link stopped working.");
-            TextView next = pill("Next Channel", true), again = pill("Try Again", false), close = pill("Close", false);
-            next.setOnClickListener(v -> { closeDialog(); relaunchLoading("Tuning in"); switchChannel(1); });
-            again.setOnClickListener(v -> { closeDialog(); errorShown = false; relaunchLoading("Tuning in"); eng.open(base + "/api/live/" + fid + "/index.m3u8", true, -1, new ArrayList<>()); });
-            close.setOnClickListener(v -> { closeDialog(); done(); });
-            if (liveList != null && liveList.length() > 1) buttons(c, next, again, close);
-            else buttons(c, again, close);
+            // The server is asked what went wrong (the provider refused, too many devices...) so the message can say, and it checks the
+            // channel itself before switching it off, so that is asked after and in the background
+            final String failed = fid, playerSaid = msg;
+            new Thread(() -> {
+                String why = "";
+                try { why = new JSONObject(get("/api/live/" + failed + "/why")).optString("why"); } catch (Exception ignored) { }
+                final String w = why;
+                runOnUiThread(() -> { if (!leaving && errorShown) liveDown(w, playerSaid); });
+                try { post("/api/live/" + failed + "/bad", "{}"); } catch (Exception ignored) { }
+            }).start();
             return;
         }
         double at = pos();
@@ -1430,6 +1432,31 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     private void stopSession(String s) {
         if (s == null || s.isEmpty()) return;
         new Thread(() -> { try { post("/api/play/" + s + "/stop", "{}"); } catch (Exception ignored) { } }).start();
+    }
+
+    private void liveDown(String why, String playerSaid) {
+        String body = why.isEmpty() ? "It might be off air right now, or the link stopped working." : why;
+        if (playerSaid != null && !playerSaid.isEmpty()) body += "\n(" + playerSaid + ")";
+        LinearLayout c = dialog("This channel isn't working", body);
+        TextView next = pill("Next Channel", true), again = pill("Try Again", false), close = pill("Close", false);
+        next.setOnClickListener(v -> { closeDialog(); relaunchLoading("Tuning in"); switchChannel(1); });
+        again.setOnClickListener(v -> { closeDialog(); errorShown = false; relaunchLoading("Tuning in"); eng.open(base + "/api/live/" + fid + "/index.m3u8", true, -1, new ArrayList<>()); });
+        close.setOnClickListener(v -> { closeDialog(); done(); });
+        if (liveList != null && liveList.length() > 1) buttons(c, next, again, close);
+        else buttons(c, again, close);
+    }
+
+    private String get(String path) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(base + path).openConnection();
+        c.setConnectTimeout(10000);
+        c.setReadTimeout(15000);
+        c.setRequestProperty("User-Agent", ua);
+        for (Map.Entry<String, String> e : headers.entrySet()) c.setRequestProperty(e.getKey(), e.getValue());
+        int code = c.getResponseCode();
+        InputStream in = code < 400 ? c.getInputStream() : c.getErrorStream();
+        String txt = in == null ? "" : new String(readAll(in), StandardCharsets.UTF_8);
+        if (code >= 400) throw new Exception("The server said " + code);
+        return txt;
     }
 
     private String post(String path, String json) throws Exception {

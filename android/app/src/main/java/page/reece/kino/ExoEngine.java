@@ -88,7 +88,11 @@ class ExoEngine implements Engine {
                 int code = e.errorCode;
                 boolean codec = code >= 4000 && code < 5000 || code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
                         || code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED;
-                l.onError(e.getErrorCodeName().replace("ERROR_CODE_", "").replace('_', ' ').toLowerCase(Locale.ROOT), codec);
+                // A bad answer from the server says which one (403, 404, 429...), that is what tells a refused stream from a dead one
+                String extra = "";
+                Throwable cause = e.getCause();
+                if (cause instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) extra = " " + ((androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) cause).responseCode;
+                l.onError(e.getErrorCodeName().replace("ERROR_CODE_", "").replace('_', ' ').toLowerCase(Locale.ROOT) + extra, codec);
             }
         });
         player.addAnalyticsListener(new AnalyticsListener() {

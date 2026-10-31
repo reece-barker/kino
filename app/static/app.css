@@ -1739,3 +1739,7 @@ body.tv .who-tile:hover:not(:focus-visible) .av.av-duo .av-half:last-child { box
 .player-title { flex: 1; min-width: 0; }
 .live-chip { margin-left: auto; flex: none; padding: 4px 10px; border-radius: 6px; background: #e5383b; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
 .player:not(.live) .live-chip, .player:not(.live) .player-logo { display: none; }
+
+/* No double tap zoom anywhere (pinch stays in a browser tab), and as a home screen app no pinch either */
+html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
+html.standalone { touch-action: pan-x pan-y; }

@@ -2335,6 +2335,9 @@
   // A channel's options (or a programme's, from the guide): watch, favourite, record
   function liveOptions(ch, prog, anchor) {
     if (!ch) return;
+    // Pressing the button of a menu thats already open closes it. The outside press check skips the button its self, so without
+    // this the click just opened the same menu again and it looked like nothing happened
+    if (anchor && POP && POP.anchor === anchor) return void closePop();
     const now = Date.now() / 1000, on = prog && prog.start <= now && prog.stop > now, later = prog && prog.start > now;
     const isChan = String(ch.id).startsWith("c");
     const cur = !prog && ch.now ? ch.now : null;

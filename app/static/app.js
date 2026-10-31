@@ -2036,13 +2036,12 @@
   let LIVE_LIST = [];
   const chanCard = (c, i) => {
     const pr = c.now ? Math.min(1, Math.max(0, (Date.now() / 1000 - c.now.start) / (c.now.stop - c.now.start))) : null;
-    return `<div class="ch-cell"><button class="ch-card" data-ch="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}">
+    return `<div class="ch-cell"><button class="ch-card" data-ch="${i}" data-cid="${esc(c.id)}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}">
       <span class="ch-logo">${c.logo ? `<img loading="lazy" decoding="async" src="${img(c.logo, 1, 240)}" alt="" data-fallback="initials" data-ini="${esc(c.name.slice(0, 2))}">` : `<b class="ch-ph">${esc(c.name.slice(0, 2))}</b>`}</span>
       <span class="ch-body"><b class="ch-name">${esc(c.name)}</b>
         <span class="ch-now">${c.now ? esc(c.now.title) : esc([c.group, flag(c.country)].filter(Boolean).join(" · "))}</span>
         ${pr != null ? `<span class="ch-bar"><i style="width:${pr * 100}%"></i></span>` : ""}
         ${c.next ? `<span class="ch-next">${hm(c.next.start)} ${esc(c.next.title)}</span>` : ""}</span></button>
-      ${c.fav ? `<span class="ch-fav" aria-hidden="true">★</span>` : ""}
       <button class="ch-opt" data-opt="${i}" aria-label="More for ${esc(c.name)}" title="Favourite, Record">${ic("more")}</button></div>`;
   };
 
@@ -2174,7 +2173,7 @@
     LIVE_LIST = r.channels.slice();
     const pct = (t) => Math.max(0, Math.min(100, ((t - start) / span) * 100));
     const slots = Array.from({ length: hours * 2 }, (_, i) => start + i * 1800);
-    const rowHtml = (c, i) => `<div class="g-row"><button class="g-ch" data-ch="${i}" aria-label="${esc(c.name)}">${c.logo ? `<img loading="lazy" decoding="async" src="${img(c.logo, 1, 160)}" alt="" data-fallback="hide">` : ""}<span>${esc(c.name)}</span></button>
+    const rowHtml = (c, i) => `<div class="g-row"><button class="g-ch" data-ch="${i}" data-cid="${esc(c.id)}" aria-label="${esc(c.name)}">${c.logo ? `<img loading="lazy" decoding="async" src="${img(c.logo, 1, 160)}" alt="" data-fallback="hide">` : ""}<span>${esc(c.name)}</span></button>
         <div class="g-line">${c.progs.map((p) => { const l = pct(p.start), w = pct(p.stop) - l; const on = p.start <= Date.now() / 1000 && p.stop > Date.now() / 1000;
           return w > 0.5 ? `<button class="g-prog ${on ? "on" : ""}" data-gp="${i}:${c.progs.indexOf(p)}" style="left:${l}%;width:${w}%" title="${esc(p.title)} ${hm(p.start)} to ${hm(p.stop)}"><b>${esc(p.title)}</b><span>${hm(p.start)}${p.sub ? " · " + esc(p.sub) : ""}</span></button>` : ""; }).join("") || `<span class="g-none">No guide</span>`}</div></div>`;
     box.innerHTML = `<div class="g-times"><span></span><div>${slots.map((t) => `<span style="left:${pct(t)}%">${hm(t)}</span>`).join("")}</div></div>
@@ -2235,7 +2234,7 @@
     // The star and the ··· sit on top of the picture as their own buttons (a button can't hold buttons)
     box.innerHTML = `<section class="shelf" aria-label="Favourites"><h2 class="section-title">★ Favourites</h2><div class="row wide fav-row">${favs.map((c, i) => {
       const pr = c.now ? Math.min(1, Math.max(0, (Date.now() / 1000 - c.now.start) / (c.now.stop - c.now.start))) : null;
-      return `<div class="fav-cell"><button class="tile landscape fav-tile" data-fv="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}"><div class="art">
+      return `<div class="fav-cell"><button class="tile landscape fav-tile" data-fv="${i}" data-cid="${esc(c.id)}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}"><div class="art">
           <img class="fav-shot" src="${shot(c)}" alt="" data-fallback="hide">${c.logo ? `<img class="fav-logo" src="${img(c.logo, 1, 160)}" alt="" data-fallback="hide">` : ""}
           <span class="tile-live">Live</span>${pr != null ? `<div class="bar"><i style="width:${pr * 100}%"></i></div>` : ""}</div>
         <div class="cap">${esc(c.name)}</div><div class="sub">${esc(c.now ? c.now.title : c.group || "")}</div></button>
@@ -2279,11 +2278,6 @@
     toast(on ? "Added to Favourites" : "Removed from Favourites");
     if (!location.hash.startsWith("#/live") || location.hash.includes("guide")) return;
     if (LIVE_STATE.fav && !on) return route();
-    $$(".ch-cell").forEach((cell) => {
-      const b = $("[data-ch]", cell); if (!b || LIVE_LIST[Number(b.dataset.ch)].id !== ch.id) return;
-      const old = $(".ch-fav", cell); if (old) old.remove();
-      if (on) { const n = document.createElement("span"); n.className = "ch-fav"; n.textContent = "★"; n.setAttribute("aria-hidden", "true"); cell.insertBefore(n, $(".ch-opt", cell)); }
-    });
     const hadFocus = document.activeElement && document.activeElement.closest && document.activeElement.closest("#favRow");
     await drawFavRow();
     if (hadFocus) { const f = $("#favRow .fav-tile") || $("#chGrid .ch-card"); if (f) f.focus(); }
@@ -2463,7 +2457,47 @@
 
   // ---- playing a channel
   let LIVE_NOW = null;  // { list, i }
+  // Where the remote was when a channel started (the Channels grid, the guide or a favourite). Closing the player puts it back
+  // on that channel. The page behind can be gone by then (a tv let it go for memory) so its kept in sessionStorage too
+  let LIVE_BACK = null;
+  function liveBackRead() {
+    if (LIVE_BACK) return LIVE_BACK;
+    try { return JSON.parse(sessionStorage.getItem("kino.liveBack") || "null"); } catch (_) { return null; }
+  }
+  function liveBackClear() {
+    LIVE_BACK = null;
+    try { sessionStorage.removeItem("kino.liveBack"); } catch (_) {}
+  }
+  async function liveBackFocus(id) {
+    const b = liveBackRead();
+    // Only a tv remote needs this, and only when it started from one of the live pages (an addon tile or search has nothing to return to)
+    if (!TV || !b || !b.kind || !location.hash.startsWith("#/live")) return;
+    const want = id || b.id, n = ROUTE_N, first = document.activeElement;
+    const sels = b.kind === "g" ? [".g-ch"] : b.kind === "f" ? [".fav-tile", ".ch-card", ".g-ch"] : [".ch-card", ".fav-tile", ".g-ch"];
+    const find = () => { for (const s of sels) { const el = $(`${s}[data-cid="${CSS.escape(want)}"]`); if (el) return el; } return null; };
+    let el = find();
+    // The page gets drawn again from the start, and both the Channels grid and the Guide only have their first batch on it. Bringing
+    // the loader at the bottom into view makes the next batch come in, until the channel is there
+    for (let t = 0; !el && t < 40; t++) {
+      const more = $("#gMore:not([hidden]), #chMore:not([hidden])");
+      if (more) more.scrollIntoView({ block: "end" });
+      await new Promise((r) => setTimeout(r, 300));
+      if (n !== ROUTE_N) return;
+      // Somewhere else on the page now (the remote was used while this was loading), so leave it be
+      const a = document.activeElement;
+      if (a && a !== document.body && a !== first && a !== AUTO_FOCUS && a.isConnected) return;
+      el = find();
+    }
+    if (!el || n !== ROUTE_N) return;
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: "center", inline: "nearest" });
+    liveBackClear();
+  }
+
   function playLive(ch, list) {
+    const from = document.activeElement, fk = from && from.closest ? (from.closest(".g-ch") ? "g" : from.closest(".fav-tile") ? "f" : from.closest(".ch-card") ? "c" : "") : "";
+    LIVE_BACK = { id: ch.id, kind: fk };
+    try { sessionStorage.setItem("kino.liveBack", JSON.stringify(LIVE_BACK)); } catch (_) {}
     if (!ch) return;
     list = list && list.length ? list : [ch];
     const i = Math.max(0, list.findIndex((x) => x.id === ch.id));
@@ -2472,8 +2506,8 @@
       const lo = Math.max(0, i - 100), near = list.slice(lo, i + 100);
       window.KinoAndroid.playNative(JSON.stringify({
         live: true, fid: ch.id, url: `/api/live/${ch.id}/index.m3u8`, title: ch.name, sub: ch.now ? `Live  ·  ${ch.now.title}` : "Live",
-        channels: near.map((c) => ({ id: c.id, name: c.name, now: c.now ? c.now.title : "" })), index: i - lo,
-        base: location.origin, ua: navigator.userAgent, start: 0, duration: 0, art: { background: null, logo: null }, video: {}, subs: [], audioN: 0,
+        channels: near.map((c) => ({ id: c.id, name: c.name, now: c.now ? c.now.title : "", logo: c.logo || "" })), index: i - lo,
+        base: location.origin, ua: navigator.userAgent, start: 0, duration: 0, art: { background: null, logo: ch.logo || null }, video: {}, subs: [], audioN: 0,
         isStream: false, moreSources: false, autoplay: false, loadStats: false, subSize: (ME.profile && ME.profile.prefs && ME.profile.prefs.sub_size) || "m",
       }));
       NATIVE = { fid: ch.id, info: { live: true, prefs: {} }, opts: {}, live: { ch, list } };
@@ -2495,6 +2529,10 @@
     pl.info = { live: true, id: ch.id, name: ch.name, prefs: (ME.profile && ME.profile.prefs) || {}, subs: [], audio: [], stream: false, duration: 0 };
     $("#pTitle").textContent = ch.name;
     $("#pSub").textContent = ch.now ? `Live  ·  ${ch.now.title}` : "Live";
+    // The channels logo sits in front of its name, if it cant load the name is still there
+    const pg = $("#pLogo");
+    pg.hidden = true;
+    if (ch.logo) { pg.onload = () => { pg.hidden = false; }; pg.onerror = () => { pg.hidden = true; }; pg.src = img(ch.logo, 1, 240); }
     $("#pMsg").hidden = true;
     spinner(true);
     const url = `/api/live/${ch.id}/index.m3u8`;
@@ -3378,8 +3416,11 @@
   window.kinoNativeDone = (r) => {
     const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
     if (!r) return;
-    // Live tv just closes, unless they asked for the web player from its error box
+    // Live tv just closes, unless they asked for the web player from its error box. The remote goes back to the channel that was
+    // on (the player says which, up and down in it change channel), also when the page was reloaded while it was open
+    if (r.live && !(cur && cur.live && cur.live.rec)) setTimeout(() => liveBackFocus(r.fid), 150);
     if (cur && cur.live) { if (cur.live.rec && location.hash.startsWith("#/live/rec")) setTimeout(softRoute, 300); return; }
+    if (r.live) return;
     // A broken source: the next one plays straight away
     if (r.sourceFailed && nextSource(r.fid, r.fake ? 0 : r.pos, r.why || null)) return;
     // Otherwise the player only hands back an error when someone picked Web Player in its error box
@@ -3669,7 +3710,9 @@
     pl.v.removeAttribute("src");
     pl.v.load();
     pl.info = null; pl.mode = null;
-    if (pl.el.classList.contains("live")) {
+    const wasLive = pl.el.classList.contains("live");
+    const lastLive = wasLive && LIVE_NOW && LIVE_NOW.list[LIVE_NOW.i] ? LIVE_NOW.list[LIVE_NOW.i].id : null;
+    if (wasLive) {
       pl.el.classList.remove("live"); LIVE_NOW = null;
       $("#pBack").innerHTML = ic("back10"); $("#pBack").setAttribute("aria-label", "Back 10 seconds"); $("#pBack").title = "Back 10 Seconds";
       $("#pFwd").innerHTML = ic("fwd10"); $("#pFwd").setAttribute("aria-label", "Forward 10 seconds"); $("#pFwd").title = "Forward 10 Seconds";
@@ -3681,6 +3724,7 @@
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       // Redraws the page behind so resume bars and watched ticks are up to date
       if (ME.profile && (location.hash.startsWith("#/title/") || location.hash.startsWith("#/discover/") || location.hash === "#/home" || !location.hash)) setTimeout(softRoute, 400);
+      if (wasLive) setTimeout(() => liveBackFocus(lastLive), 60);
     }
   }
 
@@ -4132,9 +4176,19 @@
     const fc = !openMenu && cur.closest && cur.closest(".fav-cell");
     if (fc) {
       const btns = $$(".fav-btn", fc), at = btns.indexOf(cur);
-      if (at < 0 && cur.classList.contains("fav-tile") && d[1] > 0 && btns.length) return void btns[0].focus();
-      if (at >= 0 && d[0]) return void (btns[Math.max(0, Math.min(btns.length - 1, at + d[0]))].focus());
-      if (at >= 0 && d[1] < 0) return void $(".fav-tile", fc).focus();
+      // The star and dots are drawn on the top of the picture, so up from the card steps onto them and down from them is back on
+      // the card. Down from the card leaves the row and up from the buttons does too, same as any other card
+      if (at < 0 && cur.classList.contains("fav-tile") && d[1] < 0 && btns.length) return void btns[0].focus();
+      if (at >= 0 && d[1] > 0) return void $(".fav-tile", fc).focus();
+      if (at >= 0 && d[0]) {
+        // Left and right swap between the star and the dots, past the end it carries on to the same button on the next card
+        // so you stay on the buttons level, and at the very end of the row it stays put
+        const to = at + d[0];
+        if (to >= 0 && to < btns.length) return void btns[to].focus();
+        const cells = $$(".fav-cell", fc.parentNode), nc = cells[cells.indexOf(fc) + d[0]];
+        if (nc) { const nb = $$(".fav-btn", nc); (nb[d[0] > 0 ? 0 : nb.length - 1] || $(".fav-tile", nc)).focus(); }
+        return;
+      }
     }
     // Up and down from anywhere on a favourite measure from the whole card and never land on the favourites row its self,
     // the star sits on top of the picture so its own tile (and the tiles next to it) were counted as "below" the star,
@@ -4156,6 +4210,7 @@
     for (const el of items) {
       if (el === cur) continue;
       if (fc && d[1] && el.closest(".fav-cell")) continue;
+      if (!fc && el.classList.contains("fav-btn")) continue;
       if (fc && d[1] > 0 && el.classList.contains("ch-opt")) continue;  // land on the channel itself, not its little menu button
       if (curRow && !curRow.contains(el)) continue;
       if (rowTiles.length && !rowTiles.includes(el)) continue;

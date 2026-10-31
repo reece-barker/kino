@@ -299,6 +299,15 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         sub.setVisibility(info.optString("sub").isEmpty() ? View.GONE : View.VISIBLE);
         names.addView(sub);
         top.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (live) {
+            // Same red chip as the Live one on a favourites card, on the right of the top bar
+            TextView chip = text(12, Color.WHITE, true);
+            chip.setText("LIVE");
+            chip.setLetterSpacing(0.06f);
+            chip.setBackground(rounded(0xFFE5383B, dp(6)));
+            chip.setPadding(dp(10), dp(5), dp(10), dp(5));
+            top.addView(chip, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
         controls.addView(top, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
 
         // Bottom: timeline with the times, then the buttons
@@ -447,11 +456,26 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         if (art != null) {
             String bg = art.optString("background"), lg = art.optString("logo");
             if (!bg.isEmpty() && !"null".equals(bg)) loadImage(img(bg, false, lowRam ? 640 : 960), b -> plBg.setImageBitmap(b));
-            if (!lg.isEmpty() && !"null".equals(lg)) loadImage(img(lg, true, 640), b -> {
-                plLogo.setImageBitmap(b); plLogo.setVisibility(View.VISIBLE); plName.setVisibility(View.GONE);
-                logo.setImageBitmap(b); logo.setVisibility(View.VISIBLE); title.setVisibility(View.GONE);
-            });
+            showLogo(lg);
         }
+    }
+
+    // The logo of the title or channel, for the top left and the loading screen. Without one (or if it cant load) the name
+    // stays. The token is so a slow logo from the channel you just left cant land on the one youre on now
+    private int logoTok;
+
+    private void showLogo(String url) {
+        int tok = ++logoTok;
+        plLogo.setVisibility(View.GONE);
+        logo.setVisibility(View.GONE);
+        plName.setVisibility(View.VISIBLE);
+        title.setVisibility(View.VISIBLE);
+        if (url == null || url.isEmpty() || "null".equals(url)) return;
+        loadImage(img(url, true, 640), b -> {
+            if (tok != logoTok) return;
+            plLogo.setImageBitmap(b); plLogo.setVisibility(View.VISIBLE); plName.setVisibility(View.GONE);
+            logo.setImageBitmap(b); logo.setVisibility(View.VISIBLE); title.setVisibility(View.GONE);
+        });
     }
 
     private String img(String u, boolean trim, int w) {
@@ -1169,6 +1193,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         if (ch == null) return;
         fid = ch.optString("id");
         title.setText(ch.optString("name"));
+        plName.setText(ch.optString("name"));
+        showLogo(ch.optString("logo"));
         String now = ch.optString("now");
         sub.setText(now.isEmpty() ? "Live" : "Live  ·  " + now);
         sub.setVisibility(View.VISIBLE);
@@ -1364,7 +1390,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         double p = eng != null ? pos() : 0, d = dur();
         if (!loading && !live) postProgress(p, d);
         try {
-            JSONObject r = new JSONObject().put("fid", fid).put("pos", p).put("dur", d).put("ended", ended).put("engine", eng != null ? eng.name() : "");
+            JSONObject r = new JSONObject().put("fid", fid).put("pos", p).put("dur", d).put("ended", ended).put("engine", eng != null ? eng.name() : "").put("live", live);
             if (error != null) r.put("error", error);
             setResult(RESULT_OK, new Intent().putExtra("result", r.toString()));
         } catch (Exception ignored) { }

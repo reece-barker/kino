@@ -505,8 +505,8 @@ select.plain { background: var(--fill); border: 0; border-radius: 10px; height: 
 .banner { position: fixed; top: 76px; left: 50%; transform: translateX(-50%); z-index: 45; background: rgba(255, 159, 10, 0.18); color: var(--orange); padding: 10px 16px; border-radius: 12px; font-size: 14px; font-weight: 600; -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); max-width: calc(100vw - 32px); }
 
 /* tiles extras */
-.tile-check { position: absolute; top: 8px; right: 8px; z-index: 3; width: 24px; height: 24px; border-radius: 50%; background: rgba(0, 0, 0, 0.6); display: grid; place-items: center; font-size: 15px; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
-.tile-play { position: absolute; z-index: 3; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font-size: 22px; opacity: 0; transition: opacity 0.2s; }
+.tile-check { position: absolute; top: 8px; right: 8px; z-index: 3; width: 24px; height: 24px; border-radius: 50%; background: rgba(0, 0, 0, 0.7); display: grid; place-items: center; font-size: 15px; }
+.tile-play { position: absolute; z-index: 3; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, 0.58); font-size: 22px; opacity: 0; transition: opacity 0.2s; }
 .tile:hover .tile-play, .tile:focus-visible .tile-play { opacity: 1; }
 .ep { min-width: 0; }
 .ep .tile { display: block; width: 100%; }
@@ -1121,7 +1121,7 @@ body.pip .player-ui, body.pip .skip-intro, body.pip .up-next, body.pip .subs-lay
 
 /* continue watching: take something out */
 .tile-x { position: absolute; z-index: 4; top: 8px; right: 8px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
-  background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 15px; opacity: 0; transition: opacity 0.2s ease, background 0.2s; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+  background: rgba(0, 0, 0, 0.68); color: #fff; font-size: 15px; opacity: 0; transition: opacity 0.2s ease, background 0.2s; }
 .tile:hover .tile-x, .tile:focus-within .tile-x, .tile-x:focus-visible { opacity: 1; }
 .tile-x:hover { background: rgba(0, 0, 0, 0.8); }
 @media (hover: none) { .tile-x { opacity: 1; } }
@@ -1225,7 +1225,7 @@ html.lite .hero-slide.on .hero-content > * { animation-duration: 0.4s; }
 .cast a { cursor: pointer; }
 
 /* Who in the family liked it */
-.tile-love { position: absolute; left: 8px; top: 8px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 15px; background: rgba(0, 0, 0, 0.55); color: #fff; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.tile-love { position: absolute; left: 8px; top: 8px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 15px; background: rgba(0, 0, 0, 0.68); color: #fff; }
 .tile-love.loved { background: #ff375f; }
 
 /* Profile picker fits the window instead of always being a bit taller than it */
@@ -1582,7 +1582,7 @@ body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none
 .fav-cell { position: relative; min-width: 0; }
 .fav-cell .fav-tile { width: 100%; }
 .fav-btns { position: absolute; top: 8px; right: 8px; z-index: 4; display: flex; gap: 6px; }
-.fav-btn { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, 0.55); color: #fff; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); font-size: 16px; line-height: 1; transition: background 0.15s, transform 0.15s; }
+.fav-btn { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, 0.68); color: #fff; font-size: 16px; line-height: 1; transition: background 0.15s, transform 0.15s; }
 .fav-btn .i { width: 18px; height: 18px; }
 .fav-btn:hover { background: rgba(0, 0, 0, 0.8); }
 .fav-btn.fav-star { color: #ffd60a; }

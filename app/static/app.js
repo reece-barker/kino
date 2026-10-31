@@ -142,6 +142,14 @@
     for (const t of ["gesturestart", "gesturechange", "gestureend"]) document.addEventListener(t, (e) => e.preventDefault(), { passive: false });
     document.addEventListener("touchmove", (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
   }
+  // Pictures and video cant be dragged out of the page onto the desktop, and right click on them has no save menu. This only stops the
+  // easy ways, anyone can still take a screenshot or look at what the page loads. Text boxes and links keep their own right click
+  document.addEventListener("dragstart", (e) => { if (e.target.closest && e.target.closest("img, picture, video, canvas, svg, a")) e.preventDefault(); }, true);
+  document.addEventListener("contextmenu", (e) => { if (e.target.closest && e.target.closest("img, picture, video, canvas, .tile, .hero, .detail-hero, .player")) e.preventDefault(); }, true);
+  // With the drag gone, letting go of a poster that was dragged on counts as a click and opens it, so a mouse click that moved a fair way is ignored
+  let mDown = null;
+  document.addEventListener("pointerdown", (e) => { mDown = e.pointerType === "mouse" ? [e.clientX, e.clientY] : null; }, true);
+  document.addEventListener("click", (e) => { if (mDown && Math.hypot(e.clientX - mDown[0], e.clientY - mDown[1]) > 8 && e.target.closest && e.target.closest("a.tile, .tile, .hero")) { e.preventDefault(); e.stopPropagation(); } mDown = null; }, true);
   // TVs and low memory devices get a lighter version: smaller pictures, no glass blur, fewer effects. Everything else is untouched
   const LITE = TV || (navigator.deviceMemory && navigator.deviceMemory <= 2);
   if (LITE) document.documentElement.classList.add("lite");

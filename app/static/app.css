@@ -1874,3 +1874,6 @@ body.tv .tr-box { width: min(90vw, calc(80vh * 16 / 9)); }
 .tr-bar.tr-up, .tr-bar.tr-still, .tr-bar:focus-within { opacity: 1; }
 .trailer-view .tr-x { position: absolute; z-index: 5; top: max(18px, env(safe-area-inset-top)); right: max(18px, env(safe-area-inset-right)); width: 46px; height: 46px; background: rgba(255, 255, 255, 0.16); }
 .trailer-view .tr-x:hover, .trailer-view .tr-x:focus-visible { background: #fff; color: #000; }
+/* TV: the selected card keeps its white ring while it plays */
+body.tv .tile.tile-open:focus-visible .art { box-shadow: 0 0 0 3px #fff, 0 26px 60px rgba(0, 0, 0, 0.75); outline: none; }
+body.tv .tile.tile-open { z-index: 6; }

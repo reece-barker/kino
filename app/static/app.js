@@ -979,7 +979,10 @@
   // card grows and pushes the rest aside, like Netflix), muted. Touch screens and TVs only get the button. It uses youtube-nocookie.com, so
   // YouTube sees the viewer's address when one plays.
   const CAN_HOVER = !TV && !LITE && !!window.matchMedia && matchMedia("(hover: hover) and (pointer: fine)").matches && !matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const previewsOn = () => CAN_HOVER && !(ME.profile && ME.profile.prefs && ME.profile.prefs.previews === false);
+  // TVs preview the card that is selected (focus) instead of hovered, unless the TV has very little memory
+  const TV_PREVIEW = TV && !(navigator.deviceMemory && navigator.deviceMemory <= 2);
+  const previewsOn = () => (CAN_HOVER || TV_PREVIEW) && !(ME.profile && ME.profile.prefs && ME.profile.prefs.previews === false);
+  const tileActive = (t) => (TV ? document.activeElement === t : t.matches(":hover"));
   const TRAILERS = new Map();  // kind/imdb -> a promise, then the id ("" for none or one that can't be embedded)
   async function trailerFor(kind, imdb) {
     if (!imdb || !/^tt\d+$/.test(imdb)) return "";
@@ -1045,8 +1048,8 @@
   const trailerAttrs = (t) => { const im = t.imdb || (/^tt\d+$/.test(String(t.id || "")) ? t.id : ""); return im && t.kind !== "video" ? `data-imdb="${esc(im)}" data-kind="${t.kind === "series" ? "series" : "movie"}"` : ""; };
 
   // The card on a row: after half a second of hovering it grows to a wide card playing the trailer and the rest of the row slides aside
-  const HV = { tile: null, timer: null, closeT: null, ctl: null, wait: null, fade: null };
-  function closeTile(now) {
+  const HV = { tile: null, timer: null, closeT: null, ctl: null, wait: null, fade: null, cool: 0, settle: null, x: 0, y: 0, sx: 0, sy: 0 };
+  function closeTile() {
     clearTimeout(HV.timer); clearTimeout(HV.closeT); clearTimeout(HV.wait); clearTimeout(HV.fade);
     const tile = HV.tile;
     if (HV.ctl) { HV.ctl.stop(); HV.ctl = null; }
@@ -1055,20 +1058,37 @@
     if (!tile || !tile.classList.contains("tile-open")) return;
     const art = $(".art", tile), row = tile.parentElement;
     tile.classList.remove("tile-open");
-    tile.style.width = tile.style.height = tile.style.transform = "";
-    if (art) { art.style.height = art.style.aspectRatio = ""; art.classList.remove("tr-on"); $$(".tile-trailer, .tile-ov", art).forEach((x) => x.remove()); }
-    if (row) [...row.children].forEach((k) => (k.style.transform = ""));
+    tile.style.width = tile.style.transform = "";
+    if (art) {
+      art.classList.remove("tr-on");
+      $$(".tile-trailer, .tile-ov", art).forEach((x) => x.remove());
+      // The card keeps its height and the picture its own while it shrinks back. Without that the picture went back to its tall shape while
+      // still wide for a moment, and the row jumped to almost twice its height
+      art.style.height = (tile._h0 || art.getBoundingClientRect().height) + "px";
+    }
+    if (row) { [...row.children].forEach((k) => (k.style.transform = "")); row.style.scrollSnapType = ""; }
+    // A short pause before the next card (the one that ends up under a still mouse after the shrink) can start
+    HV.cool = performance.now() + 480;
+    setTimeout(() => { if (HV.tile !== tile) { tile.style.height = ""; if (art) { art.style.height = art.style.aspectRatio = ""; } } }, 460);
   }
   async function openTile(tile) {
     const kind = tile.dataset.kind, imdb = tile.dataset.imdb;
     const yt = await trailerFor(kind, imdb);
-    if (HV.tile !== tile || !tile.isConnected || !yt || !pl.el.hidden || sheetClose || !tile.matches(":hover")) return;
+    if (HV.tile !== tile || !tile.isConnected || !yt || !pl.el.hidden || sheetClose || !tileActive(tile)) return;
     const row = tile.parentElement, art = $(".art", tile);
     if (!row || !art) return;
+    if (tile.style.height) return;  // still shrinking back from the last time
     // About twice as wide as a poster (a little over a third wider for a wide card), never taller than the card with its caption, so nothing below moves
-    const ar = art.getBoundingClientRect(), th = Math.round(tile.getBoundingClientRect().height);
-    const ow = Math.round(Math.min((th * 16) / 9, ar.width * 2.3)), oh = Math.round(Math.min(th, Math.max(ar.height, (ow * 9) / 16))), extra = ow - Math.round(ar.width);
+    const ar = { width: art.offsetWidth, height: art.offsetHeight }, th = Math.round(tile.getBoundingClientRect().height);  // the real size, not the hover zoom
+    // Room to grow: to the right if the card fits on screen (a TV keeps 48px in from the edge), otherwise to the left, and a card that has less
+    // room than that only grows as far as there is. No room at all and it stays as it is
+    const rr = row.getBoundingClientRect(), tr = tile.getBoundingClientRect(), edge = TV ? 48 : 24;
+    const roomR = Math.min(rr.right, innerWidth) - edge - tr.right, roomL = tr.left - (Math.max(rr.left, 0) + (TV ? 120 : 24));
+    const want = Math.round(Math.min((th * 16) / 9, ar.width * 2.3)) - Math.round(ar.width);
+    const dir = roomR >= want || roomR >= roomL ? 1 : -1, extra = Math.min(want, Math.floor(dir > 0 ? roomR : roomL));
     if (extra < 30) return;
+    const ow = Math.round(ar.width) + extra, oh = Math.round(Math.min(th, Math.max(ar.height, (ow * 9) / 16)));
+    tile._h0 = Math.round(ar.height);
     // The video goes in first, at the size the card will be and invisible (the card clips it), and the card stays exactly as it is
     const host = document.createElement("div");
     host.className = "tile-trailer";
@@ -1080,8 +1100,8 @@
       grown = true;
       clearTimeout(HV.wait);
       const kids = [...row.children], i = kids.indexOf(tile);
-      // Grows to the right when there is room in the row, otherwise to the left
-      const dir = row.getBoundingClientRect().right - tile.getBoundingClientRect().right - 24 >= extra ? 1 : -1;
+      // The row doesn't snap to its cards while one is open (the card is wider than its column, and snapping back moved the row and closed it)
+      HV.sx = row.scrollLeft; HV.sy = scrollY; row.style.scrollSnapType = "none";
       tile.classList.add("tile-open");
       tile.style.height = th + "px";
       tile.style.width = ow + "px";
@@ -1091,11 +1111,11 @@
       kids.forEach((k, j) => { if (dir > 0 && j > i) k.style.transform = `translateX(${extra}px)`; if (dir < 0 && j < i) k.style.transform = `translateX(${-extra}px)`; });
       const ov = document.createElement("div");
       ov.className = "tile-ov";
-      ov.innerHTML = `<b>${esc($(".cap", tile) ? $(".cap", tile).textContent : "")}</b><span>${esc($(".sub", tile) ? $(".sub", tile).textContent : "")}</span><button type="button" class="tile-snd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`;
+      ov.innerHTML = `<b>${esc($(".cap", tile) ? $(".cap", tile).textContent : "")}</b><span>${esc($(".sub", tile) ? $(".sub", tile).textContent : "")}</span>${TV ? "" : `<button type="button" class="tile-snd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`}`;
       art.appendChild(ov);
       const snd = $(".tile-snd", ov);
       show(muted);
-      snd.onclick = (e) => { e.preventDefault(); e.stopPropagation(); HV.ctl && HV.ctl.mute(!muted); show(!muted); };
+      if (snd) snd.onclick = (e) => { e.preventDefault(); e.stopPropagation(); HV.ctl && HV.ctl.mute(!muted); show(!muted); };
       // The video shows once the card has finished growing
       HV.fade = setTimeout(() => art.classList.add("tr-on"), 420);
     };
@@ -1104,15 +1124,24 @@
     // If it never starts (blocked, slow) nothing was changed, so it is just dropped
     HV.wait = setTimeout(() => { if (!grown && HV.tile === tile) closeTile(); }, 9000);
   }
-  document.addEventListener("mouseover", (e) => {
-    if (!previewsOn()) return;
-    const t = e.target.closest && e.target.closest("a.tile[data-imdb]");
-    if (!t || !t.parentElement || !t.parentElement.classList.contains("row")) return;
+  const arm = (t) => {
     clearTimeout(HV.closeT);
     if (HV.tile === t) return;
     closeTile();
     HV.tile = t;
-    HV.timer = setTimeout(() => openTile(t), 550);
+    HV.timer = setTimeout(() => openTile(t), TV ? 1100 : 550);
+  };
+  const tileOf = (el) => { const t = el && el.closest && el.closest("a.tile[data-imdb]"); return t && t.parentElement && t.parentElement.classList.contains("row") ? t : null; };
+  document.addEventListener("mousemove", (e) => { HV.x = e.clientX; HV.y = e.clientY; }, { passive: true });
+  document.addEventListener("mouseover", (e) => {
+    if (!previewsOn() || TV) return;
+    const t = tileOf(e.target);
+    if (!t) return;
+    // Right after a card shrinks back the cards move under the mouse. It waits for them to settle and then looks at what is under the mouse,
+    // so it never flips between two cards
+    const left = HV.cool - performance.now();
+    if (left > 0) { clearTimeout(HV.settle); HV.settle = setTimeout(() => { const u = tileOf(document.elementFromPoint(HV.x, HV.y)); if (u && !HV.tile) arm(u); }, left + 40); return; }
+    arm(t);
   });
   document.addEventListener("mouseout", (e) => {
     const t = e.target.closest && e.target.closest("a.tile[data-imdb]");
@@ -1120,7 +1149,21 @@
     clearTimeout(HV.timer); clearTimeout(HV.closeT);
     HV.closeT = setTimeout(() => closeTile(), 140);
   });
-  document.addEventListener("scroll", () => { if (HV.tile) closeTile(); }, { capture: true, passive: true });
+  // A TV has no mouse: the card that is selected waits a moment (the remote moves along the row quickly) and then previews
+  document.addEventListener("focusin", (e) => {
+    if (!TV || !previewsOn()) return;
+    const t = tileOf(e.target);
+    if (t) arm(t); else if (HV.tile) closeTile();
+  });
+  document.addEventListener("focusout", (e) => { if (TV && HV.tile && !(e.relatedTarget && HV.tile.contains(e.relatedTarget))) closeTile(); });
+  // Scrolling closes an open card (a card that is only waiting to open carries on, selecting something on a TV scrolls the row a little)
+  document.addEventListener("scroll", () => {
+    const t = HV.tile;
+    if (!t || !t.classList.contains("tile-open")) return;
+    // Only a real scroll closes it, not the little shifts that come with the card growing
+    const row = t.parentElement;
+    if (Math.abs(scrollY - HV.sy) > 16 || (row && Math.abs(row.scrollLeft - HV.sx) > 40)) closeTile();
+  }, { capture: true, passive: true });
   document.addEventListener("pointerdown", (e) => { if (HV.tile && !(e.target.closest && e.target.closest(".tile-snd"))) closeTile(); }, true);
 
   // The background of a title's page: after 2.5 seconds a trailer fades in behind the title, muted, with a sound button. It pauses when the page

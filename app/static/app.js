@@ -1843,7 +1843,7 @@
   // goes to the back of the list next time) and the next one plays straight away, instead of asking about players
   let SOURCES = null;
   // The ones the server found dead (no answer, an error, not a video) stay out of the list the player moves through by itself, unless nothing else is left
-  const liveSources = (list) => { const ok = list.filter((x) => x.health !== "dead" && !(x.suspect && x.suspect.length)); return ok.length ? ok : list.filter((x) => x.health !== "dead").length ? list.filter((x) => x.health !== "dead") : list; };
+  const liveSources = (list) => { const ok = list.filter((x) => x.health !== "dead" && !(x.suspect && x.suspect.length) && !x.slow); return ok.length ? ok : list.filter((x) => x.health !== "dead").length ? list.filter((x) => x.health !== "dead") : list; };
   const moreSources = (fid) => !!(SOURCES && SOURCES.list.some((x) => x.id !== fid && !SOURCES.tried.has(x.id)));
   function nextSource(fid, from, why) {
     // The server says if the source's host was just busy (429, too many requests), that isnt the source being broken so it isnt held against it,
@@ -1870,7 +1870,7 @@
     SOURCES.lastAt = Date.now() + wait;
     if (LOAD.on) loadStep(SOURCES.skips > 1 ? `${note} (${left} left)` : note);
     const go = () => { if (PLAY_N !== tok) return; playFile(n.id, { from: from || 0, note: SOURCES.skips > 1 ? `${note} (${left} left)` : "", chain: true }); };
-    if (wait) setTimeout(go, wait); else go();
+    if (wait) SOURCES.timer = setTimeout(go, wait); else go();
     return true;
   }
 
@@ -1943,6 +1943,7 @@
             <span class="src-body"><b>${esc(nice(s.label))}</b>
               <span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>
               ${s.health === "dead" ? `<span class="src-warn">${ic("info")} Not answering right now${s.why ? `, it ${esc(s.why)}` : ""}</span>` : ""}
+              ${s.slow ? `<span class="src-warn">${ic("info")} Slow to start: ${esc(s.slow)}</span>` : ""}
               ${s.suspect && s.suspect.length ? `<span class="src-warn">${ic("info")} Probably not the real thing: ${esc(s.suspect.join(", "))}</span>` : ""}
               ${!s.plays ? `<span class="src-warn">${ic("info")} Might not play in this browser, saving it to the Library always works</span>` : ""}
               ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
@@ -1988,6 +1989,7 @@
           <span class="src-q ${x.height >= 720 ? "hd" : ""}">${esc(x.quality)}</span>
           <span class="src-body"><b>${esc(nice(x.label))}</b><span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>
             ${x.health === "dead" ? `<span class="src-warn">${ic("info")} Not answering right now${x.why ? `, it ${esc(x.why)}` : ""}</span>` : ""}
+            ${x.slow ? `<span class="src-warn">${ic("info")} Slow to start: ${esc(x.slow)}</span>` : ""}
             ${x.suspect && x.suspect.length ? `<span class="src-warn">${ic("info")} Probably not the real thing: ${esc(x.suspect.join(", "))}</span>` : ""}
             ${!x.plays ? `<span class="src-warn">${ic("info")} Might not play in this browser, saving it to the Library always works</span>` : ""}
             ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
@@ -3831,11 +3833,15 @@
       // doesn't play it goes back through the server below
       let viaCdn = !!info.cdn;
       pl.v.src = info.cdn || info.src;
+      // A debrid source has to get the file ready first, which can take a while (the server gives up on it after 15 seconds)
+      const slowT = setTimeout(() => { if (pl.info === info && my === PLAY_N && LOAD.on) loadStep("Still waiting, the source may be getting it ready"); }, 6000);
+      pl.v.addEventListener("loadedmetadata", () => clearTimeout(slowT), { once: true });
       const from = opts.from != null ? opts.from : info.resume || 0;
       pl.v.addEventListener("loadedmetadata", () => { if (pl.info !== info || my !== PLAY_N) return; if (from && from < pl.v.duration - 10) pl.v.currentTime = from; }, { once: true });
       let retried = false;
       pl.v.addEventListener("error", async function onErr() {
         if (pl.info !== info || my !== PLAY_N) return;
+        clearTimeout(slowT);
         const code = pl.v.error && pl.v.error.code;
         if (code === 1) { pl.v.addEventListener("error", onErr, { once: true }); return; }   // aborted on purpose, not a real problem
         if (viaCdn) {
@@ -4060,6 +4066,11 @@
       pl.el.classList.remove("live"); LIVE_NOW = null;
       $("#pBack").innerHTML = ic("back10"); $("#pBack").setAttribute("aria-label", "Back 10 seconds"); $("#pBack").title = "Back 10 Seconds";
       $("#pFwd").innerHTML = ic("fwd10"); $("#pFwd").setAttribute("aria-label", "Forward 10 seconds"); $("#pFwd").title = "Forward 10 Seconds";
+    }
+    if (!keepOpen) {
+      // Closed on purpose: a source that was waiting its turn in the skip chain must not open the player again (it did, dragging you back in)
+      PLAY_N++;
+      if (SOURCES && SOURCES.timer) { clearTimeout(SOURCES.timer); SOURCES.timer = null; }
     }
     if (!keepLoading) loadHide();  // moving along the sources list keeps the loading screen up instead of fading it out and back in
     $("#pStill").hidden = true; clearTimeout(STILL.t);

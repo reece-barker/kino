@@ -983,6 +983,10 @@
   const CAN_HOVER = !TV && !LITE && !!window.matchMedia && matchMedia("(hover: hover) and (pointer: fine)").matches && !matchMedia("(prefers-reduced-motion: reduce)").matches;
   // TVs preview the card that is selected (focus) instead of hovered, unless the TV has very little memory
   const TV_PREVIEW = TV;
+  // A weak TV or stick (2GB of memory or less, or 4 cores or fewer) skips the growing card trailer, it is the heaviest part. The background trailer
+  // on a title page and the Trailer button stay
+  const WEAK = TV && !!((navigator.deviceMemory && navigator.deviceMemory <= 2) || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4));
+  const cardPreviewsOn = () => previewsOn() && !WEAK;
   const previewsOn = () => (CAN_HOVER || TV_PREVIEW) && !(ME.profile && ME.profile.prefs && ME.profile.prefs.previews === false);
   const tileActive = (t) => (TV ? document.activeElement === t : t.matches(":hover"));
   const TRAILERS = new Map();  // kind/imdb -> a promise, then the id ("" for none or one that can't be embedded)
@@ -1167,7 +1171,7 @@
   const tileOf = (el) => { const t = el && el.closest && el.closest("a.tile[data-imdb]"); return t && t.parentElement && t.parentElement.classList.contains("row") ? t : null; };
   document.addEventListener("mousemove", (e) => { HV.x = e.clientX; HV.y = e.clientY; }, { passive: true });
   document.addEventListener("mouseover", (e) => {
-    if (!previewsOn() || TV) return;
+    if (!cardPreviewsOn() || TV) return;
     const t = tileOf(e.target);
     if (!t) return;
     // Right after a card shrinks back the cards move under the mouse. It waits for them to settle and then looks at what is under the mouse,
@@ -1184,7 +1188,7 @@
   });
   // A TV has no mouse: the card that is selected waits a moment (the remote moves along the row quickly) and then previews
   document.addEventListener("focusin", (e) => {
-    if (!TV || !previewsOn()) return;
+    if (!TV || !cardPreviewsOn()) return;
     const t = tileOf(e.target);
     if (t) arm(t); else if (HV.tile) closeTile();
   });

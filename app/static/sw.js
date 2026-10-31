@@ -1,7 +1,7 @@
 // Kino service worker, only there so the app can be installed and opens fast
 // It caches the app shell, never api calls, images from the api or videos
 const CACHE = "kino-__V__";
-const SHELL = ["/", "/static/app.css?v=__V__", "/static/app.js?v=__V__", "/static/hls.min.js", "/static/icon.svg", "/static/icon-192.png"];
+const SHELL = ["/", "/static/app.css?v=__V__", "/static/sizing.css?v=__V__", "/static/app.js?v=__V__", "/static/hls.min.js", "/static/icon.svg", "/static/icon-192.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

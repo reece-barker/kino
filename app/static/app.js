@@ -3865,6 +3865,8 @@
   }
 
   async function startHls(t) {
+    // Moving on to another source closes this one first, anything still on its way here from the old one has nothing to start
+    if (!pl.info) return;
     const my = PLAY_N;
     // Every call gets its own number, if a newer one starts while this waits for the server this one stands down
     const mine = pl.hlsSeq = (pl.hlsSeq || 0) + 1;

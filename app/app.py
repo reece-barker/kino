@@ -4687,10 +4687,10 @@ async def ep_context(kind, vid):
 async def stream_file_info(sid, p, request):
     r = stream_row(sid)
     show, cur, nxt = await ep_context(r["kind"], r["video_id"])
-    if p.get("kids"):
-        m = show if cur else await meta_lookup(r["kind"], show_of(r["video_id"]))
-        if not kids_ok((m or {}).get("genres"), show_of(r["video_id"])):
-            raise HTTPException(404, "That title isn't available on this profile")
+    # The details of the title: kids profiles are checked against them, and how long it should be goes to the player (to spot fakes that are far too short)
+    m = show if cur else await meta_lookup(r["kind"], show_of(r["video_id"]))
+    if p.get("kids") and not kids_ok((m or {}).get("genres"), show_of(r["video_id"])):
+        raise HTTPException(404, "That title isn't available on this profile")
     w = watch_row(p["id"], sid, "pos, watched")
     # Streams have no file to compare so the intro (and where the credits start) can only come from the comunity database
     on = await online_segments(show_of(r["video_id"]), cur["season"], cur["episode"]) if cur else None

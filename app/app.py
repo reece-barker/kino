@@ -4508,12 +4508,8 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         x["health"] = "dead" if x.get("_ok") is False else ("good", "untried", "failed")[rank(x)]
         x.pop("_ok", None)
         x["suspect"] = suspect_reasons(f"{x['label']} {x.get('file') or ''}", x["height"], x["bytes"], minutes, kind) if kind in ("movie", "series") else []
-    # Order: sources that played fine before, then ones from addons the admin put first in Settings (Addons, Source Priority, First
-    # before Second and so on), then everything else not tried yet, then copies that failed before, and dead ones last. Inside one
-    # addon the one with the most seeders comes first, then the best quality and size. The addons go in the order they were installed
-    prio, order = {}, {}
-    for i, a in enumerate(rows):
-        order.setdefault(a["m"].get("name"), i)
+    prio = {}
+    for a in rows:
         if a.get("prio"):
             prio[a["m"].get("name")] = min(prio.get(a["m"].get("name"), 99), a["prio"])
 
@@ -4523,12 +4519,19 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         r = rank(x)
         if r == 2:
             return 5
-        if r == 0 and not x["suspect"]:
-            return 1
         if x["suspect"]:
             return 4
+        if r == 0:
+            return 1
         return 2 if x.get("addon") in prio else 3
-    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100), order.get(x.get("addon"), 99), not x["plays"],
+    # Order: sources that played fine before, then the addons you put first in Settings (Source Priority: First, then Second and so on, a
+    # priority addon's sources stay together), then every other source not tried yet, then ones that failed before, probably-fake ones, and
+    # dead ones last. Inside each of those the most seeders first, then the best quality and size. Addons you didn't rank are not
+    # lined up by when they were installed, that put poor sources first
+    for x in out:
+        g = group(x)
+        x["tier"] = "Worked before" if g == 1 else f"Priority: {['', 'First', 'Second', 'Third', 'Fourth'][min(4, prio[x['addon']])]}" if g == 2 else ""
+    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100) if group(x) in (1, 2) else 0, not x["plays"],
                             -(x["seeders"] if x.get("seeders") is not None else -1), -x["height"], -(x["bytes"] or 0)))
     if video_type(kind):
         # Youtubio lists every quality twice (its own sponsor cutting player and the plain one), the top few is plenty

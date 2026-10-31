@@ -1923,7 +1923,7 @@
           <button class="round-btn sm" data-close aria-label="Close">${ic("close")}</button></div>
         <div class="src-list">${r.streams.map((s, i) => {
           const p = s.progress && !s.progress.watched && s.progress.dur ? s.progress.pos / s.progress.dur : 0;
-          const meta = [s.format, s.bytes ? bytes(s.bytes) : "", s.seeders != null ? `${s.seeders} seeder${s.seeders === 1 ? "" : "s"}` : "", s.peers != null ? `${s.peers} peer${s.peers === 1 ? "" : "s"}` : "", s.addon].filter(Boolean);
+          const meta = [s.format, s.bytes ? bytes(s.bytes) : "", s.seeders != null ? `${s.seeders} seeder${s.seeders === 1 ? "" : "s"}` : "", s.peers != null ? `${s.peers} peer${s.peers === 1 ? "" : "s"}` : "", s.addon, s.tier].filter(Boolean);
           return `<button class="src ${i === 0 ? "best" : ""} ${s.health === "dead" ? "dead" : ""}" data-src="${i}">
             <span class="src-q ${s.height >= 720 ? "hd" : ""}">${esc(s.quality)}</span>
             <span class="src-body"><b>${esc(nice(s.label))}</b>
@@ -1968,7 +1968,7 @@
       }).join("") || `<p class="secondary sr-empty">Not on the Storage Box.</p>`)
         + `<h3 class="sr-sub">From Addons</h3>` + (streams ? (streams.length ? streams.map((x, i) => {
         const p = x.progress && !x.progress.watched && x.progress.dur ? x.progress.pos / x.progress.dur : 0;
-        const meta = [x.format, x.bytes ? bytes(x.bytes) : "", x.seeders != null ? `${x.seeders} seeder${x.seeders === 1 ? "" : "s"}` : "", x.peers != null ? `${x.peers} peer${x.peers === 1 ? "" : "s"}` : "", x.addon].filter(Boolean);
+        const meta = [x.format, x.bytes ? bytes(x.bytes) : "", x.seeders != null ? `${x.seeders} seeder${x.seeders === 1 ? "" : "s"}` : "", x.peers != null ? `${x.peers} peer${x.peers === 1 ? "" : "s"}` : "", x.addon, x.tier].filter(Boolean);
         return `<button class="src ${x.health === "dead" ? "dead" : ""}" data-str="${i}">
           <span class="src-q ${x.height >= 720 ? "hd" : ""}">${esc(x.quality)}</span>
           <span class="src-body"><b>${esc(nice(x.label))}</b><span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>

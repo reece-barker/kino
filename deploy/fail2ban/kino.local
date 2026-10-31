@@ -1,4 +1,5 @@
 # Bans ips at the firewall after 8 failed logins in 15 minutes, on top of the apps own limit
 [Definition]
-failregex = kino login (?:failed|blocked) .*ip=<HOST>$
+failregex = kino login failed user=\S* ip=<HOST>$
+            kino login blocked ip=<HOST>$
 ignoreregex =

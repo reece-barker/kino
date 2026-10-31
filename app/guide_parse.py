@@ -9,12 +9,20 @@ import os
 import re
 import sys
 import time
+import zlib
 import xml.etree.ElementTree as ET
 
 
 def read(path):
     raw = open(path, "rb").read()
-    return gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
+    if raw[:2] != b"\x1f\x8b":
+        return raw
+    # Capped, a gzip bomb would otherwise eat all the ram and take the whole vps with it
+    d = zlib.decompressobj(31)
+    out = d.decompress(raw, 600 * 1024**2)
+    if d.unconsumed_tail:
+        raise SystemExit("guide is too big once unpacked")
+    return out
 
 
 TIME_RE = re.compile(r"^\s*(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?\s*(?:(Z|UTC|GMT)|([+-])(\d{2}):?(\d{2})?)?")

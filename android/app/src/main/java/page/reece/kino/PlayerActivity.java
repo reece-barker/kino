@@ -134,7 +134,9 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         hideBars();
         buildUi();
 
-        String pick = prefs.getString("engine", "exo");
+        // Live channels always play in the Kino player (ExoPlayer). The Android one cant do the live stream format and gives
+        // "the device's player said no (1/-1004)", and once it had been switched to for a film the choice stuck for everything
+        String pick = live ? "exo" : prefs.getString("engine", "exo");
         startEngine(pick.equals("android") ? "android" : "exo", info.optDouble("start", 0));
         h.post(tick);
         h.postDelayed(saver, 10000);
@@ -1093,6 +1095,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     private void switchEngine(String which) {
         if (which.equals(eng.name())) return;
+        if (live && !which.equals("exo")) { toast("Live TV only plays in the Kino player"); return; }
         double at = pos();
         prefs.edit().putString("engine", which).apply();
         stopSession();

@@ -114,7 +114,10 @@ class ExoEngine implements Engine {
                     .setLanguage(s.lang.isEmpty() ? null : s.lang).setLabel(s.label).build());
         }
         b.setSubtitleConfigurations(sc);
-        // -1 is live tv, it starts at the live edge instead of a position
+        // -1 is live tv, it starts at the live edge instead of a position. It stays about 12 seconds behind it (the default is 3 pieces,
+        // which a slow channel cant keep up with, so it kept stopping to load) and never speeds up or slows down to catch the edge
+        if (startMs < 0) b.setLiveConfiguration(new MediaItem.LiveConfiguration.Builder().setTargetOffsetMs(12000).setMinOffsetMs(8000)
+                .setMaxOffsetMs(30000).setMinPlaybackSpeed(1.0f).setMaxPlaybackSpeed(1.0f).build());
         if (startMs < 0) player.setMediaItem(b.build());
         else player.setMediaItem(b.build(), startMs);
         player.prepare();

@@ -107,7 +107,7 @@ IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.spa
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
 AVATAR_COUNT = 36  # Has to match the AVATARS list in app.js
-DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False, "previews": True}
+DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False, "previews": True, "preview_sound": True}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("kino")
@@ -1742,7 +1742,7 @@ async def profile_update(request: Request, p=Depends(current_profile)):
             prefs[k] = str(v or "")[:30]
         elif k == "sub_size" and v in ("s", "m", "l"):
             prefs[k] = v
-        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source", "live_all_countries", "previews"):
+        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source", "live_all_countries", "previews", "preview_sound"):
             prefs[k] = bool(v)
         elif k == "still_watching":
             # Minutes without touching anything before the player asks if anyones still there, 0 is off

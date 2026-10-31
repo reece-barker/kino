@@ -1864,3 +1864,5 @@ body.tv .page-back { display: none !important; }
 .trailer-view .glass-btn.round { position: absolute; z-index: 2; top: max(18px, env(safe-area-inset-top)); left: max(18px, env(safe-area-inset-left)); }
 .tr-box { position: relative; width: min(96vw, calc(86vh * 16 / 9)); aspect-ratio: 16 / 9; background: #000; border-radius: 14px; overflow: hidden; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7); }
 body.tv .tr-box { width: min(90vw, calc(80vh * 16 / 9)); }
+/* The trailer viewer has no YouTube controls, its own sound button sits bottom right */
+.trailer-view .tr-snd { position: absolute; z-index: 2; right: max(18px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom)); }

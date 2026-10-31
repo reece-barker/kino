@@ -2947,6 +2947,8 @@
         </div>
         <div class="addon-tags">${uses(a.uses).map((u) => `<span class="badge">${u}</span>`).join("")}${a.uses.streams ? `<span class="badge">Streams</span>` : ""}
           ${a.config_required ? `<span class="badge warn">Needs Setting Up</span>` : ""}</div>
+        ${a.uses.streams ? `<label class="set-row"><span><b>Source Priority</b><span class="secondary">After your TorBox copies and sources that played fine before, Play tries this addon's sources before the rest. First goes before Second and so on</span></span>
+          <select class="plain" data-aprio="${a.id}" aria-label="Source priority for ${esc(a.name)}">${[["0", "Normal"], ["1", "First"], ["2", "Second"], ["3", "Third"], ["4", "Fourth"]].map(([v, l]) => `<option value="${v}" ${Number(a.prio || 0) === Number(v) ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
         ${a.config_required ? `<div class="note">This addon has to be set up on its own website first. Paste the link it gives you after setting it up.</div>` : ""}
         ${onlySearch(a) ? `<div class="note">${ic("info")} This addon only has search catalogs, so its videos show up in Search but it has nothing to put on Home. In the addon's own settings add your cookies, a playlist or a channel as a catalog, then install the new link it gives you.</div>` : ""}
         <div class="addon-foot">
@@ -2967,6 +2969,9 @@
       try { const x = await api("/api/admin/addons", { url: $("#addonUrl").value }); toast(`${x.name || "Addon"} installed`); ME.features = null; drawAddons(); }
       catch (er) { $("#addonErr").textContent = er.message; b.disabled = false; }
     };
+    $$("[data-aprio]", box).forEach((c) => (c.onchange = async () => {
+      try { await api(`/api/admin/addons/${c.dataset.aprio}`, { prio: Number(c.value) }, "PUT"); toast(c.value === "0" ? "Back to the normal order" : `Its sources are tried ${["", "first", "second", "third", "fourth"][Number(c.value)]}`); } catch (er) { toast(er.message, 5000); }
+    }));
     $$("[data-aon]", box).forEach((c) => (c.onchange = async () => {
       try { await api(`/api/admin/addons/${c.dataset.aon}`, { enabled: c.checked }, "PUT"); drawAddons(); } catch (er) { toast(er.message, 5000); }
     }));
@@ -3542,7 +3547,7 @@
     if (my !== PLAY_N || pl.el.hidden) return;
     loadArt(info.art, (opts.title && opts.title.name) || info.show || info.name);
     if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
-    pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false; pl.fakeAsked = false; pl.greenChecked = false;
+    pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false; pl.fakeAsked = false; pl.greenChecked = false; pl.frameAt = 0;
     pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0; pl.ad = 0;
     pl.title = opts.title || null;
     const prefs = info.prefs || {};
@@ -3969,7 +3974,23 @@
   // A 30 second clip where a whole film or episode should be. TorBox hands one of these out (a green screen with a
   // message) when a download didnt really happen, so it gets spotted by its length, or by the picture being mostly
   // that green, and Kino offers the next source like the up next card. With the setting on it just moves on
+  // TorBox has a second one now: about 2 minutes, black with text (Already downloading and a QR code). A real film or episode is never
+  // that short, so that length plus a dark picture with text on it counts, and where the picture cant be read the length alone does
   const isFakeLen = (d) => d >= 27 && d <= 33;
+  const isLongFakeLen = (d) => d >= 100 && d <= 140;
+  function darkTextFrame() {
+    try {
+      const c = darkTextFrame.c || (darkTextFrame.c = document.createElement("canvas"));
+      c.width = 64; c.height = 36;
+      const x = c.getContext("2d", { willReadFrequently: true });
+      x.drawImage(pl.v, 0, 0, 64, 36);
+      const d = x.getImageData(0, 0, 64, 36).data;
+      let dark = 0, bright = 0;
+      for (let i = 0; i < d.length; i += 4) { const l = d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11; if (l < 40) dark++; else if (l > 150) bright++; }
+      const n = d.length / 4;
+      return dark / n > 0.6 && bright / n > 0.012 && bright / n < 0.5;
+    } catch (_) { return null; }  // a picture from another site cant be read
+  }
   function greenFrame() {
     try {
       const c = greenFrame.c || (greenFrame.c = document.createElement("canvas"));
@@ -3988,14 +4009,21 @@
     const p = pos();
     let fake = isFakeLen(total());
     if (!fake && p > 1.5 && p < 8 && !pl.v.paused && pl.mode === "direct" && !pl.greenChecked) { pl.greenChecked = true; fake = greenFrame() && (!total() || total() < 120); }
+    // The text comes in a little after the start, so the picture gets looked at every couple of seconds for the first 40
+    if (!fake && isLongFakeLen(total()) && p > 1.5 && p < 40 && !pl.v.paused && Date.now() - (pl.frameAt || 0) > 2000) {
+      pl.frameAt = Date.now();
+      const f = darkTextFrame();
+      fake = f === null || f;
+    }
     if (!fake) return;
+    const long = !isFakeLen(total()) && total() > 60, what = long ? "2 minute" : "30 second";
     pl.fakeAsked = true;
     const fid = info.id, more = moreSources(fid), auto = info.prefs && info.prefs.auto_next_source;
-    if (auto && more) { nextSource(fid, 0, "That copy was a 30 second placeholder"); return; }
+    if (auto && more) { nextSource(fid, 0, `That copy was a ${what} placeholder`); return; }
     api(`/api/streams/${fid}/bad`, {}).catch(() => {});
     pl.v.pause();
     const box = $("#upNext");
-    box.innerHTML = `<div class="un-body"><div class="lbl">Probably a TorBox placeholder${more ? "" : ", and there's no other source"}</div><div class="nm">This Copy is Only 30 Seconds</div>
+    box.innerHTML = `<div class="un-body"><div class="lbl">Probably a TorBox placeholder${more ? "" : ", and there's no other source"}</div><div class="nm">This Copy is Only ${long ? "2 Minutes" : "30 Seconds"}</div>
       <div class="actions">${more ? `<button class="btn primary small" id="fkNext">Next Source</button>` : ""}<button class="btn secondary small" id="fkKeep">${more ? "Keep Watching" : "OK"}</button></div></div>`;
     box.hidden = false;
     if (more) $("#fkNext").onclick = () => { box.hidden = true; nextSource(fid, 0, "Skipped the placeholder"); };

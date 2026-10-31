@@ -1743,3 +1743,8 @@ body.tv .who-tile:hover:not(:focus-visible) .av.av-duo .av-half:last-child { box
 /* No double tap zoom anywhere (pinch stays in a browser tab), and as a home screen app no pinch either */
 html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
 html.standalone { touch-action: pan-x pan-y; }
+
+/* ================================================================ player parity */
+/* The up next card was sitting on top of the subtitles, they lift out of its way while it shows */
+.player:has(.up-next:not([hidden])) .subs-layer { bottom: 250px; }
+@media (max-width: 760px) { .player:has(.up-next:not([hidden])) .subs-layer { bottom: 330px; } }

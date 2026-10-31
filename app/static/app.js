@@ -980,7 +980,7 @@
   // YouTube sees the viewer's address when one plays.
   const CAN_HOVER = !TV && !LITE && !!window.matchMedia && matchMedia("(hover: hover) and (pointer: fine)").matches && !matchMedia("(prefers-reduced-motion: reduce)").matches;
   // TVs preview the card that is selected (focus) instead of hovered, unless the TV has very little memory
-  const TV_PREVIEW = TV && !(navigator.deviceMemory && navigator.deviceMemory <= 2);
+  const TV_PREVIEW = TV;
   const previewsOn = () => (CAN_HOVER || TV_PREVIEW) && !(ME.profile && ME.profile.prefs && ME.profile.prefs.previews === false);
   const tileActive = (t) => (TV ? document.activeElement === t : t.matches(":hover"));
   const TRAILERS = new Map();  // kind/imdb -> a promise, then the id ("" for none or one that can't be embedded)
@@ -993,18 +993,22 @@
   const noTrailer = (kind, imdb) => TRAILERS.set(`${kind === "series" ? "series" : "movie"}/${imdb}`, Promise.resolve(""));
   const ytSrc = (id, o = {}) => `https://www.youtube-nocookie.com/embed/${id}?` + new URLSearchParams({
     autoplay: 1, mute: o.mute ? 1 : 0, controls: o.controls ? 1 : 0, modestbranding: 1, rel: 0, playsinline: 1, iv_load_policy: 3, disablekb: o.controls ? 0 : 1,
-    fs: o.controls ? 1 : 0, loop: o.loop ? 1 : 0, ...(o.loop ? { playlist: id } : {}), enablejsapi: 1, origin: location.origin }).toString();
+    fs: o.controls ? 1 : 0, hl: "en", cc_load_policy: 0, enablejsapi: 1, origin: location.origin }).toString();
   const ytCmd = (f, func, args = []) => { try { f.contentWindow.postMessage(JSON.stringify({ event: "command", func, args }), "*"); } catch (_) {} };
   // Sound on by default: a trailer starts muted (a browser always lets that autoplay) and the sound is switched on as soon as it is playing, when the
   // page has been clicked or tapped before (browsers only allow sound after that). If it isn't allowed it just stays muted and the sound button shows it
   const soundAllowed = () => (navigator.userActivation ? navigator.userActivation.hasBeenActive : true);
   const wantSound = () => !(ME.profile && ME.profile.prefs && ME.profile.prefs.preview_sound === false);
-  // An embedded trailer in host. o: mute, loop, controls, cover (fill the box and crop what YouTube draws on it), sound (turn the sound on once it
-  // plays), onPlay, onFail, onMuted (the player says its sound is on or off)
+  // YouTube draws its title, a More videos strip and buttons over the first few seconds of any video, controls off or not, so the video stays
+  // invisible until those are gone (a loop restart is hidden the same way). It loops by hand cause the loop param adds previous and next buttons
+  const YT_CLEAR = 4500;
+  // An embedded trailer in host. o: mute, loop, controls, cover (fill the box), contain (fit the whole frame in the box), sound (turn the sound on
+  // once it shows), onPlay (it is showing), onFail, onMuted (the player says its sound is on or off)
   function mountTrailer(host, yt, o = {}) {
     const f = document.createElement("iframe");
     f.src = ytSrc(yt, { ...o, mute: o.mute || o.sound });
-    let soundDone = false, state = -1;
+    let soundDone = false, state = -1, shown = false, clearT = null;
+    f.style.opacity = "0";
     f.title = "Trailer";
     f.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture; fullscreen");
     f.setAttribute("sandbox", "allow-scripts allow-same-origin allow-presentation");
@@ -1012,10 +1016,20 @@
     f.setAttribute("aria-hidden", o.controls ? "false" : "true");
     if (!o.controls) f.tabIndex = -1;
     const fit = () => {
-      if (!o.cover) { f.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0"; return; }
+      const op = f.style.opacity;
+      if (!o.cover && !o.contain) { f.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0"; f.style.opacity = op; return; }
       const r = host.getBoundingClientRect(), w = r.width, h = r.height;
-      const W = Math.max(w, (h * 16) / 9), H = (W * 9) / 16;
-      f.style.cssText = `position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;border:0;transform:translate(-50%,-50%) scale(${o.scale || 1.5});pointer-events:none`;
+      const W = o.contain ? Math.min(w, (h * 16) / 9) : Math.max(w, (h * 16) / 9), H = (W * 9) / 16;
+      f.style.cssText = `position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;border:0;transform:translate(-50%,-50%);pointer-events:none;transition:opacity .5s`;
+      f.style.opacity = op;
+    };
+    const reveal = () => {
+      clearTimeout(clearT);
+      clearT = setTimeout(() => {
+        shown = true; f.style.opacity = "1";
+        if (o.sound && !soundDone && soundAllowed()) { soundDone = true; ytCmd(f, "unMute"); ytCmd(f, "setVolume", [100]); }
+        o.onPlay && o.onPlay();
+      }, YT_CLEAR);
     };
     fit();
     const on = (e) => {
@@ -1024,21 +1038,26 @@
       try { if (typeof d === "string") d = JSON.parse(d); } catch (_) { return; }
       if (!d) return;
       const st = d.event === "onStateChange" ? d.info : d.event === "infoDelivery" && d.info && typeof d.info.playerState === "number" ? d.info.playerState : null;
-      if (st !== null && st !== state) { state = st; o.onState && o.onState(st); }
-      if (d.event === "onError") o.onFail && o.onFail(d.info);
-      else if ((d.event === "onStateChange" && d.info === 1) || (d.event === "infoDelivery" && d.info && d.info.playerState === 1)) {
-        o.onPlay && o.onPlay();
-        if (o.sound && !soundDone && soundAllowed()) { soundDone = true; ytCmd(f, "unMute"); ytCmd(f, "setVolume", [100]); }
+      if (st !== null && st !== state) {
+        state = st;
+        if (st === 1 && !shown && !clearT) reveal();
+        if (st === 0 && o.loop) { shown = false; clearT = null; f.style.opacity = "0"; ytCmd(f, "seekTo", [0, true]); ytCmd(f, "playVideo"); }
+        if (shown || st !== 1) o.onState && o.onState(st);
+        if (st === 1 && !shown && clearT) o.wait && o.wait();
       }
+      if (d.event === "onError") o.onFail && o.onFail(d.info);
       if (d.event === "infoDelivery" && d.info && typeof d.info.muted === "boolean") o.onMuted && o.onMuted(d.info.muted);
     };
     window.addEventListener("message", on);
     window.addEventListener("resize", fit);
-    f.addEventListener("load", () => { try { f.contentWindow.postMessage(JSON.stringify({ event: "listening", id: 1, channel: "widget" }), "*"); } catch (_) {} });
+    f.addEventListener("load", () => {
+      try { f.contentWindow.postMessage(JSON.stringify({ event: "listening", id: 1, channel: "widget" }), "*"); } catch (_) {}
+      setTimeout(() => ytCmd(f, "unloadModule", ["captions"]), 1200);
+    });
     host.appendChild(f);
     return {
       frame: f, refit: fit,
-      stop() { window.removeEventListener("message", on); window.removeEventListener("resize", fit); f.remove(); },
+      stop() { clearTimeout(clearT); window.removeEventListener("message", on); window.removeEventListener("resize", fit); f.remove(); },
       mute(b) { soundDone = true; ytCmd(f, b ? "mute" : "unMute"); if (!b) ytCmd(f, "setVolume", [100]); },
       pause() { ytCmd(f, "pauseVideo"); },
       get state() { return state; },
@@ -1122,14 +1141,14 @@
     const show = (m) => { muted = m; const snd = $(".tile-snd", art); if (snd) { snd.innerHTML = ic(m ? "mute" : "vol"); snd.title = m ? "Sound on" : "Sound off"; snd.setAttribute("aria-label", snd.title); } };
     HV.ctl = mountTrailer(host, yt, { sound: wantSound(), loop: true, cover: true, onMuted: show, onPlay: grow, onFail: () => { noTrailer(kind, imdb); closeTile(); } });
     // If it never starts (blocked, slow) nothing was changed, so it is just dropped
-    HV.wait = setTimeout(() => { if (!grown && HV.tile === tile) closeTile(); }, 9000);
+    HV.wait = setTimeout(() => { if (!grown && HV.tile === tile) closeTile(); }, 14000);
   }
   const arm = (t) => {
     clearTimeout(HV.closeT);
     if (HV.tile === t) return;
     closeTile();
     HV.tile = t;
-    HV.timer = setTimeout(() => openTile(t), TV ? 1100 : 550);
+    HV.timer = setTimeout(() => openTile(t), TV ? 250 : 120);  // it loads straight away, the card only grows once the video is clean
   };
   const tileOf = (el) => { const t = el && el.closest && el.closest("a.tile[data-imdb]"); return t && t.parentElement && t.parentElement.classList.contains("row") ? t : null; };
   document.addEventListener("mousemove", (e) => { HV.x = e.clientX; HV.y = e.clientY; }, { passive: true });
@@ -1166,7 +1185,7 @@
   }, { capture: true, passive: true });
   document.addEventListener("pointerdown", (e) => { if (HV.tile && !(e.target.closest && e.target.closest(".tile-snd"))) closeTile(); }, true);
 
-  // The background of a title's page: after 2.5 seconds a trailer fades in behind the title, muted, with a sound button. It pauses when the page
+  // The background of a title's page: a trailer loads at once and fades in behind the title once it is clean, muted, with a sound button. It pauses when the page
   // is scrolled past it or the tab is hidden
   const HERO = { timer: null, ctl: null, io: null, args: null };
   function stopHero() {
@@ -1195,7 +1214,7 @@
         HERO.io = new IntersectionObserver(([en]) => { if (!HERO.ctl) return; en.isIntersecting ? HERO.ctl.play() : HERO.ctl.pause(); }, { threshold: 0.25 });
         HERO.io.observe(box);
       }
-    }, 2500);
+    }, 100);
   }
   document.addEventListener("visibilitychange", () => { if (HERO.ctl) document.hidden ? HERO.ctl.pause() : HERO.ctl.play(); });
 
@@ -1244,8 +1263,9 @@
     const showSnd = (m) => { muted = m; snd.innerHTML = ic(m ? "mute" : "vol"); snd.title = m ? "Sound on (M)" : "Sound off (M)"; snd.setAttribute("aria-label", snd.title); };
     const showPlay = (on) => { playing = on; pp.innerHTML = ic(on ? "pause" : "play"); pp.title = on ? "Pause (Space)" : "Play (Space)"; pp.setAttribute("aria-label", on ? "Pause" : "Play"); bar.classList.toggle("tr-still", !on); };
     // It was asked for with a click, so it starts with the sound on
-    const ctl = mountTrailer($("#trBox", el), yt, { loop: true, cover: true, scale: 1.2, onMuted: showSnd,
-      onState: (st) => { if (st === 1) { $("#trLoad", el).hidden = true; showPlay(true); } else if (st === 2 || st === 0) showPlay(false); },
+    const ctl = mountTrailer($("#trBox", el), yt, { loop: true, contain: true, onMuted: showSnd,
+      onPlay: () => { $("#trLoad", el).hidden = true; showPlay(true); },
+      onState: (st) => { if (st === 1) showPlay(true); else if (st === 2 || st === 0) showPlay(false); },
       onFail: () => { noTrailer(kind, imdb); closeTrailer(); toast("This trailer can't be played here", 4000); } });
     TRAILER_VIEW = { el, ctl, back, toggle: () => (playing ? ctl.pause() : ctl.play()), mute: () => { ctl.mute(!muted); showSnd(!muted); } };
     // The bar hides after a moment without the mouse moving, and stays up while it is paused

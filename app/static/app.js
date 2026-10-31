@@ -971,7 +971,7 @@
     const href = opts.href || (t.external ? extHref(t) : `#/title/${t.id}`);
     const x = opts.hide && !TV ? `<button class="tile-x" data-hide="${esc(opts.hide)}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
     return `<a class="tile landscape" href="${href}" ${trailerAttrs(t)} ${TV && opts.hide ? `data-cw="${esc(opts.hide)}" data-cwname="${esc(t.name)}"` : ""} ${opts.play ? `data-play="${esc(opts.play)}" data-tid="${esc(t.id)}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
-      <div class="cap">${esc(t.name)}</div><div class="sub">${esc(opts.sub || t.genres?.slice(0, 2).join(", ") || t.releaseInfo || "")}</div></a>`;
+      <div class="cap">${esc(t.name)}</div><div class="sub">${esc(opts.sub || [t.genres?.slice(0, 2).join(", ") || t.releaseInfo || "", Number(t.rating) > 0 ? `★ ${Number(t.rating).toFixed(1)}` : ""].filter(Boolean).join(" · "))}</div></a>`;
   }
   const metaLine = (t) => [t.kind === "video" ? "" : t.kind === "series" ? "TV Show" : "Movie", t.releaseInfo, t.genres?.slice(0, 2).join(", "), t.runtime, t.rating ? `IMDb ${t.rating}` : ""].filter(Boolean);
 
@@ -1009,7 +1009,7 @@
   function mountTrailer(host, yt, o = {}) {
     const f = document.createElement("iframe");
     f.src = ytSrc(yt, { ...o, mute: o.mute || o.sound });
-    let soundDone = false, state = -1, shown = false, clearT = null;
+    let wantSnd = !!o.sound, state = -1, shown = false, clearT = null;
     f.style.opacity = "0";
     f.title = "Trailer";
     f.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture; fullscreen");
@@ -1029,7 +1029,7 @@
       clearTimeout(clearT);
       clearT = setTimeout(() => {
         shown = true; f.style.opacity = "1";
-        if (o.sound && !soundDone && soundAllowed()) { soundDone = true; ytCmd(f, "unMute"); ytCmd(f, "setVolume", [100]); }
+        if (wantSnd && soundAllowed()) { ytCmd(f, "unMute"); ytCmd(f, "setVolume", [100]); }  // the sound waits for the picture
         o.onPlay && o.onPlay();
       }, o.cover ? YT_CLEAR_CROP : YT_CLEAR);
     };
@@ -1043,7 +1043,7 @@
       if (st !== null && st !== state) {
         state = st;
         if (st === 1 && !shown && !clearT) reveal();
-        if (st === 0 && o.loop) { shown = false; clearT = null; f.style.opacity = "0"; ytCmd(f, "seekTo", [0, true]); ytCmd(f, "playVideo"); }
+        if (st === 0 && o.loop) { shown = false; clearT = null; f.style.opacity = "0"; if (wantSnd) ytCmd(f, "mute"); ytCmd(f, "seekTo", [0, true]); ytCmd(f, "playVideo"); }
         if (shown || st !== 1) o.onState && o.onState(st);
         if (st === 1 && !shown && clearT) o.wait && o.wait();
       }
@@ -1060,7 +1060,7 @@
     return {
       frame: f, refit: fit,
       stop() { clearTimeout(clearT); window.removeEventListener("message", on); window.removeEventListener("resize", fit); f.remove(); },
-      mute(b) { soundDone = true; ytCmd(f, b ? "mute" : "unMute"); if (!b) ytCmd(f, "setVolume", [100]); },
+      mute(b) { wantSnd = !b; ytCmd(f, b ? "mute" : "unMute"); if (!b) ytCmd(f, "setVolume", [100]); },
       pause() { ytCmd(f, "pauseVideo"); },
       get state() { return state; },
       play() { ytCmd(f, "playVideo"); },
@@ -1265,7 +1265,7 @@
     const showSnd = (m) => { muted = m; snd.innerHTML = ic(m ? "mute" : "vol"); snd.title = m ? "Sound on (M)" : "Sound off (M)"; snd.setAttribute("aria-label", snd.title); };
     const showPlay = (on) => { playing = on; pp.innerHTML = ic(on ? "pause" : "play"); pp.title = on ? "Pause (Space)" : "Play (Space)"; pp.setAttribute("aria-label", on ? "Pause" : "Play"); bar.classList.toggle("tr-still", !on); };
     // It was asked for with a click, so it starts with the sound on
-    const ctl = mountTrailer($("#trBox", el), yt, { loop: true, contain: true, onMuted: showSnd,
+    const ctl = mountTrailer($("#trBox", el), yt, { sound: true, loop: true, contain: true, onMuted: showSnd,
       onPlay: () => { $("#trLoad", el).hidden = true; showPlay(true); },
       onState: (st) => { if (st === 1) showPlay(true); else if (st === 2 || st === 0) showPlay(false); },
       onFail: () => { noTrailer(kind, imdb); closeTrailer(); toast("This trailer can't be played here", 4000); } });

@@ -10,6 +10,7 @@ Type=oneshot
 EnvironmentFile=/root/torbox-sync/.env
 Environment=SYNC_STATUS=/var/lib/torbox-sync/status.json
 Environment=PAUSE_FILE=/var/lib/kino/pause.json
+Environment=DELETED_FILE=/var/lib/kino/deleted.json
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/kino/venv/bin/python /root/torbox-sync/sync.py
 # Makes /var/lib/torbox-sync for the status file the dashboard reads

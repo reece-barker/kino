@@ -2774,7 +2774,9 @@
       ${fold("devicesCard", "Allowed Devices", "", `<div id="devicesBody"><div class="skel" style="height:80px"></div></div>`)}
       <section class="card set-card" id="liveCard"><div class="skel" style="height:80px"></div></section>
       <section class="card set-card" id="embedCard"></section>
-      <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>`;
+      <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>
+      <section class="card set-card" id="mediaCard"><div class="skel" style="height:80px"></div></section>`;
+    drawMediaCard();
     drawDevices();
     drawAddons();
     drawLiveAdmin();
@@ -2797,6 +2799,93 @@
       try { await api("/api/admin/allowlist?cidr=" + encodeURIComponent(b.dataset.rmip), undefined, "DELETE"); toast("Network removed"); drawAdminSettings(); }
       catch (er) { $("#ipErr").textContent = er.message; }
     }));
+  }
+
+  // Downloaded media: everything on the Storage Box, where it came from, and delete. Deleted things are remembered so the sync
+  // doesnt fetch them again, they only come back if somebody watches that TorBox copy again (or the admin allows it)
+  async function drawMediaCard() {
+    const box = $("#mediaCard");
+    if (!box) return;
+    let r;
+    try { r = await api("/api/admin/media?skip=0&sort=size"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
+    if (!$("#mediaCard")) return;
+    box.innerHTML = `<h2 class="set-title">Downloaded Media</h2>
+      <p class="secondary set-hint">${r.all} file${r.all === 1 ? "" : "s"} on the Storage Box, ${bytes(r.bytes)}. See where each one came from and delete the ones you don't want. Deleted ones are remembered, so the sync doesn't download them again.</p>
+      <div class="actions"><button class="btn secondary small" id="mediaOpen">${ic("film")} Manage Downloaded Media</button>${r.deleted ? `<span class="secondary">${r.deleted} deleted and remembered</span>` : ""}</div>`;
+    $("#mediaOpen").onclick = () => openMediaManager(drawMediaCard);
+  }
+
+  function openMediaManager(done) {
+    const s = sheet(`<h2>Downloaded Media</h2><p class="secondary" id="mmSum">Loading</p>
+      <div class="mm-bar"><button class="chip on" data-mmtab="files">On the Storage Box</button><button class="chip" data-mmtab="gone">Deleted</button></div>
+      <div id="mmBody"></div>`, { wide: true, onClose: () => done && done() });
+    const body = $("#mmBody", s.el), sum = $("#mmSum", s.el);
+    const st = { tab: "files", q: "", sort: "size", sel: new Set(), rows: [], next: null, total: 0, confirm: false, busy: false };
+    const src = (f) => f.source ? `Source: ${f.source}` : "Source: Storage Box";
+    const what = (f) => f.kind === "series" && f.season != null ? `${epLabel(f.season, f.episode)} · ` : "";
+    const row = (f) => `<div class="sr-row mm-row"><input type="checkbox" class="switch" data-mmsel="${f.id}" ${st.sel.has(f.id) ? "checked" : ""} aria-label="Select ${esc(f.title)}">
+      <span class="grow"><b>${esc(f.title)}${f.year ? ` (${esc(f.year)})` : ""}</b><span class="secondary">${esc(what(f))}${esc(f.name)}</span>
+        <span class="secondary">${esc(src(f))}${f.quality ? ` · ${esc(f.quality)}` : ""} · added ${ago(f.added)}</span></span>
+      <span class="secondary sr-size">${bytes(f.size)}</span>
+      <button class="round-btn sm" data-mmdel="${f.id}" aria-label="Delete ${esc(f.title)}" title="Delete">${ic("trash")}</button></div>`;
+    const selSize = () => st.rows.filter((f) => st.sel.has(f.id)).reduce((a, f) => a + f.size, 0);
+    function drawFiles() {
+      body.innerHTML = `<div class="ip-form"><input id="mmQ" type="search" placeholder="Search" value="${esc(st.q)}" aria-label="Search downloaded media">
+        <select class="plain" id="mmSort" aria-label="Sort by"><option value="size" ${st.sort === "size" ? "selected" : ""}>Biggest First</option><option value="new" ${st.sort === "new" ? "selected" : ""}>Newest First</option><option value="name" ${st.sort === "name" ? "selected" : ""}>Name</option></select></div>
+        <div class="mm-list">${st.rows.map(row).join("") || `<p class="secondary sr-empty">${st.q ? "Nothing matches that." : "Nothing on the Storage Box."}</p>`}</div>
+        ${st.next != null ? `<div class="actions"><button class="btn secondary small" id="mmMore">Show More</button></div>` : ""}
+        <div class="mm-foot">${st.confirm
+          ? `<p class="mm-ask">Delete ${st.sel.size} file${st.sel.size === 1 ? "" : "s"} (${bytes(selSize())}) for everyone? The sync won't download ${st.sel.size === 1 ? "it" : "them"} again unless somebody plays ${st.sel.size === 1 ? "it" : "them"} again.</p>
+             <div class="actions end"><button class="btn secondary small" id="mmNo">Cancel</button><button class="btn danger-solid small" id="mmYes" ${st.busy ? "disabled" : ""}>${st.busy ? "Deleting" : "Delete"}</button></div>`
+          : `<div class="actions end">${st.sel.size ? `<button class="btn danger-solid small" id="mmDelSel">${ic("trash")} Delete ${st.sel.size} Selected (${bytes(selSize())})</button>` : ""}<button class="btn secondary small" data-close>Close</button></div>`}</div>`;
+      $("#mmQ", body).oninput = (e) => { clearTimeout(st.qt); st.qt = setTimeout(() => { st.q = e.target.value; load(true, true); }, 300); };
+      $("#mmSort", body).onchange = (e) => { st.sort = e.target.value; load(true); };
+      $$("[data-mmsel]", body).forEach((c) => (c.onchange = () => { c.checked ? st.sel.add(c.dataset.mmsel) : st.sel.delete(c.dataset.mmsel); st.confirm = false; drawFiles(); }));
+      $$("[data-mmdel]", body).forEach((b) => (b.onclick = () => { st.sel = new Set([b.dataset.mmdel]); st.confirm = true; drawFiles(); const y = $("#mmYes", body); if (y) y.scrollIntoView({ block: "nearest" }); }));
+      const more = $("#mmMore", body); if (more) more.onclick = () => load(false);
+      const ds = $("#mmDelSel", body); if (ds) ds.onclick = () => { st.confirm = true; drawFiles(); };
+      const no = $("#mmNo", body); if (no) no.onclick = () => { st.confirm = false; st.sel = new Set(); drawFiles(); };
+      const yes = $("#mmYes", body); if (yes) { yes.onclick = remove; if (TV) yes.focus(); }
+      $$("[data-close]", body).forEach((b) => (b.onclick = s.close));
+      if (st.keep) { const q = $("#mmQ", body); q.focus(); q.setSelectionRange(q.value.length, q.value.length); st.keep = false; }
+    }
+    async function load(fresh, keepFocus) {
+      if (fresh) { st.rows = []; st.next = null; }
+      try {
+        const r = await api(`/api/admin/media?q=${encodeURIComponent(st.q)}&sort=${st.sort}&skip=${fresh ? 0 : st.next || 0}`);
+        st.rows = st.rows.concat(r.files); st.next = r.next; st.total = r.total;
+        sum.textContent = `${r.total} of ${r.all} file${r.all === 1 ? "" : "s"}, ${bytes(r.bytes)}${r.deleted ? `, ${r.deleted} deleted and remembered` : ""}`;
+      } catch (e) { body.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
+      st.keep = !!keepFocus;
+      drawFiles();
+    }
+    async function remove() {
+      st.busy = true; drawFiles();
+      try {
+        const r = await api("/api/admin/media/delete", { ids: [...st.sel] });
+        toast(r.failed.length ? `Deleted ${r.deleted}, ${r.failed.length} couldn't be deleted: ${r.failed[0].error}` : `Deleted ${r.deleted}, ${bytes(r.freed)} freed`, r.failed.length ? 6000 : 3000);
+      } catch (e) { toast(e.message, 5000); }
+      st.busy = false; st.confirm = false; st.sel = new Set();
+      load(true);
+    }
+    async function gone() {
+      let r;
+      try { r = await api("/api/admin/media/deleted"); } catch (e) { body.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
+      sum.textContent = `${r.deleted.length} deleted and remembered`;
+      body.innerHTML = `<p class="secondary set-hint">The sync skips these and won't download them again. If somebody plays one again from a source, it is let back in by itself. Allow Again lets it download on the next sync.</p>
+        <div class="mm-list">${r.deleted.map((d) => `<div class="sr-row mm-row"><span class="grow"><b>${esc(d.title)}${d.year ? ` (${esc(d.year)})` : ""}</b><span class="secondary">${d.season != null ? esc(epLabel(d.season, d.episode)) + " · " : ""}${esc(d.name)}</span>
+            <span class="secondary">Deleted ${ago(d.at)}${d.by ? ` by ${esc(d.by)}` : ""}</span></span><span class="secondary sr-size">${bytes(d.size)}</span>
+          <button class="btn secondary small" data-mmok="${d.id}">Allow Again</button></div>`).join("") || `<p class="secondary sr-empty">Nothing deleted yet.</p>`}</div>
+        <div class="actions end"><button class="btn secondary small" data-close>Close</button></div>`;
+      $$("[data-mmok]", body).forEach((b) => (b.onclick = async () => { try { await api(`/api/admin/media/deleted/${b.dataset.mmok}/allow`, {}); toast("It can download again on the next sync"); gone(); } catch (e) { toast(e.message, 5000); } }));
+      $$("[data-close]", body).forEach((b) => (b.onclick = s.close));
+    }
+    $$("[data-mmtab]", s.el).forEach((b) => (b.onclick = () => {
+      st.tab = b.dataset.mmtab;
+      $$("[data-mmtab]", s.el).forEach((x) => x.classList.toggle("on", x === b));
+      st.tab === "files" ? load(true) : gone();
+    }));
+    load(true);
   }
 
   // Allowed devices: works from any network once approved. Each browser or installed app has its own id

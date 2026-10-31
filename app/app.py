@@ -28,6 +28,7 @@ import re
 import random
 import secrets
 import shutil
+import signal
 import socket
 import struct
 import tempfile
@@ -181,6 +182,9 @@ class DB:
         self.c = sqlite3.connect(str(path), check_same_thread=False)
         self.c.row_factory = sqlite3.Row
         self.c.execute("PRAGMA journal_mode=WAL")
+        # WAL with normal sync is safe from corruption, a power cut can only lose the last commit. Full sync was an fsync on every write
+        for p in ("synchronous=NORMAL", "busy_timeout=5000", "cache_size=-65536", "temp_store=MEMORY", "mmap_size=268435456", "journal_size_limit=67108864"):
+            self.c.execute("PRAGMA " + p)
         self.c.executescript(SCHEMA)
 
     def q(self, sql, args=()):
@@ -505,7 +509,20 @@ def norm(s):
     return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
 
 
+GUESS_CACHE = {}
+
+
 def guess(rel):
+    # guessit is slow (lots of regex) and the library gets rescanned every few minutes, the same names give the same answer
+    g = GUESS_CACHE.get(rel)
+    if g is None:
+        if len(GUESS_CACHE) > 50000:
+            GUESS_CACHE.clear()
+        g = GUESS_CACHE[rel] = guess_uncached(rel)
+    return dict(g)
+
+
+def guess_uncached(rel):
     from guessit import guessit
     parts = Path(rel).parts
     # Drop the torrents/webdl/usenet folder so guessit dosent think its part of the title
@@ -550,6 +567,9 @@ def scan_fs():
                 vids.append(p)
 
     files, titles = {}, {}
+    by_dir = {}
+    for v in vids:
+        by_dir.setdefault(v.parent, []).append(v)
     for p in vids:
         try:
             st = p.stat()
@@ -569,7 +589,7 @@ def scan_fs():
 
         # Subtitle files next to the video or in a Subs folder
         here = subs.get(str(p.parent), []) + subs.get(str(p.parent / "Subs"), []) + subs.get(str(p.parent / "subs"), [])
-        same_dir_videos = [v for v in vids if v.parent == p.parent]
+        same_dir_videos = by_dir[p.parent]
         ext_subs = []
         for s in here:
             if len(same_dir_videos) > 1 and s.parent == p.parent and not s.stem.lower().startswith(p.stem.lower()):
@@ -658,11 +678,75 @@ async def cinemeta_lookup(client, kind, name, year):
     return await cinemeta_meta(client, kind, pick["id"]) or slim_meta(pick, kind)
 
 
+# Meta used to be a select plus a json parse for every title on every home, search or browse, with the whole episode list in it.
+# Now the list pages use META_LITE (no episode list, kept in memory), single title pages use a small LRU of full ones and
+# the episode search uses EP_INDEX. All three get dropped whenever a meta row is written, see meta_put
+META_LITE = {}
+META_FULL = collections.OrderedDict()
+EP_INDEX = {}
+META_FULL_MAX = 200
+
+
+def meta_drop(key):
+    META_LITE.pop(key, None)
+    META_FULL.pop(key, None)
+    EP_INDEX.pop(key, None)
+
+
+def meta_put(key, m):
+    db().q("INSERT OR REPLACE INTO meta VALUES (?,?,?)", (key, json.dumps(m or {"none": True}), time.time()))
+    meta_drop(key)
+
+
 def cached_meta(key):
+    hit = META_FULL.get(key)
+    if hit is not None:
+        META_FULL.move_to_end(key)
+        return hit
     rows = db().q("SELECT data, fetched FROM meta WHERE key = ?", (key,))
-    if not rows:
-        return None, 0
-    return json.loads(rows[0]["data"]), rows[0]["fetched"]
+    out = (json.loads(rows[0]["data"]), rows[0]["fetched"]) if rows else (None, 0)
+    if rows:
+        META_FULL[key] = out
+        while len(META_FULL) > META_FULL_MAX:
+            META_FULL.popitem(last=False)
+    return out
+
+
+def lite_of(data):
+    return {k: v for k, v in data.items() if k != "videos"} if isinstance(data, dict) else None
+
+
+def meta_lite(key):
+    hit = META_LITE.get(key)
+    if hit is not None:
+        return hit[0]
+    rows = db().q("SELECT data, fetched FROM meta WHERE key = ?", (key,))
+    lite = lite_of(json.loads(rows[0]["data"])) if rows else None
+    META_LITE[key] = (lite, rows[0]["fetched"] if rows else 0)
+    return lite
+
+
+def warm_meta():
+    """Fills META_LITE in one go at startup (in a thread) so the first home page isnt the one that pays for it"""
+    n = 0
+    for r in db().q("SELECT key, data, fetched FROM meta WHERE key NOT LIKE 'ext:%'"):
+        try:
+            META_LITE[r["key"]] = (lite_of(json.loads(r["data"])), r["fetched"])
+            n += 1
+        except ValueError:
+            continue
+    log.info("kino meta warmed, %s titles", n)
+
+
+def episode_index(key):
+    """Episode names of a series as a small list, so searching episodes doesnt load every episode list in the library"""
+    hit = EP_INDEX.get(key)
+    if hit is None:
+        m, _ = cached_meta(key)
+        hit = [(v.get("season"), v.get("episode"), v.get("name"), norm(v.get("name") or ""), v.get("thumbnail"))
+               for v in (m or {}).get("videos", []) if v.get("name")]
+        EP_INDEX[key] = hit
+    return hit
 
 
 def override_for(key):
@@ -697,7 +781,7 @@ async def ensure_meta(keys, force=False):
             except Exception as e:
                 log.warning("cinemeta lookup failed for %s: %s", name, e)
                 continue
-            db().q("INSERT OR REPLACE INTO meta VALUES (?,?,?)", (key, json.dumps(m or {"none": True}), time.time()))
+            meta_put(key, m)
             await asyncio.sleep(0.3)
 
 
@@ -793,8 +877,9 @@ async def probe_worker():
     # Slowly probes every file in the background so the badges show up without opening each one
     while True:
         try:
+            have = {r["path"]: r["size"] for r in db().q("SELECT path, size FROM probe")}
             for f in list(LIB["files"].values()):
-                if cached_probe(f) is None:
+                if have.get(f["path"]) != f["size"]:
                     try:
                         await get_probe(f)
                     except Exception as e:
@@ -956,7 +1041,40 @@ async def stats_worker():
 
 
 def box_mounted():
-    return os.path.ismount(MEDIA_DIR) or env("ASSUME_MOUNTED", "0") == "1"
+    """Reads the mount table instead of touching the mount. ismount does a stat on it and that hangs forever when the
+    sshfs connection froze, and since this runs on every home page that took the whole app down with it"""
+    if env("ASSUME_MOUNTED", "0") == "1":
+        return True
+    try:
+        want = os.path.normpath(str(MEDIA_DIR))
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) > 4 and re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), parts[4]) == want:
+                    return True
+        return False
+    except OSError:
+        return os.path.ismount(MEDIA_DIR)  # No /proc (not linux), only happens when developing
+
+
+BOX_DISK = {"v": None, "t": 0.0, "busy": False}
+
+
+def disk_box():
+    """Free space on the storage box. Asking is a network call that can hang, so it happens in a thread and the answer is kept
+    for 30 seconds, a frozen mount just means the old number (or none) instead of a stuck page"""
+    def refresh():
+        try:
+            BOX_DISK["v"] = disk(MEDIA_DIR)
+            BOX_DISK["t"] = time.time()
+        finally:
+            BOX_DISK["busy"] = False
+    if time.time() - BOX_DISK["t"] > 30 and not BOX_DISK["busy"]:
+        BOX_DISK["busy"] = True
+        th = threading.Thread(target=refresh, daemon=True)
+        th.start()
+        th.join(1.0)
+    return BOX_DISK["v"]
 
 
 # ---------------------------------------------------------------- sync control
@@ -1057,6 +1175,27 @@ async def session_reaper():
         for sid, s in list(SESS.items()):
             if time.time() - s["last"] > 90:
                 kill_session(sid)
+                continue
+            if s.get("live") or s["proc"].returncode is not None:
+                continue
+            # ffmpeg runs faster than playback and keeps every segment, so a long film would fill the disk. Once its about 15
+            # minutes ahead of what the player fetched it gets paused, and carries on when the player has caught up
+            try:
+                ahead = len(list(s["dir"].glob("seg*.m4s"))) - s.get("maxseg", 0)
+                if ahead > 150 and not s.get("stopped"):
+                    os.kill(s["proc"].pid, signal.SIGSTOP)
+                    s["stopped"] = True
+                elif ahead < 80 and s.get("stopped"):
+                    os.kill(s["proc"].pid, signal.SIGCONT)
+                    s["stopped"] = False
+            except (ProcessLookupError, OSError):
+                pass
+        # Disk nearly full (sqlite needs room too), the session thats been quiet the longest goes
+        try:
+            if shutil.disk_usage(HLS_DIR).free < 3 * 1024**3 and SESS:
+                kill_session(min(SESS, key=lambda k: SESS[k]["last"]))
+        except OSError:
+            pass
         voice_unload()
 
 
@@ -1074,6 +1213,7 @@ async def lifespan(app):
     shutil.rmtree(HLS_DIR, ignore_errors=True)
     HLS_DIR.mkdir(parents=True, exist_ok=True)
     SUBS_DIR.mkdir(parents=True, exist_ok=True)
+    asyncio.create_task(asyncio.to_thread(warm_meta))  # Fills the meta cache in the background so the first home page isnt slow
     (DATA_DIR / "img").mkdir(parents=True, exist_ok=True)
     FF_INFO["burst"] = await asyncio.to_thread(ffmpeg_supports_burst)
     # Changes whenever a static file changes so browsers and the app install pick up new versions
@@ -1851,6 +1991,12 @@ def meta_for(t):
     return m if m and m.get("id") else None
 
 
+def meta_light(t):
+    """Same as meta_for but without the episode list, for loops over the whole library"""
+    m = meta_lite(t["key"])
+    return m if m and m.get("id") else None
+
+
 def watch_map(pid):
     ids = group_ids(pid)
     out = {}
@@ -1907,10 +2053,20 @@ def kid_key(meta_id, tid=None):
     return meta_id or f"lib:{tid}"
 
 
+KIDS_RULES = {"rules": None}
+
+
+def kids_rules():
+    # Loaded once, a select per title made every kids home page a few thousand queries. Cleared where the rules are changed
+    if KIDS_RULES["rules"] is None:
+        KIDS_RULES["rules"] = {r["key"]: bool(r["allow"]) for r in db().q("SELECT key, allow FROM kids_rules")}
+    return KIDS_RULES["rules"]
+
+
 def kids_ok(genres, key):
-    rule = db().q("SELECT allow FROM kids_rules WHERE key = ?", (key,)) if key else []
-    if rule:
-        return bool(rule[0]["allow"])
+    rule = kids_rules().get(key) if key else None
+    if rule is not None:
+        return rule
     g = {str(x).lower() for x in genres or []}
     return bool(g & KID_GENRES) and not (g & KID_BLOCK)
 
@@ -1927,7 +2083,7 @@ def kids_profile(pid):
 
 def all_summaries(pid):
     wm, rm = watch_map(pid), rating_map(pid)
-    out = [title_summary(t, meta_for(t), wm, rm) for t in LIB["titles"].values()]
+    out = [title_summary(t, meta_light(t), wm, rm) for t in LIB["titles"].values()]
     if kids_profile(pid):
         out = [s for s in out if kids_ok(s["genres"], kid_key(s.get("imdb"), s["id"]))]
     return out, wm, rm
@@ -2081,7 +2237,7 @@ def lib_people():
     """How many library titles each actor and director is in, used for suggestions and to tell what kind of interest a word is"""
     count = {}
     for t in LIB["titles"].values():
-        cast, directors = people_of(meta_for(t) or {})
+        cast, directors = people_of(meta_light(t) or {})
         for n in set(cast[:6] + directors):
             count[n] = count.get(n, 0) + 1
     return count
@@ -2113,7 +2269,7 @@ def pick_up_interests(p, summ):
     recent = [s for s in summ if (s["last_activity"] or 0) >= since and (s["watched_count"] or s["my_rating"] > 0)]
     people, genres = {}, {}
     for s in recent:
-        cast, directors = people_of(meta_for(LIB["titles"][s["id"]]) or {})
+        cast, directors = people_of(meta_light(LIB["titles"][s["id"]]) or {})
         for n in set(directors + cast[:4]):
             people[n] = people.get(n, 0) + 1
         for g in s["genres"]:
@@ -2136,7 +2292,7 @@ def interest_boost(s, ints):
     """Extra score for a title that matches the profile's interests"""
     if not ints:
         return 0.0
-    m = meta_for(LIB["titles"][s["id"]]) if s.get("id") and s["id"] in LIB["titles"] else None
+    m = meta_light(LIB["titles"][s["id"]]) if s.get("id") and s["id"] in LIB["titles"] else None
     cast, directors = people_of(m or {})
     people = {norm(x) for x in cast[:8] + directors}
     genres = {norm(g) for g in s["genres"]}
@@ -2547,7 +2703,13 @@ def addon_pool(pid, have):
         return []
     now = time.time()
     db().many("INSERT OR IGNORE INTO seen VALUES (?,?,?)", [(i, k, now) for i, k in ids])
-    first = {r["id"]: r["first"] for r in db().q("SELECT id, first FROM seen")}
+    # Only the ones on this page, the table gets a row for every title an addon ever showed and was read whole on each home load
+    first = {}
+    want = [i for i, _ in ids]
+    for i in range(0, len(want), 500):
+        part = want[i:i + 500]
+        for r in db().q("SELECT id, first FROM seen WHERE id IN (%s)" % ",".join("?" * len(part)), part):
+            first[r["id"]] = r["first"]
     # Watched shows up the same as library titles, from the progress of whatever stream was played for it
     done = {}
     for r in db().q("SELECT s.video_id, w.watched FROM streams s JOIN watch w ON w.file_id = s.id WHERE w.profile_id = ?", (pid,)):
@@ -2656,7 +2818,7 @@ async def search(q: str, p=Depends(current_profile)):
     scored, people = [], {}
     for s in summ:
         sc = name_score(q, s["name"])
-        m = meta_for(LIB["titles"][s["id"]]) or {}
+        m = meta_light(LIB["titles"][s["id"]]) or {}
         cast, directors = people_of(m)
         for role, names in (("Actor", cast), ("Director", directors)):
             for nm in names:
@@ -2679,16 +2841,19 @@ async def search(q: str, p=Depends(current_profile)):
     eps = []
     ok_ids = {s["id"] for s in summ}
     for t in LIB["titles"].values():
-        m = meta_for(t)
-        if not m or t["kind"] != "series" or t["id"] not in ok_ids:
+        if t["kind"] != "series" or t["id"] not in ok_ids:
             continue
-        vids = {(v["season"], v["episode"]): v for v in m.get("videos", [])}
+        idx = episode_index(t["key"])
+        if not idx or not any(q in n for _, _, _, n, _ in idx):
+            continue
+        m = meta_light(t) or {}
+        vids = {(se, ep): (name, thumb) for se, ep, name, _, thumb in idx}
         for fid in t["files"]:
             f = LIB["files"][fid]
             v = vids.get((f["season"], f["episode"]))
-            if v and v.get("name") and q in norm(v["name"]):
-                eps.append({"title_id": t["id"], "file_id": fid, "show": m.get("name"), "name": v["name"],
-                            "season": f["season"], "episode": f["episode"], "thumbnail": v.get("thumbnail")})
+            if v and q in norm(v[0]):
+                eps.append({"title_id": t["id"], "file_id": fid, "show": m.get("name"), "name": v[0],
+                            "season": f["season"], "episode": f["episode"], "thumbnail": v[1]})
     ppl = sorted(people.values(), key=lambda x: (norm(x["name"]).startswith(q), x["count"]), reverse=True)
     # Live channels from the playlists whose name matches, english ones first like on the Live TV page
     cw = live_country_where(p)
@@ -2763,7 +2928,7 @@ async def person(name: str, p=Depends(current_profile)):
     summ, _, _ = all_summaries(p["id"])
     out = []
     for s in summ:
-        cast, directors = people_of(meta_for(LIB["titles"][s["id"]]) or {})
+        cast, directors = people_of(meta_light(LIB["titles"][s["id"]]) or {})
         if any(norm(n) == want for n in cast + directors):
             out.append(s)
     out.sort(key=lambda s: str(s.get("releaseInfo") or ""), reverse=True)
@@ -3112,6 +3277,11 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     if not v:
         raise HTTPException(415, "This file has no video track")
     owner = f"p{p['id']}"
+    try:
+        if shutil.disk_usage(HLS_DIR).free < 6 * 1024**3:
+            raise HTTPException(503, "The server is nearly out of space for converting, try again in a few minutes")
+    except OSError:
+        pass
 
     # One player per device, starting a new one stops that device's old one. A profile can watch on a few devices
     # at once (PROFILE_DEVICES), different things on each. Players nobody is fetching from go after 90 seconds
@@ -3236,6 +3406,9 @@ async def hls_file(sid: str, name: str, p=Depends(current_profile)):
     if not s or s["owner"] != f"p{p['id']}" or not HLS_NAME.match(name):
         raise HTTPException(404, "This player session ended")
     s["last"] = time.time()
+    m = re.match(r"seg(\d+)\.m4s$", name)
+    if m:
+        s["maxseg"] = max(s.get("maxseg", 0), int(m.group(1)))
     path = s["dir"] / name
     for _ in range(40):
         if path.exists():
@@ -3345,6 +3518,12 @@ async def progress(request: Request, p=Depends(current_profile)):
         db().q("INSERT INTO stream_health (id, good, bad) VALUES (?, ?, 0) ON CONFLICT(id) DO UPDATE SET good = excluded.good", (fid, time.time()))
     done = 1 if dur and pos / dur > 0.93 else 0
     put_watch(p["id"], fid, pos, dur, done)
+    # A paused player stops fetching segments, but the progress still comes in, so that keeps its converted stream from being
+    # reaped after 90 seconds (it used to die and the movie broke a minute after pressing resume)
+    owner = f"p{p['id']}"
+    for s in SESS.values():
+        if s["owner"] == owner and s.get("fid") == fid:
+            s["last"] = time.time()
     return {"ok": True}
 
 
@@ -3846,7 +4025,7 @@ async def meta_lookup(kind, mid):
                 got = None
     if not got:
         got = await addon_meta(kind, mid)
-    db().q("INSERT OR REPLACE INTO meta VALUES (?,?,?)", (key, json.dumps(got or {"none": True}), time.time()))
+    meta_put(key, got)
     return got
 
 
@@ -4669,8 +4848,10 @@ async def kids_rule(request: Request, admin=Depends(require_admin)):
         raise HTTPException(400, "Unknown title")
     if b.get("allow") is None:
         db().q("DELETE FROM kids_rules WHERE key = ?", (key,))
+        KIDS_RULES["rules"] = None
     else:
         db().q("INSERT OR REPLACE INTO kids_rules VALUES (?,?)", (key, 1 if b["allow"] else 0))
+        KIDS_RULES["rules"] = None
     return {"ok": True}
 
 
@@ -4678,7 +4859,7 @@ STORAGE_WARN_PCT = float(env("STORAGE_WARN_PCT", "90"))
 
 
 def storage_state():
-    d = disk(MEDIA_DIR) if box_mounted() else None
+    d = disk_box() if box_mounted() else None
     if not d or not d["total"]:
         return None
     pct = d["used"] / d["total"] * 100
@@ -5323,7 +5504,7 @@ async def stats(admin=Depends(require_admin)):
         "load": os.getloadavg(), "uptime": time.time() - psutil.boot_time(),
         "mem": {"total": vm.total, "used": vm.total - vm.available, "percent": vm.percent},
         "swap": {"total": sw.total, "used": sw.used},
-        "disks": {"vps": disk("/"), "box": disk(MEDIA_DIR) if mounted else None},
+        "disks": {"vps": disk("/"), "box": disk_box() if mounted else None},
         "box_mounted": mounted, "players": len(SESS), "watchdog": read_json(WATCHDOG_STATUS),
     }
 
@@ -5729,12 +5910,23 @@ async def load_guide(url, local, chans, country=None):
         tmp.unlink(missing_ok=True)
         wfile.unlink(missing_ok=True)
     keys = [f"{tag}~{g}" for g in want]
+    # The US guide is hundreds of thousands of rows, doing this on the main thread (holding the db the whole time) froze
+    # everything for seconds, so its a thread and in chunks so other requests get the db in between
+    await asyncio.to_thread(write_epg, keys, progs, [(f"{tag}~{g}", cid) for cid, g in matched.items()])
+    return len(matched)
+
+
+def db_chunks(sql, rows, size=5000):
+    for i in range(0, len(rows), size):
+        db().many(sql, rows[i:i + size])
+
+
+def write_epg(keys, progs, tvg_rows):
     for i in range(0, len(keys), 500):
         part = keys[i:i + 500]
         db().q("DELETE FROM epg WHERE tvg IN (%s)" % ",".join("?" * len(part)), part)
-    db().many("INSERT INTO epg VALUES (?,?,?,?,?,?)", progs)
-    db().many("UPDATE channels SET tvg = ? WHERE id = ?", [(f"{tag}~{g}", cid) for cid, g in matched.items()])
-    return len(matched)
+    db_chunks("INSERT INTO epg VALUES (?,?,?,?,?,?)", progs)
+    db_chunks("UPDATE channels SET tvg = ? WHERE id = ?", tvg_rows)
 
 
 def guide_tag(url):
@@ -5773,10 +5965,13 @@ async def refresh_list(row):
         else:
             guides = [(g, None) for g in guides]
         tags = {guide_tag(g) for g, _ in guides}
-        db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
-        db().many("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                  [(c["id"], lid, c["name"], c["logo"], c["grp"], c["country"], keep_tvg(c, old, tags), c["url"], c["headers"], c["rank"],
-                    (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked")) for c in chans])
+        rows = [(c["id"], lid, c["name"], c["logo"], c["grp"], c["country"], keep_tvg(c, old, tags), c["url"], c["headers"], c["rank"],
+                 (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked")) for c in chans]
+
+        def store():
+            db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
+            db_chunks("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        await asyncio.to_thread(store)
         for g, ctry in guides:
             try:
                 n = await load_guide(g, bool(row["local"]) and g == guide, chans, ctry)

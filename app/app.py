@@ -3535,10 +3535,13 @@ async def subtitles(fid: str, sub_id: str, p=Depends(current_profile)):
 
 @app.post("/api/streams/{sid}/bad")
 async def stream_bad(sid: str, p=Depends(current_profile)):
-    # A source that wouldn't play goes to the back of the list next time
-    stream_row(sid)
+    # A source that wouldn't play goes to the back of the list next time, unless its host just said it was busy (429), that passes
+    r = stream_row(sid)
+    host = urlparse(r["url"]).hostname or ""
+    if host_busy(host, 120):
+        return {"ok": True, "busy": True, "host": host}
     db().q("INSERT INTO stream_health (id, good, bad) VALUES (?, 0, ?) ON CONFLICT(id) DO UPDATE SET bad = excluded.bad", (sid, time.time()))
-    return {"ok": True}
+    return {"ok": True, "busy": False, "host": host}
 
 
 @app.post("/api/progress")
@@ -4524,17 +4527,22 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         return 0 if (h["good"] or 0) > (h["bad"] or 0) else 1
     # Ask every source if it is answering, a dead one is marked so it goes last and the player doesnt try it by itself
     if out and not inline:
-        sem = asyncio.Semaphore(8)
-
-        async def alive(x):
-            async with sem:
-                x["_ok"], x["why"], size = await probe_source(x["_url"])
+        # Only the 4 that would be tried first are asked (the rest only if an earlier answer is remembered), asking a long list hit the
+        # sources' own limits and could start work on their side
+        early = {a["m"].get("name") for a in rows if a.get("prio")}
+        cand = sorted(out, key=lambda x: (x["addon"] not in early, -(x["seeders"] if x.get("seeders") is not None else -1), -x["height"]))
+        todo = [x for x in cand if not probe_cached(x["_url"])][:4]
+        await asyncio.gather(*(probe_source(x["_url"]) for x in todo))
+        for x in out:
+            hit = probe_cached(x["_url"])
+            if hit:
+                x["_ok"], x["why"], size = hit
                 if size and not x["bytes"]:
                     x["bytes"] = size  # the source's own size, for the ones whose addon didnt say
-        await asyncio.gather(*(alive(x) for x in out[:16]))
     for x in out:
         x["health"] = "dead" if x.get("_ok") is False else ("good", "untried", "failed")[rank(x)]
         x.pop("_ok", None)
+        x["host"] = urlparse(x["_url"]).hostname or ""
         x["suspect"] = suspect_reasons(f"{x['label']} {x.get('file') or ''}", x["height"], x["bytes"], minutes, kind, young) if kind in ("movie", "series") else []
     prio = {}
     for a in rows:
@@ -4841,21 +4849,45 @@ def video_answer(status, ctype):
     return status in (200, 206) and (ctype.startswith("video/") or ctype in ("application/octet-stream", "application/ogg"))
 
 
-# Is a source answering right now? Asked for the first bytes when the sources list is made, so one that is dead (error, nothing but a web page,
-# no answer) goes to the back and isnt tried automatically. Remembered for a while so the title page and Play dont ask again
+# Is a source answering right now? The first few candidates are asked for their first bytes when the sources list is made, so one that is dead
+# (an error, a web page, a playlist that isnt one) goes to the back and isnt tried by itself, and the real size is known. Remembered for a while
+# so the title page and Play dont ask again. Careful with it: a source address can be a service that starts work when it is asked, and the
+# host can say "too many requests", so only a few are asked, one at a time per host, and a busy, slow or erroring answer is "cant tell", never
+# "dead"
 SRC_PROBE = {}
+HOST_LOCK = {}
+HOST_BUSY = {}  # host -> when it last said it was busy (429)
+
+
+def host_busy(host, secs=90):
+    return time.time() - HOST_BUSY.get(host, 0) < secs
+
+
+def probe_cached(url):
+    hit = SRC_PROBE.get(url)
+    if hit and time.time() - hit[0] < (1200 if hit[1] else 600 if hit[1] is False else 60):
+        return hit[1], hit[2], hit[3]
+    return None
 
 
 async def probe_source(url):
-    """(working, why not, size in bytes or None). The size comes from the server itself, addons often dont say, and it is how a fake that is
-    far too small gets spotted"""
-    hit = SRC_PROBE.get(url)
-    if hit and time.time() - hit[0] < (1200 if hit[1] else 600):
-        return hit[1], hit[2], hit[3]
+    """(working: True, False, or None when it cant be told, why not, size in bytes or None). The size comes from the server itself, addons
+    often dont say, and it is how a fake that is far too small gets spotted"""
+    hit = probe_cached(url)
+    if hit:
+        return hit
+    host = urlparse(url).hostname or ""
+    if host_busy(host):
+        return None, "busy", None
 
     async def go():
         client, up = await pd_open(url, {"Range": "bytes=0-1023"})
         try:
+            if up.status_code == 429:
+                HOST_BUSY[host] = time.time()
+                return None, "busy", None
+            if up.status_code >= 500 or up.status_code == 408:
+                return None, f"error {up.status_code}", None
             if is_hls(url):
                 if up.status_code != 200:
                     return False, f"answered {up.status_code}", None
@@ -4882,14 +4914,19 @@ async def probe_source(url):
             return True, "", size
         finally:
             await up.aclose(); await client.aclose()
-    try:
-        ok, why, size = await asyncio.wait_for(go(), 3.5)
-    except asyncio.TimeoutError:
-        ok, why, size = False, "didn't answer", None
-    except HTTPException as e:
-        ok, why, size = False, str(e.detail)[:100], None
-    except Exception as e:
-        ok, why, size = False, "couldn't be reached", None
+    lock = HOST_LOCK.setdefault(host, asyncio.Lock())
+    async with lock:  # one at a time per host, with a gap
+        if host_busy(host):  # an earlier one in the queue just got "too many requests"
+            return None, "busy", None
+        try:
+            ok, why, size = await asyncio.wait_for(go(), 5)
+        except asyncio.TimeoutError:
+            ok, why, size = None, "slow to answer", None  # a service that sets a download going can take longer than this, that isnt dead
+        except HTTPException as e:
+            ok, why, size = (False, str(e.detail)[:100], None) if e.status_code in (400, 403) else (None, "couldn't be checked", None)
+        except Exception:
+            ok, why, size = None, "couldn't be reached", None
+        await asyncio.sleep(0.3)
     SRC_PROBE[url] = (time.time(), ok, why, size)
     if len(SRC_PROBE) > 2000:
         for k in sorted(SRC_PROBE, key=lambda k: SRC_PROBE[k][0])[:500]:
@@ -4909,6 +4946,9 @@ async def stream_proxy(r, request, dl=0):
         host = urlparse(r["url"]).hostname or "The source"
         # googlevideo links from yt-dlp only work from the machine that made them, a 403 from there usually means that
         hint = " Youtube links only work from the server that runs the addon." if up.status_code == 403 and "googlevideo" in host else ""
+        if up.status_code == 429:
+            HOST_BUSY[host] = time.time()
+            raise HTTPException(503, f"{host} is busy right now (it answered 429, too many requests), it needs a moment")
         raise HTTPException(502, f"{host} didn't send a video (it answered {up.status_code}), try another source.{hint}")
     out = {k: up.headers[k] for k in ("content-length", "content-range", "accept-ranges", "last-modified") if k in up.headers}
     out["Cache-Control"] = "private, no-store"

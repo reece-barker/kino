@@ -1831,7 +1831,7 @@
     if (r.upcoming) { toast(`Not out yet, comes out on ${new Date(r.upcoming + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long" })}`, 5000); return false; }
     if (!r.streams.length) { toast(kind === "series" ? "There's no public domain copy of this episode" : "The addon didn't send anything Kino can play for that"); return false; }
     const s = r.streams[0];
-    SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0 };
+    SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false };
     playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
     return true;
   }
@@ -1846,22 +1846,27 @@
   const liveSources = (list) => { const ok = list.filter((x) => x.health !== "dead" && !(x.suspect && x.suspect.length)); return ok.length ? ok : list.filter((x) => x.health !== "dead").length ? list.filter((x) => x.health !== "dead") : list; };
   const moreSources = (fid) => !!(SOURCES && SOURCES.list.some((x) => x.id !== fid && !SOURCES.tried.has(x.id)));
   function nextSource(fid, from, why) {
-    api(`/api/streams/${fid}/bad`, {}).catch(() => {});
+    // The server says if the source's host was just busy (429, too many requests), that isnt the source being broken so it isnt held against it,
+    // and sources on that host wait while others are tried
+    api(`/api/streams/${fid}/bad`, {}).then((r) => { if (r && r.busy && SOURCES) { SOURCES.busyHosts.add(r.host); SOURCES.busy = true; } }).catch(() => {});
     if (!SOURCES || !SOURCES.list.some((x) => x.id === fid)) return false;
     SOURCES.tried.add(fid);
     SOURCES.skips = (SOURCES.skips || 0) + 1;
-    const n = SOURCES.list.find((x) => !SOURCES.tried.has(x.id));
+    if (/busy|429|too many/i.test(why || "")) { SOURCES.busy = true; const h = (SOURCES.list.find((x) => x.id === fid) || {}).host; if (h) SOURCES.busyHosts.add(h); }
+    const untried = SOURCES.list.filter((x) => !SOURCES.tried.has(x.id));
+    // Sources on a host that is busy come last
+    const n = untried.find((x) => !SOURCES.busyHosts.has(x.host)) || untried[0];
     if (!n || SOURCES.skips > 8) {
-      toast(n ? "A lot of the sources aren't working right now. Try again in a bit, or pick one from the Sources list yourself." : "None of the sources for this would play. Try again later, or another player from the player's menu.", 7000);
+      toast(!n && SOURCES.busy ? "The source servers are busy right now (too many requests). Give it a minute and try again." : n ? "A lot of the sources aren't working right now. Try again in a bit, or pick one from the Sources list yourself." : "None of the sources for this would play. Try again later, or another player from the player's menu.", 7000);
       return false;
     }
     // Only the first skip says so in a toast, the ones after it show on the loading screen so a run of dead sources isnt a run of popups
-    const left = SOURCES.list.filter((x) => !SOURCES.tried.has(x.id)).length;
-    const note = `${why || "That source didn't work"}, trying ${n.addon ? `one from ${n.addon}` : "another one"}`;
+    const left = untried.length - 1;
+    const note = `${SOURCES.busy ? "That source is busy" : why || "That source didn't work"}, trying ${n.addon ? `one from ${n.addon}` : "another one"}`;
     if (SOURCES.skips === 1) toast(note, 4000);
-    // A dead source answers in a blink, so each try waits a second at least. Without that the loading screen flashed through the whole list.
+    // A dead source answers in a blink, so each try waits a second at least (longer when a host is busy, hitting it again just makes it worse).
     // The loading screen stays up and its line says what is happening
-    const tok = PLAY_N, wait = Math.max(0, 1000 - (Date.now() - (SOURCES.lastAt || 0)));
+    const tok = PLAY_N, gap = SOURCES.busyHosts.has(n.host) ? 4000 : SOURCES.busy ? 2000 : 1000, wait = Math.max(0, gap - (Date.now() - (SOURCES.lastAt || 0)));
     SOURCES.lastAt = Date.now() + wait;
     if (LOAD.on) loadStep(SOURCES.skips > 1 ? `${note} (${left} left)` : note);
     const go = () => { if (PLAY_N !== tok) return; playFile(n.id, { from: from || 0, note: SOURCES.skips > 1 ? `${note} (${left} left)` : "", chain: true }); };
@@ -1922,7 +1927,7 @@
       </div>
       ${r.too_new ? `<div class="note pd-note">${ic("info")} ${esc(tooNewText(r.too_new, dayOf))}</div>` : r.fresh ? `<div class="note pd-note">${ic("info")} This only just came out. Some sources can be camera recordings or fakes until it is properly released, the better ones are tried first.</div>` : ""}
       ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
-    const play = (s) => { SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0 }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
+    const play = (s) => { SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
     $("#pdPlay").onclick = () => play(first);
     if (grabFocus) $("#pdPlay").focus({ preventScroll: true });
     wireListBtn({ kind, id: t.list_key }, t.list_key);
@@ -1992,7 +1997,7 @@
       $$("[data-str]", list).forEach((b) => (b.onclick = () => {
         const x = streams[Number(b.dataset.str)];
         sh.close();
-        SOURCES = { list: liveSources(streams), tried: new Set(), skips: 0 };
+        SOURCES = { list: liveSources(streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false };
         playFile(x.id, { from: x.progress && !x.progress.watched ? x.progress.pos : 0 });
       }));
       if (TV) { const f = $("[data-own], [data-str]", list); if (f && !list.contains(document.activeElement)) f.focus({ preventScroll: true }); }
@@ -2782,7 +2787,8 @@
       <section class="card set-card">
         <h2 class="set-title">Android App</h2>
         ${ANDROID ? `<div class="set-row"><span><b>Kino for Android ${esc(window.KinoAndroid.version())}</b><span class="secondary">You're using the app${TV ? " on a TV" : ""}. Get updates from the same link below.</span></span></div>` : ""}
-        ${nativeOk() ? `<label class="set-row"><span><b>App Player</b><span class="secondary">Plays videos with the device's own player, smoother and fixes broken colours on some TVs. Turn off to use the web player on this device</span></span><input type="checkbox" class="switch" id="pNative" ${useNative() ? "checked" : ""}></label>` : ""}
+        ${nativeOk() ? `<div class="set-row"><span><b>Default Player</b><span class="secondary">Kino Player is the app's own, smoothest and the one to use. Android Player is the device's built in one, it can fix broken colours on some TVs but can't play live TV. Web Player is the page's own, the same as on a computer. Live TV always uses the Kino Player (and falls back to the Web Player if that can't open a channel)</span></span>
+          <select class="plain" id="pPlayer" aria-label="Default player">${[["exo", "Kino Player"], ["android", "Android Player"], ["web", "Web Player"]].map(([v, l]) => `<option value="${v}" ${v === defaultPlayer() ? "selected" : ""}>${l}</option>`).join("")}</select></div>` : ""}
         <div class="set-row"><span><b>Phones, Tablets and Android TV</b><span class="secondary">Full screen player, picture in picture, voice search and TV remote support</span></span>
           <a class="btn secondary small" href="/app" download>${ic("download")} Download</a></div>
         <div class="set-row"><span><b>Fire TV</b><span class="secondary">Install the free Downloader app, then type <b class="mono">${esc(location.host)}/app</b> into it</span></span></div>
@@ -2840,7 +2846,12 @@
     };
     ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats", "pFake"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
-    const nv = $("#pNative"); if (nv) nv.onchange = () => { try { localStorage.setItem(NATIVE_KEY, nv.checked ? "1" : "0"); } catch (_) {} toast(nv.checked ? "Videos play in the app player" : "Videos play in the web player"); };
+    const pp = $("#pPlayer"); if (pp) pp.onchange = () => {
+      const v = pp.value;
+      try { localStorage.setItem(NATIVE_KEY, v === "web" ? "0" : "1"); } catch (_) {}
+      if (v !== "web" && typeof window.KinoAndroid.setPlayer === "function") window.KinoAndroid.setPlayer(v);
+      toast(v === "web" ? "Videos play in the web player" : v === "android" ? "Videos play in the Android player" : "Videos play in the Kino player");
+    };
     if (isAdmin()) drawAdminSettings();
   }
 
@@ -3660,6 +3671,11 @@
   const NATIVE_KEY = "kino-native";
   const nativeOk = () => ANDROID && typeof window.KinoAndroid.playNative === "function";
   const useNative = () => { if (!nativeOk()) return false; try { return localStorage.getItem(NATIVE_KEY) !== "0"; } catch (_) { return true; } };
+  // The player chosen in Settings: the app's own (exo), the device's (android) or the page's (web)
+  const defaultPlayer = () => {
+    if (!useNative()) return "web";
+    try { return typeof window.KinoAndroid.player === "function" && window.KinoAndroid.player() === "android" ? "android" : "exo"; } catch (_) { return "exo"; }
+  };
   let NATIVE = null;
 
   let NATIVE_BUSY = 0;
@@ -3777,7 +3793,7 @@
     try { info = await api(`/api/file/${fid}`); } catch (e) {
       if (my !== PLAY_N) return;
       // A source that wont even open moves on to the next one by itself (that was a dead end before, with only a message)
-      if (SOURCES && SOURCES.list.some((x) => x.id === fid) && moreSources(fid) && nextSource(fid, opts.from, "That source didn't open")) return;
+      if (SOURCES && SOURCES.list.some((x) => x.id === fid) && moreSources(fid) && nextSource(fid, opts.from, /busy|429/i.test(e.message) ? "That source is busy" : "That source didn't open")) return;
       loadHide(); showMsg("Can't play this file", e.message); return;
     }
     if (my !== PLAY_N || pl.el.hidden) return;

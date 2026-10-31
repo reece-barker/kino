@@ -552,6 +552,9 @@ public class MainActivity extends Activity {
     class Bridge {
         @JavascriptInterface public boolean isTv() { return isTv; }
         @JavascriptInterface public String version() { return BuildConfig.VERSION_NAME; }
+        // The player picked in Settings: "exo" (Kino player) or "android" (the device's own), the web player is chosen on the page itself
+        @JavascriptInterface public String player() { return getSharedPreferences("kino", MODE_PRIVATE).getString("engine", "exo"); }
+        @JavascriptInterface public void setPlayer(String v) { if ("exo".equals(v) || "android".equals(v)) getSharedPreferences("kino", MODE_PRIVATE).edit().putString("engine", v).apply(); }
         @JavascriptInterface public int versionCode() { return BuildConfig.VERSION_CODE; }
 
         // Downloads the newer app from the server and opens androids installer for it

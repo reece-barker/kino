@@ -1831,9 +1831,13 @@ body.tv .page-back { display: none !important; }
 
 /* Settings rows on phones: the switch or select stays on the right whatever the label length, only the wide controls stack */
 @media (max-width: 760px) {
-  .set-row:not(:has(.actions, .theme-pick, .field, input:not([type="checkbox"]), textarea, .set-profile)) { flex-wrap: nowrap; align-items: center; }
-  .set-row:not(:has(.actions, .theme-pick, .field, input:not([type="checkbox"]), textarea, .set-profile)) > span:first-child { flex: 1 1 0; min-width: 0; }
-  .set-row:not(:has(.actions, .theme-pick, .field, input:not([type="checkbox"]), textarea, .set-profile)) > :not(span:first-child) { flex: none; max-width: 52%; }
+  .set-row:not(:has(.actions, .theme-pick, .field, .btn, input:not([type="checkbox"]), textarea, .set-profile)) { flex-wrap: nowrap; align-items: center; }
+  .set-row:not(:has(.actions, .theme-pick, .field, .btn, input:not([type="checkbox"]), textarea, .set-profile)) > span:first-child { flex: 1 1 0; min-width: 0; }
+  .set-row:not(:has(.actions, .theme-pick, .field, .btn, input:not([type="checkbox"]), textarea, .set-profile)) > :not(span:first-child) { flex: none; max-width: 52%; }
 }
+/* A button in a settings row never squeezes its text (Reset Recommendations used to wrap inside the button with no room), on a phone the
+   row wraps and the button sits under the words */
+.set-row > .btn, .set-row > .actions .btn { flex: none; white-space: nowrap; padding-inline: 18px; }
+@media (max-width: 760px) { .set-row:has(> .btn) { flex-wrap: wrap; } .set-row:has(> .btn) > span:first-child { flex: 1 1 100%; } }
 /* Small buttons in a settings row were 13 and 14px, the rest of the app uses 15 */
 .set-row .secondary.btn, .set-profile .secondary.btn, .set-row .btn.secondary, .set-profile .btn.secondary { font-size: 15px; }

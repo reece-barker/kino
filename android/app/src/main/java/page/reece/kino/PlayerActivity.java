@@ -1259,14 +1259,18 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         double len = Math.max(d, info.optDouble("duration", 0));
         // The 30 second one (green), and the 2 minute one TorBox sends now (black, "Already downloading" and a QR code).
         // A real film or episode is never that short. The picture cant be looked at here so only the length counts
+        // Or far shorter than the film or episode should be (the web player passes how long it is meant to be)
+        double expect = info.optDouble("expect", 0);
         boolean shortClip = len >= 27 && len <= 33, longClip = len >= 100 && len <= 140;
-        if (!shortClip && !longClip) return;
+        boolean tooShort = expect >= 20 && len > 0 && len < expect * 60 * 0.35;
+        if (!shortClip && !longClip && !tooShort) return;
         fakeAsked = true;
-        String how = longClip ? "2 minute" : "30 second";
+        int mins = (int) Math.max(1, Math.round(len / 60));
+        String how = shortClip ? "30 second" : mins + " minute";
         boolean more = sourceCanMoveOn();
         if (more && info.optBoolean("autoNextSource")) { moveOn("That copy was a " + how + " placeholder", 0, true); return; }
         eng.pause();
-        LinearLayout c = dialog("This copy is only " + (longClip ? "2 minutes" : "30 seconds") + " long", "It's probably a placeholder, the download didn't really finish on TorBox."
+        LinearLayout c = dialog("This copy is only " + (shortClip ? "30 seconds" : mins + (mins == 1 ? " minute" : " minutes")) + " long", "It's probably a placeholder, the download didn't really finish on TorBox."
                 + (more ? "" : " There aren't any other sources to try right now."));
         TextView next = pill("Next Source", true), keep = pill(more ? "Keep Watching" : "OK", !more);
         next.setOnClickListener(v -> { closeDialog(); moveOn("Skipped the placeholder", 0, true); });

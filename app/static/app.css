@@ -774,6 +774,8 @@ body.blur-watched .tile.is-watched .tile-check { z-index: 2; }
 .storage-review { margin-top: 20px; }
 .sr-sub { font-size: 15px; margin: 22px 0 6px; display: flex; gap: 8px; align-items: baseline; }
 .sr-sub .secondary { font-weight: 500; font-size: 13px; }
+.src.dead { opacity: 0.55; }
+.src.dead:hover, .src.dead:focus-visible { opacity: 1; }
 .sr-row { display: flex; gap: 14px; align-items: center; padding: 10px 0; border-top: 0.5px solid var(--sep); }
 .sr-row b { display: block; font-size: 15px; }
 .sr-row .secondary { font-size: 13px; }

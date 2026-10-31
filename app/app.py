@@ -659,7 +659,7 @@ def slim_meta(m, kind):
     return {
         "id": i, "kind": kind, "name": m.get("name"), "description": m.get("description"),
         "genres": m.get("genres") or m.get("genre") or [], "releaseInfo": m.get("releaseInfo") or m.get("year"),
-        "runtime": m.get("runtime"), "rating": m.get("imdbRating"), "cast": (m.get("cast") or [])[:10],
+        "runtime": m.get("runtime"), "released": m.get("released"), "rating": m.get("imdbRating"), "cast": (m.get("cast") or [])[:10],
         "popularity": (m.get("popularities") or {}).get("moviedb") or m.get("popularity"),
         "director": m.get("director"), "poster": poster_for(m),
         "background": m.get("background") or (f"https://images.metahub.space/background/medium/{i}/img" if i.startswith("tt") else None),
@@ -4429,6 +4429,15 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
     meta = await meta_lookup(kind, show_of(vid)) or {}
     if p.get("kids") and not kids_ok(meta.get("genres"), show_of(vid)):
         raise HTTPException(404, "That title isn't available on this profile")
+    # Something that isnt out yet has no real sources, whatever the addons send is fake. And for a few weeks after a film comes out
+    # (a few days for an episode) what is on offer is mostly camera recordings and fakes, so it is flagged
+    cur = (await ep_context(kind, vid))[1] if kind == "series" else None
+    rel = released_at(cur.get("released") if cur else meta.get("released"))
+    now_t = time.time()
+    if rel and rel > now_t + 86400:
+        return {"streams": [], "dropped": 0, "checked": 0, "partial": False, "upcoming": datetime.datetime.fromtimestamp(rel, datetime.timezone.utc).strftime("%Y-%m-%d")}
+    fresh = bool(rel and now_t - rel < (2 if cur else 60) * 86400)
+    minutes = parse_runtime(meta)
 
     async def one(a):
         try:
@@ -4483,35 +4492,50 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         h = health.get(x["id"])
         if not h:
             return 1
-        if (h["bad"] or 0) > (h["good"] or 0):
+        # A failure counts for 6 hours, links come back and go away, so an old one shouldnt keep a source at the back for good
+        if (h["bad"] or 0) > (h["good"] or 0) and time.time() - (h["bad"] or 0) < 6 * 3600:
             return 2
-        return 0
+        return 0 if (h["good"] or 0) > (h["bad"] or 0) else 1
+    # Ask every source if it is answering, a dead one is marked so it goes last and the player doesnt try it by itself
+    if out and not inline:
+        sem = asyncio.Semaphore(8)
+
+        async def alive(x):
+            async with sem:
+                x["_ok"], x["why"] = await probe_source(x["_url"])
+        await asyncio.gather(*(alive(x) for x in out[:16]))
     for x in out:
-        x["health"] = ("good", "untried", "failed")[rank(x)]
-    # Order: your TorBox copies, then sources that played fine before, then ones from addons the admin put first in Settings
-    # (Addons, Source Priority, First before Second and so on), then everything else not tried yet, and copies that failed
-    # before go last whoever they are
-    prio = {}
-    for a in rows:
+        x["health"] = "dead" if x.get("_ok") is False else ("good", "untried", "failed")[rank(x)]
+        x.pop("_ok", None)
+        x["suspect"] = suspect_reasons(f"{x['label']} {x.get('file') or ''}", x["height"], x["bytes"], minutes, kind) if kind in ("movie", "series") else []
+    # Order: sources that played fine before, then ones from addons the admin put first in Settings (Addons, Source Priority, First
+    # before Second and so on), then everything else not tried yet, then copies that failed before, and dead ones last. Inside one
+    # addon the one with the most seeders comes first, then the best quality and size. The addons go in the order they were installed
+    prio, order = {}, {}
+    for i, a in enumerate(rows):
+        order.setdefault(a["m"].get("name"), i)
         if a.get("prio"):
             prio[a["m"].get("name")] = min(prio.get(a["m"].get("name"), 99), a["prio"])
 
     def group(x):
+        if x["health"] == "dead":
+            return 6
         r = rank(x)
         if r == 2:
-            return 4
-        if x.get("torbox"):
-            return 0
-        if r == 0:
+            return 5
+        if r == 0 and not x["suspect"]:
             return 1
+        if x["suspect"]:
+            return 4
         return 2 if x.get("addon") in prio else 3
-    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100), not x["plays"], -x["height"], -(x.get("seeders") or 0), -(x["bytes"] or 0)))
+    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100), order.get(x.get("addon"), 99), not x["plays"],
+                            -(x["seeders"] if x.get("seeders") is not None else -1), -x["height"], -(x["bytes"] or 0)))
     if video_type(kind):
         # Youtubio lists every quality twice (its own sponsor cutting player and the plain one), the top few is plenty
         out = out[:12]
     for x in out:
         x.pop("_url", None)
-    res = {"streams": out, "dropped": dropped, "checked": len(rows), "partial": bool(quick and any(x["error"] == "took too long to answer" for x in report))}
+    res = {"streams": out, "dropped": dropped, "checked": len(rows), "partial": bool(quick and any(x["error"] == "took too long to answer" for x in report)), "fresh": fresh}
     # What this title turned out to have, for hiding ones with nothing. Found something always counts, nothing only
     # counts for a film when every addon answered (shows get checked by there first episodes in the background)
     if kind in ("movie", "series") and rows and not inline:
@@ -4529,6 +4553,51 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
 FORMATS = {".mp4": ("MP4", True), ".m4v": ("MP4", True), ".webm": ("WebM", True), ".mkv": ("MKV", False),
            ".ogv": ("Ogg", False), ".ogg": ("Ogg", False), ".mpeg": ("MPEG", False), ".mpg": ("MPEG", False),
            ".avi": ("AVI", False), ".mov": ("MOV", True), ".wmv": ("WMV", False)}
+
+
+def parse_runtime(m):
+    """Minutes from what the metadata says, '98 min' or '1h 38min', None when it isnt known"""
+    t = str((m or {}).get("runtime") or "").lower()
+    h = re.search(r"(\d+)\s*h", t)
+    mi = re.search(r"(\d+)\s*m", t)
+    n = (int(h.group(1)) * 60 if h else 0) + (int(mi.group(1)) if mi else 0)
+    if not n and re.fullmatch(r"\s*\d+\s*", t):
+        n = int(t)
+    return n or None
+
+
+def released_at(v):
+    """When something came out, as a timestamp, None when the date isnt known"""
+    if not v:
+        return None
+    try:
+        d = datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)).timestamp()
+
+
+# A camera recording or a screener: not a real copy of a film, it is what turns up first for new releases. Release names put dots between
+# the words so those count as gaps. TS only counts in capitals (a .ts file is just a video file, the ending is cut off first)
+CAM_RE = re.compile(r"(?<![A-Za-z0-9])(?:cam|hdcam|camrip|cam-rip|hd-?ts|telesync|tele-sync|hdtc|telecine|workprint|dvdscr|screener|scr)(?![A-Za-z0-9])", re.I)
+CAM_RE_TS = re.compile(r"(?<![A-Za-z0-9])TS(?![A-Za-z0-9])")
+
+
+def suspect_reasons(text, height, size, minutes, kind):
+    """Why a source is probably not the real thing: a camera recording, or a file far too small for what it says it is"""
+    why = []
+    text = re.sub(r"\.(?:ts|mkv|mp4|m4v|avi|mov|webm|wmv)$", "", str(text).strip(), flags=re.I)
+    if CAM_RE.search(text) or CAM_RE_TS.search(text):
+        why.append("a camera recording")
+    if size and height:
+        floor = {2160: 4.0e9, 1440: 2.5e9, 1080: 1.0e9, 720: 0.45e9}.get(height)
+        if floor:
+            mins = minutes or (110 if kind == "movie" else 45)
+            # What a normal file of that quality weighs for that length, a file under a third of it is not what it says
+            floor = floor * min(1.5, max(0.2, mins / 110))
+            if size < floor / 3:
+                why.append("much smaller than a real file of that quality")
+    return why
 
 
 def stream_facts(st, url, label):
@@ -4626,7 +4695,7 @@ async def stream_file_info(sid, p, request):
     # Streams have no file to compare so the intro (and where the credits start) can only come from the comunity database
     on = await online_segments(show_of(r["video_id"]), cur["season"], cur["episode"]) if cur else None
     s_intro = {"start": on["intro"][0], "end": on["intro"][1], "source": "online"} if on and on["intro"] else None
-    common = {"resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
+    common = {"expect": parse_runtime(m), "resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
               "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
               "ep_name": cur.get("name") if cur else None, "show_id": show_of(r["video_id"]) if cur else None,
               "title_id": None, "intro": s_intro, "credits": None, "next": nxt, "kind": r["kind"], "video_id": r["video_id"],
@@ -4714,6 +4783,51 @@ async def rstream(sid: str, request: Request, dl: int = 0, p=Depends(current_pro
     return await stream_proxy(stream_row(sid), request, dl)
 
 
+def video_answer(status, ctype):
+    return status in (200, 206) and (ctype.startswith("video/") or ctype in ("application/octet-stream", "application/ogg"))
+
+
+# Is a source answering right now? Asked for the first bytes when the sources list is made, so one that is dead (error, nothing but a web page,
+# no answer) goes to the back and isnt tried automatically. Remembered for a while so the title page and Play dont ask again
+SRC_PROBE = {}
+
+
+async def probe_source(url):
+    hit = SRC_PROBE.get(url)
+    if hit and time.time() - hit[0] < (1200 if hit[1] else 600):
+        return hit[1], hit[2]
+
+    async def go():
+        client, up = await pd_open(url, {"Range": "bytes=0-1023"})
+        try:
+            if is_hls(url):
+                if up.status_code != 200:
+                    return False, f"answered {up.status_code}"
+                head = b""
+                async for ch in up.aiter_bytes(512):
+                    head += ch
+                    break
+                return (True, "") if head.lstrip().startswith(b"#EXTM3U") else (False, "isn't a playlist")
+            if not video_answer(up.status_code, up.headers.get("content-type", "")):
+                return False, f"didn't send a video (answered {up.status_code})"
+            return True, ""
+        finally:
+            await up.aclose(); await client.aclose()
+    try:
+        ok, why = await asyncio.wait_for(go(), 3.5)
+    except asyncio.TimeoutError:
+        ok, why = False, "didn't answer"
+    except HTTPException as e:
+        ok, why = False, str(e.detail)[:100]
+    except Exception as e:
+        ok, why = False, "couldn't be reached"
+    SRC_PROBE[url] = (time.time(), ok, why)
+    if len(SRC_PROBE) > 2000:
+        for k in sorted(SRC_PROBE, key=lambda k: SRC_PROBE[k][0])[:500]:
+            SRC_PROBE.pop(k, None)
+    return ok, why
+
+
 async def stream_proxy(r, request, dl=0):
     hdr = {"Range": request.headers["range"]} if request.headers.get("range") else {}
     if r["url"].startswith("torbox:"):
@@ -4721,7 +4835,7 @@ async def stream_proxy(r, request, dl=0):
     else:
         client, up = await pd_open(r["url"], hdr)
     ctype = up.headers.get("content-type", "")
-    if up.status_code not in (200, 206) or not (ctype.startswith("video/") or ctype in ("application/octet-stream", "application/ogg")):
+    if not video_answer(up.status_code, ctype):
         await up.aclose(); await client.aclose()
         host = urlparse(r["url"]).hostname or "The source"
         # googlevideo links from yt-dlp only work from the machine that made them, a 403 from there usually means that

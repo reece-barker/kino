@@ -2669,7 +2669,7 @@
     }
     // One hls.js for every channel, switching just loads a new playlist into it which is much quicker than starting over
     if (!pl.hls) {
-      const h = new Hls({ liveSyncDurationCount: 4, maxBufferLength: 30, backBufferLength: 20, manifestLoadingMaxRetry: 2, levelLoadingMaxRetry: 3, fragLoadingMaxRetry: 3, enableWorker: true });
+      const h = new Hls({ liveSyncDurationCount: 4, maxBufferLength: 30, backBufferLength: 20, manifestLoadingMaxRetry: 3, levelLoadingMaxRetry: 4, fragLoadingMaxRetry: 4, manifestLoadingTimeOut: 20000, levelLoadingTimeOut: 20000, fragLoadingTimeOut: 30000, enableWorker: true });
       pl.hls = h;
       h.attachMedia(pl.v);
       h.on(Hls.Events.ERROR, (_, d) => {
@@ -2692,12 +2692,20 @@
             return;
         }
         spinner(false);
-        api(`/api/live/${pl.info.id}/bad`, {}).catch(() => {});
-        showMsg("This channel isn't working", "It might be off air right now, or the link stopped working.",
-          `${LIVE_NOW.list.length > 1 ? `<button class="btn primary small" id="lvNext">Next Channel</button>` : ""}<button class="btn secondary small" id="lvAgain">Try Again</button><button class="btn secondary small" id="lvClose">Close</button>`);
-        const n = $("#lvNext"); if (n) { n.onclick = () => switchLive(1); n.focus(); }
-        $("#lvClose").onclick = () => closePlayer();
-        $("#lvAgain").onclick = () => tune();
+        const cid = pl.info.id;
+        // The server checks the channel itself before it is switched off, and says what went wrong (provider refused, too many devices...)
+        api(`/api/live/${cid}/bad`, {}).catch(() => {});
+        const buttons = `${LIVE_NOW.list.length > 1 ? `<button class="btn primary small" id="lvNext">Next Channel</button>` : ""}<button class="btn secondary small" id="lvAgain">Try Again</button><button class="btn secondary small" id="lvClose">Close</button>`;
+        const wire = () => {
+          const n = $("#lvNext"); if (n) { n.onclick = () => switchLive(1); n.focus(); }
+          $("#lvClose").onclick = () => closePlayer();
+          $("#lvAgain").onclick = () => tune();
+        };
+        api(`/api/live/${cid}/why`).then((r) => r.why || "").catch(() => "").then((why) => {
+          if (!pl.info || !pl.info.live || pl.info.id !== cid) return;
+          showMsg("This channel isn't working", why || "It might be off air right now, or the link stopped working.", buttons);
+          wire();
+        });
       });
       h.on(Hls.Events.MANIFEST_PARSED, () => pl.v.play().catch(() => {}));
     }

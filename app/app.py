@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, list_id INTEGER, name 
 CREATE INDEX IF NOT EXISTS channels_rank ON channels(rank, name);
 CREATE TABLE IF NOT EXISTS epg (tvg TEXT, start REAL, stop REAL, title TEXT, sub TEXT, descr TEXT);
 CREATE INDEX IF NOT EXISTS epg_ch ON epg(tvg, start);
-CREATE TABLE IF NOT EXISTS live_fav (profile_id INTEGER, cid TEXT, added REAL, PRIMARY KEY (profile_id, cid));
+CREATE TABLE IF NOT EXISTS live_fav (profile_id INTEGER, cid TEXT, added REAL, name TEXT, PRIMARY KEY (profile_id, cid));
 CREATE TABLE IF NOT EXISTS recordings (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, cid TEXT, channel TEXT, title TEXT,
   start REAL, stop REAL, state TEXT, path TEXT, size INTEGER, error TEXT, created REAL);
 CREATE TABLE IF NOT EXISTS embed_sources (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, player TEXT, enabled INTEGER DEFAULT 1, added REAL, error TEXT);
@@ -250,6 +250,16 @@ def migrate():
                 pr["audio_lang"] = "English"
                 d.q("UPDATE profiles SET prefs = ? WHERE id = ?", (json.dumps(pr), r["id"]))
         d.q("PRAGMA user_version = 2")
+    if "name" not in [r["name"] for r in d.q("PRAGMA table_info(live_fav)")]:
+        d.q("ALTER TABLE live_fav ADD COLUMN name TEXT")
+    if d.q("PRAGMA user_version")[0]["user_version"] < 3:
+        # Favourites are kept by channel name from now on (the same channel can be in a list more than once, and its id changes when the
+        # playlist link does), so each one gets its name, and a channel faved twice is one favourite again
+        d.q("UPDATE live_fav SET name = (SELECT lower(c.name) FROM channels c WHERE c.id = live_fav.cid) WHERE name IS NULL")
+        d.q("DELETE FROM live_fav WHERE name IS NOT NULL AND rowid NOT IN (SELECT MIN(rowid) FROM live_fav WHERE name IS NOT NULL GROUP BY profile_id, name)")
+        # Channels switched off by a single failed attempt or a busy provider get another look (the check runs again on its own)
+        d.q("UPDATE channels SET ok = NULL, checked = NULL WHERE ok = 0")
+        d.q("PRAGMA user_version = 3")
     # First run with profiles: makes one profile per old login and moves there watch progress over
     if d.q("SELECT COUNT(*) AS n FROM profiles")[0]["n"]:
         return
@@ -5924,7 +5934,17 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 # get there links rewritten so every request comes back through here (no CORS problems, and links that only work
 # from the server keep working), anything else (a raw MPEG-TS stream from a tuner) gets repackaged by ffmpeg live.
 # English channels go first, the UK before the US, then other english speaking countries, then everything else
-LIVE = {"refreshing": False, "checking": False}
+LIVE = {"refreshing": False, "checking": False, "seen": 0}
+LIVE_STRIKES = {}  # channel id -> when it failed lately
+
+
+def live_strike(cid):
+    """A channel is only switched off after it failed 3 times in 10 minutes, one bad answer (a busy provider, a hiccup) isnt a dead channel"""
+    now = time.time()
+    hits = [t for t in LIVE_STRIKES.get(cid, []) if now - t < 600] + [now]
+    LIVE_STRIKES[cid] = hits
+    if len(hits) >= 3 and cid.startswith("c"):
+        db().q("UPDATE channels SET ok = 0, checked = ? WHERE id = ?", (now, cid))
 LP = {}  # proxy token -> (url, headers, local, made)
 LIVE_RESOLVED = {}  # addon channel id -> (when, url, headers)
 M3U_ATTR = re.compile(r'([\w-]+)="([^"]*)"')
@@ -6182,8 +6202,19 @@ async def refresh_list(row):
         log.info("live tv list %s failed: %s", row["name"], e)
 
 
-async def check_channel(c):
-    """Opens a channel for a moment: a playlist or video coming back counts as working"""
+async def check_channel(c, tries=2):
+    """Opens a channel for a moment (twice if it fails the first time): a playlist or video coming back counts as working"""
+    ok = False
+    for i in range(tries):
+        ok = await probe_channel(c)
+        if ok:
+            break
+        await asyncio.sleep(2)
+    db().q("UPDATE channels SET ok = ?, checked = ? WHERE id = ?", (1 if ok else 0, time.time(), c["id"]))
+    return ok
+
+
+async def probe_channel(c):
     hdr = json.loads(c["headers"]) if c["headers"] else {}
     local = bool(db().q("SELECT local FROM iptv_lists WHERE id = ?", (c["list_id"],))[0]["local"]) if c["list_id"] else False
     try:
@@ -6201,17 +6232,18 @@ async def check_channel(c):
             await cl.aclose()
     except Exception:
         ok = False
-    db().q("UPDATE channels SET ok = ?, checked = ? WHERE id = ?", (1 if ok else 0, time.time(), c["id"]))
     return ok
 
 
 async def check_channels(limit=800):
-    if LIVE["checking"]:
+    # Providers often allow a connection or two at a time, checking channels while somebody is watching could cut their stream off
+    if LIVE["checking"] or time.time() - LIVE["seen"] < 180:
         return
     LIVE["checking"] = True
     try:
-        rows = db().q("SELECT * FROM channels WHERE checked IS NULL OR checked < ? ORDER BY rank, name LIMIT ?", (time.time() - 12 * 3600, limit))
-        gate = asyncio.Semaphore(12)
+        rows = db().q("SELECT * FROM channels WHERE checked IS NULL OR (ok = 0 AND checked < ?) OR checked < ? ORDER BY rank, name LIMIT ?",
+                      (time.time() - 3600, time.time() - 12 * 3600, limit))
+        gate = asyncio.Semaphore(4)
 
         async def one(c):
             async with gate:
@@ -6311,11 +6343,17 @@ def live_country_where(p):
     return "(c.country IN (%s) OR c.country = '' OR c.country IS NULL)" % ",".join("?" * len(LIVE_HOME_COUNTRIES))
 
 
+def fav_names(pid):
+    """The channels a profile has favourited, by name. By name because the same channel can be in a list twice and the id changes when
+    the playlist link does, going by id gave favourites that vanished or turned up double"""
+    return {r["name"] for r in db().q("SELECT DISTINCT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL", (pid,))}
+
+
 @app.get("/api/live")
 async def live_list(group: str = "", country: str = "", q: str = "", skip: int = 0, all: int = 0, fav: int = 0, p=Depends(current_profile)):
     where, args = ["l.enabled = 1"], []
     if fav:
-        where.append("c.id IN (SELECT cid FROM live_fav WHERE profile_id = ?)"); args.append(p["id"])
+        where.append("lower(c.name) IN (SELECT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL)"); args.append(p["id"])
     if not all:
         where.append("(c.ok IS NULL OR c.ok = 1)")
     if p.get("kids"):
@@ -6331,10 +6369,17 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
         where.append("c.name LIKE ?"); args.append(f"%{q.strip()[:40]}%")
     w = " AND ".join(where)
     rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {w} "
-                  "ORDER BY (c.id IN (SELECT cid FROM live_fav WHERE profile_id = ?)) DESC, c.rank, c.ok DESC, c.name LIMIT 120 OFFSET ?", [*args, p["id"], max(0, skip)])
+                  "ORDER BY (lower(c.name) IN (SELECT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL)) DESC, c.rank, c.ok DESC, c.name LIMIT 120 OFFSET ?", [*args, p["id"], max(0, skip)])
     guide = now_next({r["tvg"] for r in rows if r["tvg"]})
-    favs = {r["cid"] for r in db().q("SELECT cid FROM live_fav WHERE profile_id = ?", (p["id"],))}
-    out = {"channels": [{**chan_out(r, guide), "fav": r["id"] in favs} for r in rows], "next": skip + len(rows) if len(rows) == 120 else None}
+    favs = fav_names(p["id"])
+    if fav:
+        # The same channel can be in a playlist more than once (a backup link), the favourites show it once, the best one
+        seen, uniq = set(), []
+        for r in rows:
+            if r["name"].lower() not in seen:
+                seen.add(r["name"].lower()); uniq.append(r)
+        rows = uniq
+    out = {"channels": [{**chan_out(r, guide), "fav": r["name"].lower() in favs} for r in rows], "next": skip + len(rows) if len(rows) == 120 else None}
     if skip == 0:
         out["fav_count"] = len(favs)
         out["recordings"] = db().q("SELECT COUNT(*) n FROM recordings WHERE state != 'cancelled'")[0]["n"]
@@ -6388,12 +6433,12 @@ async def live_guide(start: float = 0, hours: float = 3, group: str = "", countr
     if country:
         where.append("c.country = ?"); args.append(country)
     rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {' AND '.join(where)} ORDER BY c.rank, c.name LIMIT 60 OFFSET ?", [*args, max(0, skip)])
-    favs = {r["cid"] for r in db().q("SELECT cid FROM live_fav WHERE profile_id = ?", (p["id"],))}
+    favs = fav_names(p["id"])
     out = []
     for r in rows:
         progs = [{"title": x["title"], "sub": x["sub"], "desc": x["descr"], "start": x["start"], "stop": x["stop"]} for x in
                  db().q("SELECT * FROM epg WHERE tvg = ? AND stop > ? AND start < ? ORDER BY start", (r["tvg"], start, end))]
-        out.append({**chan_out(r, {}), "fav": r["id"] in favs, "progs": progs})
+        out.append({**chan_out(r, {}), "fav": r["name"].lower() in favs, "progs": progs})
     return {"start": start, "end": end, "channels": out, "next": skip + len(rows) if len(rows) == 60 else None}
 
 
@@ -6485,14 +6530,33 @@ def lp_type(ct):
     return ct if ok else "application/octet-stream"
 
 
+LIVE_ERR = {}  # channel id -> (when, what went wrong) the last time it wouldnt open, so the player can say why
+
+
 @app.get("/api/live/{cid}/index.m3u8")
 async def live_play(cid: str, request: Request, p=Depends(current_profile)):
+    try:
+        return await live_play_inner(cid, request, p)
+    except HTTPException as e:
+        LIVE_ERR[cid] = (time.time(), str(e.detail)[:200])
+        if len(LIVE_ERR) > 500:
+            LIVE_ERR.pop(next(iter(LIVE_ERR)), None)
+        raise
+
+
+@app.get("/api/live/{cid}/why")
+async def live_why(cid: str, p=Depends(current_profile)):
+    hit = LIVE_ERR.get(cid)
+    return {"why": hit[1] if hit and time.time() - hit[0] < 300 else ""}
+
+
+async def live_play_inner(cid: str, request: Request, p):
     url, headers, local = await live_source(cid)
     client, r, final = await live_open(url, headers, local)
     try:
+        LIVE["seen"] = time.time()
         if r.status_code != 200:
-            if cid.startswith("c"):
-                db().q("UPDATE channels SET ok = 0, checked = ? WHERE id = ?", (time.time(), cid))
+            live_strike(cid)
             raise HTTPException(502, f"The channel isn't working right now (it answered {r.status_code})")
         # A playlist says so in its first bytes, a raw video stream doesnt (and never ends, so its not read on)
         it = r.aiter_bytes()
@@ -6507,6 +6571,7 @@ async def live_play(cid: str, request: Request, p=Depends(current_profile)):
                 if len(body) > 5 * 1024**2:
                     break
             if cid.startswith("c"):
+                LIVE_STRIKES.pop(cid, None)
                 db().q("UPDATE channels SET ok = 1, checked = ? WHERE id = ?", (time.time(), cid))
             return Response(rewrite_m3u8(body.decode("utf-8", errors="ignore"), final, headers, local), media_type="application/vnd.apple.mpegurl",
                             headers={"Cache-Control": "no-store"})
@@ -6638,13 +6703,19 @@ async def live_thumb(cid: str, p=Depends(current_profile)):
 
 @app.post("/api/live/fav/{cid}")
 async def live_fav_add(cid: str, p=Depends(current_profile)):
-    db().q("INSERT OR REPLACE INTO live_fav VALUES (?,?,?)", (p["id"], cid[:40], time.time()))
+    row = db().q("SELECT name FROM channels WHERE id = ?", (cid[:40],))
+    name = row[0]["name"].lower() if row else None
+    db().q("INSERT OR REPLACE INTO live_fav (profile_id, cid, added, name) VALUES (?,?,?,?)", (p["id"], cid[:40], time.time(), name))
+    if name:  # one favourite per channel name, whatever device or copy of the channel it was added from
+        db().q("DELETE FROM live_fav WHERE profile_id = ? AND name = ? AND cid != ?", (p["id"], name, cid[:40]))
     return {"ok": True}
 
 
 @app.delete("/api/live/fav/{cid}")
 async def live_fav_remove(cid: str, p=Depends(current_profile)):
-    db().q("DELETE FROM live_fav WHERE profile_id = ? AND cid = ?", (p["id"], cid))
+    row = db().q("SELECT name FROM channels WHERE id = ?", (cid[:40],)) or db().q("SELECT name FROM live_fav WHERE profile_id = ? AND cid = ?", (p["id"], cid[:40]))
+    name = row[0]["name"].lower() if row and row[0]["name"] else None
+    db().q("DELETE FROM live_fav WHERE profile_id = ? AND (cid = ? OR name = ?)", (p["id"], cid[:40], name))
     return {"ok": True}
 
 
@@ -6840,10 +6911,17 @@ async def rec_file(rid: int, request: Request, p=Depends(current_profile)):
 
 @app.post("/api/live/{cid}/bad")
 async def live_bad(cid: str, p=Depends(current_profile)):
-    if cid.startswith("c"):
-        db().q("UPDATE channels SET ok = 0, checked = ? WHERE id = ?", (time.time(), cid))
+    # The player says a channel didnt work. That isnt taken as true on its own: the channel gets checked here, and only a channel that
+    # fails the check is switched off (one that answers is marked as working again)
     LIVE_RESOLVED.pop(cid, None)
-    return {"ok": True}
+    row = db().q("SELECT * FROM channels WHERE id = ?", (cid,)) if cid.startswith("c") else None
+    ok = None
+    if row:
+        try:
+            ok = await asyncio.wait_for(check_channel(dict(row[0])), 40)
+        except Exception:
+            ok = None
+    return {"ok": True, "working": ok}
 
 
 # ---- embed sources: services that hand out a JSON list (channels, events) with a player page for each, the way a

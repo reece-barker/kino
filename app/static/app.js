@@ -2638,14 +2638,14 @@
     liveBackClear();
   }
 
-  function playLive(ch, list) {
+  function playLive(ch, list, opts = {}) {
     const from = document.activeElement, fk = from && from.closest ? (from.closest(".g-ch") ? "g" : from.closest(".fav-tile") ? "f" : from.closest(".ch-card") ? "c" : "") : "";
     LIVE_BACK = { id: ch.id, kind: fk };
     try { sessionStorage.setItem("kino.liveBack", JSON.stringify(LIVE_BACK)); } catch (_) {}
     if (!ch) return;
     list = list && list.length ? list : [ch];
     const i = Math.max(0, list.findIndex((x) => x.id === ch.id));
-    if (useNative()) {
+    if (useNative() && !opts.web) {
       // The app's own player, with the channels around this one so up and down change channel without leaving it
       const lo = Math.max(0, i - 100), near = list.slice(lo, i + 100);
       window.KinoAndroid.playNative(JSON.stringify({
@@ -3669,6 +3669,12 @@
     if (!r) return;
     // Live tv just closes, unless they asked for the web player from its error box. The remote goes back to the channel that was
     // on (the player says which, up and down in it change channel), also when the page was reloaded while it was open
+    // The Kino player gave up on a channel: the page's own player (hls.js, what a computer uses) takes it over, so it plays instead of an error
+    if (r.live && r.error && cur && cur.live && !cur.live.rec) {
+      const ch = (cur.live.list || []).find((c) => c.id === r.fid) || cur.live.ch;
+      toast("The Kino player couldn't open that channel, trying the web player", 4000);
+      return playLive(ch, cur.live.list, { web: true });
+    }
     if (r.live && !(cur && cur.live && cur.live.rec)) setTimeout(() => liveBackFocus(r.fid), 150);
     if (cur && cur.live) { if (cur.live.rec && location.hash.startsWith("#/live/rec")) setTimeout(softRoute, 300); return; }
     if (r.live) return;

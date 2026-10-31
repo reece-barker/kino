@@ -759,15 +759,14 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             errorShown = true;
             loading = false;
             loadLayer.setVisibility(View.GONE);
-            // The server is asked what went wrong (the provider refused, too many devices...) so the message can say, and it checks the
-            // channel itself before switching it off, so that is asked after and in the background
+            // The Kino player gave up, so the page's own player (the one a computer uses) takes the channel over by itself, like a film
+            // that won't play does. The server is asked what went wrong first so the page can say
             final String failed = fid, playerSaid = msg;
             new Thread(() -> {
                 String why = "";
                 try { why = new JSONObject(get("/api/live/" + failed + "/why")).optString("why"); } catch (Exception ignored) { }
-                final String w = why;
-                runOnUiThread(() -> { if (!leaving && errorShown) liveDown(w, playerSaid); });
-                try { post("/api/live/" + failed + "/bad", "{}"); } catch (Exception ignored) { }
+                final String text = (why.isEmpty() ? "" : why + " ") + "(" + playerSaid + ")";
+                runOnUiThread(() -> { if (!leaving && errorShown) done(text); });
             }).start();
             return;
         }
@@ -1445,12 +1444,14 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         String body = why.isEmpty() ? "It might be off air right now, or the link stopped working." : why;
         if (playerSaid != null && !playerSaid.isEmpty()) body += "\n(" + playerSaid + ")";
         LinearLayout c = dialog("This channel isn't working", body);
-        TextView next = pill("Next Channel", true), again = pill("Try Again", false), close = pill("Close", false);
+        TextView next = pill("Next Channel", true), again = pill("Try Again", false), web = pill("Web Player", false), close = pill("Close", false);
         next.setOnClickListener(v -> { closeDialog(); relaunchLoading("Tuning in"); switchChannel(1); });
         again.setOnClickListener(v -> { closeDialog(); errorShown = false; relaunchLoading("Tuning in"); eng.open(base + "/api/live/" + fid + "/index.m3u8", true, -1, new ArrayList<>()); });
+        final String said = body;
+        web.setOnClickListener(v -> { closeDialog(); done(said); });
         close.setOnClickListener(v -> { closeDialog(); done(); });
-        if (liveList != null && liveList.length() > 1) buttons(c, next, again, close);
-        else buttons(c, again, close);
+        if (liveList != null && liveList.length() > 1) buttons(c, next, again, web, close);
+        else buttons(c, again, web, close);
     }
 
     private String get(String path) throws Exception {

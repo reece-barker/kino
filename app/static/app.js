@@ -2311,7 +2311,7 @@
     el.className = "menu drop pop"; el.setAttribute("role", "menu"); el.innerHTML = html;
     document.body.appendChild(el);
     const place = () => {
-      const r = anchor.getBoundingClientRect(), vw = innerWidth, vh = innerHeight, m = 8;
+      const r = anchor.getBoundingClientRect(), vw = innerWidth, vh = innerHeight, m = TV ? 27 : 8;  // a tv crops the edges
       el.style.maxWidth = Math.min(320, vw - 2 * m) + "px";
       const w = el.offsetWidth, h = el.offsetHeight;
       let left = r.right - w;                       // lines up with the button's right edge
@@ -4291,6 +4291,8 @@
   }
   if (TV) {
     document.body.classList.add("tv");
+    // Focus scrolling keeps the selected thing 27px in from the top and bottom, a tv may crop the very edge of the picture
+    document.documentElement.style.scrollPaddingBlock = "27px";
     document.addEventListener("keydown", nav, true);
   }
   // Back on a remote or phone closes whatever is on top first, the app goes back a page when this says no

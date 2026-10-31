@@ -47,6 +47,7 @@ from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import httpx
 import psutil
+from channel_popularity import popularity
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -170,7 +171,7 @@ CREATE TABLE IF NOT EXISTS sources_seen (id TEXT PRIMARY KEY, kind TEXT, has INT
 CREATE TABLE IF NOT EXISTS iptv_lists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, epg TEXT, local INTEGER DEFAULT 0,
   enabled INTEGER DEFAULT 1, added REAL, refreshed REAL, count INTEGER DEFAULT 0, error TEXT);
 CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, list_id INTEGER, name TEXT, logo TEXT, grp TEXT, country TEXT, tvg TEXT,
-  url TEXT, headers TEXT, rank INTEGER, ok INTEGER, checked REAL, junk TEXT);
+  url TEXT, headers TEXT, rank INTEGER, ok INTEGER, checked REAL, junk TEXT, pop INTEGER);
 CREATE TABLE IF NOT EXISTS live_usage (name TEXT PRIMARY KEY, plays INTEGER, last REAL);
 CREATE TABLE IF NOT EXISTS live_filter (kind TEXT, value TEXT, PRIMARY KEY (kind, value));
 CREATE INDEX IF NOT EXISTS channels_rank ON channels(rank, name);
@@ -266,9 +267,14 @@ def migrate():
         d.q("ALTER TABLE channels ADD COLUMN junk TEXT")
     if d.q("PRAGMA user_version")[0]["user_version"] < 4:
         # Every channel gets the kind of channel it is (religious, shopping...), which the admin can choose to hide in Settings
-        for r in d.q("SELECT id, name, grp FROM channels"):
-            d.q("UPDATE channels SET junk = ? WHERE id = ?", (classify_junk(r["name"], r["grp"]), r["id"]))
+        d.many("UPDATE channels SET junk = ? WHERE id = ?", [(classify_junk(r["name"], r["grp"]), r["id"]) for r in d.q("SELECT id, name, grp FROM channels")])
         d.q("PRAGMA user_version = 4")
+    if "pop" not in [r["name"] for r in d.q("PRAGMA table_info(channels)")]:
+        d.q("ALTER TABLE channels ADD COLUMN pop INTEGER")
+    if d.q("PRAGMA user_version")[0]["user_version"] < 5:
+        # How popular each channel is (channel_popularity.py), which the list is sorted by
+        d.many("UPDATE channels SET pop = ? WHERE id = ?", [(popularity(r["name"]), r["id"]) for r in d.q("SELECT id, name FROM channels")])
+        d.q("PRAGMA user_version = 5")
     # First run with profiles: makes one profile per old login and moves there watch progress over
     if d.q("SELECT COUNT(*) AS n FROM profiles")[0]["n"]:
         return
@@ -6181,7 +6187,7 @@ def parse_m3u(text, list_id, default_country=""):
                 out.append({"id": "c" + hashlib.sha1(f"{list_id}|{line}|{cur['name']}".encode()).hexdigest()[:15], "list_id": list_id,
                             "name": cur["name"][:120], "logo": a.get("tvg-logo") or None, "grp": grp, "country": country,
                             "tvg": (a.get("tvg-id") or "").strip() or None, "url": line, "headers": json.dumps(hdr) if hdr else None,
-                            "rank": live_rank(cur["name"], country, a.get("tvg-language")), "junk": classify_junk(cur["name"], a.get("group-title") or grp)})
+                            "rank": live_rank(cur["name"], country, a.get("tvg-language")), "junk": classify_junk(cur["name"], a.get("group-title") or grp), "pop": popularity(cur["name"])})
             cur = None
     return out, epg
 
@@ -6341,11 +6347,11 @@ async def refresh_list(row):
             guides = [(g, None) for g in guides]
         tags = {guide_tag(g) for g, _ in guides}
         rows = [(c["id"], lid, c["name"], c["logo"], c["grp"], c["country"], keep_tvg(c, old, tags), c["url"], c["headers"], c["rank"],
-                 (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked"), c.get("junk")) for c in chans]
+                 (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked"), c.get("junk"), c.get("pop")) for c in chans]
 
         def store():
             db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
-            db_chunks("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            db_chunks("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
         await asyncio.to_thread(store)
         for g, ctry in guides:
             try:
@@ -6537,9 +6543,10 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
     # works (or is first in the playlist) is the one that is used
     rows = db().q(f"WITH r AS (SELECT c.*, ROW_NUMBER() OVER (PARTITION BY lower(c.name) ORDER BY (c.ok = 1) DESC, c.rank, c.id) AS rn, "
                   "(lower(c.name) IN (SELECT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL)) AS isfav, "
-                  "COALESCE((SELECT plays FROM live_usage u WHERE u.name = lower(c.name)), 0) AS plays "
+                  "COALESCE((SELECT plays FROM live_usage u WHERE u.name = lower(c.name)), 0) AS plays, "
+                  "(COALESCE(c.pop, 0) + CASE WHEN c.tvg IS NOT NULL THEN 10 ELSE 0 END) AS score "
                   f"FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {w}) "
-                  "SELECT * FROM r WHERE rn = 1 ORDER BY isfav DESC, plays DESC, rank, (tvg IS NOT NULL) DESC, ok DESC, name LIMIT 120 OFFSET ?", [p["id"], *args, max(0, skip)])
+                  "SELECT * FROM r WHERE rn = 1 ORDER BY isfav DESC, plays DESC, (score / 20) DESC, (rank / 10), score DESC, rank, ok DESC, name LIMIT 120 OFFSET ?", [p["id"], *args, max(0, skip)])
     guide = now_next({r["tvg"] for r in rows if r["tvg"]})
     out = {"channels": [{**chan_out(r, guide), "fav": r["name"].lower() in favs} for r in rows], "next": skip + len(rows) if len(rows) == 120 else None}
     if skip == 0:

@@ -980,7 +980,7 @@
   // YouTube sees the viewer's address when one plays.
   const CAN_HOVER = !TV && !LITE && !!window.matchMedia && matchMedia("(hover: hover) and (pointer: fine)").matches && !matchMedia("(prefers-reduced-motion: reduce)").matches;
   // TVs preview the card that is selected (focus) instead of hovered, unless the TV has very little memory
-  const TV_PREVIEW = TV && !(navigator.deviceMemory && navigator.deviceMemory <= 2);
+  const TV_PREVIEW = TV;
   const previewsOn = () => (CAN_HOVER || TV_PREVIEW) && !(ME.profile && ME.profile.prefs && ME.profile.prefs.previews === false);
   const tileActive = (t) => (TV ? document.activeElement === t : t.matches(":hover"));
   const TRAILERS = new Map();  // kind/imdb -> a promise, then the id ("" for none or one that can't be embedded)
@@ -1001,7 +1001,7 @@
   const wantSound = () => !(ME.profile && ME.profile.prefs && ME.profile.prefs.preview_sound === false);
   // YouTube draws its title, a More videos strip and buttons over the first few seconds of any video, controls off or not, so the video stays
   // invisible until those are gone (a loop restart is hidden the same way). It loops by hand cause the loop param adds previous and next buttons
-  const YT_CLEAR = 5200;
+  const YT_CLEAR = 4500;
   // An embedded trailer in host. o: mute, loop, controls, cover (fill the box), contain (fit the whole frame in the box), sound (turn the sound on
   // once it shows), onPlay (it is showing), onFail, onMuted (the player says its sound is on or off)
   function mountTrailer(host, yt, o = {}) {
@@ -1141,14 +1141,14 @@
     const show = (m) => { muted = m; const snd = $(".tile-snd", art); if (snd) { snd.innerHTML = ic(m ? "mute" : "vol"); snd.title = m ? "Sound on" : "Sound off"; snd.setAttribute("aria-label", snd.title); } };
     HV.ctl = mountTrailer(host, yt, { sound: wantSound(), loop: true, cover: true, onMuted: show, onPlay: grow, onFail: () => { noTrailer(kind, imdb); closeTile(); } });
     // If it never starts (blocked, slow) nothing was changed, so it is just dropped
-    HV.wait = setTimeout(() => { if (!grown && HV.tile === tile) closeTile(); }, 9000);
+    HV.wait = setTimeout(() => { if (!grown && HV.tile === tile) closeTile(); }, 14000);
   }
   const arm = (t) => {
     clearTimeout(HV.closeT);
     if (HV.tile === t) return;
     closeTile();
     HV.tile = t;
-    HV.timer = setTimeout(() => openTile(t), TV ? 1100 : 550);
+    HV.timer = setTimeout(() => openTile(t), TV ? 250 : 120);  // it loads straight away, the card only grows once the video is clean
   };
   const tileOf = (el) => { const t = el && el.closest && el.closest("a.tile[data-imdb]"); return t && t.parentElement && t.parentElement.classList.contains("row") ? t : null; };
   document.addEventListener("mousemove", (e) => { HV.x = e.clientX; HV.y = e.clientY; }, { passive: true });
@@ -1185,7 +1185,7 @@
   }, { capture: true, passive: true });
   document.addEventListener("pointerdown", (e) => { if (HV.tile && !(e.target.closest && e.target.closest(".tile-snd"))) closeTile(); }, true);
 
-  // The background of a title's page: after 2.5 seconds a trailer fades in behind the title, muted, with a sound button. It pauses when the page
+  // The background of a title's page: a trailer loads at once and fades in behind the title once it is clean, muted, with a sound button. It pauses when the page
   // is scrolled past it or the tab is hidden
   const HERO = { timer: null, ctl: null, io: null, args: null };
   function stopHero() {
@@ -1214,7 +1214,7 @@
         HERO.io = new IntersectionObserver(([en]) => { if (!HERO.ctl) return; en.isIntersecting ? HERO.ctl.play() : HERO.ctl.pause(); }, { threshold: 0.25 });
         HERO.io.observe(box);
       }
-    }, 2500);
+    }, 100);
   }
   document.addEventListener("visibilitychange", () => { if (HERO.ctl) document.hidden ? HERO.ctl.pause() : HERO.ctl.play(); });
 

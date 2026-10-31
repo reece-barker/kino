@@ -119,8 +119,10 @@ public class MainActivity extends Activity {
 
         String start = HOME;
         Uri data = getIntent() != null ? getIntent().getData() : null;
-        if (data != null && isKino(data)) start = data.toString();
-        if (state != null) web.restoreState(state);
+        if (data != null && isKinoLink(data)) start = data.toString();
+        String parked = state != null ? state.getString("parked") : null;
+        if (parked != null && parked.startsWith(HOME)) web.loadUrl(parked);
+        else if (state != null) web.restoreState(state);
         else web.loadUrl(start);
     }
 
@@ -134,7 +136,16 @@ public class MainActivity extends Activity {
 
     private boolean isKino(Uri u) {
         Uri home = Uri.parse(HOME);
-        return u != null && "https".equals(u.getScheme()) && home.getHost() != null && home.getHost().equalsIgnoreCase(u.getHost());
+        return u != null && "https".equals(u.getScheme()) && home.getHost() != null && home.getHost().equalsIgnoreCase(u.getHost())
+                && u.getUserInfo() == null && u.getPort() == -1 && !u.toString().contains("\\");
+    }
+
+    // For links other apps send in. Android and chromium read some odd urls differently (a backslash before an @ for one), so
+    // these are checked as plain text, it has to start with the real address
+    private boolean isKinoLink(Uri u) {
+        if (u == null) return false;
+        String s = u.toString();
+        return (s.equals(HOME.substring(0, HOME.length() - 1)) || s.startsWith(HOME)) && !s.contains("\\") && isKino(u);
     }
 
     private void setupWebView() {
@@ -165,8 +176,13 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 Uri u = req.getUrl();
                 if (isKino(u)) return false;
+                // Only a real tap on the page can leave the app, not a script or a frame inside an embed
+                if (!req.isForMainFrame() || !req.hasGesture()) return true;
+                // And only to normal web links, no intent: or file: or market: tricks
+                String sc = u.getScheme();
+                if (!"https".equals(sc) && !"http".equals(sc)) return true;
                 // Anything that isnt kino (like the imdb or addon links) opens in the normal browser
-                try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (ActivityNotFoundException ignored) { }
+                try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) { }
                 return true;
             }
 
@@ -237,6 +253,9 @@ public class MainActivity extends Activity {
         root.removeView(old);
         old.destroy();
         if (fullView != null) { root.removeView(fullView); fullView = null; fullCallback = null; }
+        // The page that said it was playing is gone, so the screen is allowed to sleep again
+        playing = false;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         web = new WebView(this);
         web.setBackgroundColor(Color.BLACK);
         root.addView(web, 0, lp);
@@ -247,6 +266,7 @@ public class MainActivity extends Activity {
 
     // ---- updating the app itself
     private String pendingUpdate;
+    private final java.util.concurrent.atomic.AtomicBoolean updating = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private void startUpdate(String path) {
         // Android only lets an app install updates once its been allowed to, the first time that setting gets opened
@@ -261,11 +281,15 @@ public class MainActivity extends Activity {
             return;
         }
         pendingUpdate = null;
+        // Two downloads at once would write the same file
+        if (!updating.compareAndSet(false, true)) return;
         String url = Uri.parse(HOME).buildUpon().path(path).build().toString();
         String ua = web.getSettings().getUserAgentString();
         new Thread(() -> {
             try {
                 java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                // No redirects, the cookie would go along to wherever it pointed
+                c.setInstanceFollowRedirects(false);
                 c.setRequestProperty("User-Agent", ua);
                 String cookie = CookieManager.getInstance().getCookie(url);
                 if (cookie != null) c.setRequestProperty("Cookie", cookie);
@@ -276,8 +300,9 @@ public class MainActivity extends Activity {
                 java.io.File dir = new java.io.File(getCacheDir(), "updates");
                 dir.mkdirs();
                 java.io.File apk = new java.io.File(dir, "kino.apk");
+                java.io.File part = new java.io.File(dir, "kino.apk.part");
                 int last = -1;
-                try (java.io.InputStream in = c.getInputStream(); java.io.FileOutputStream out = new java.io.FileOutputStream(apk)) {
+                try (java.io.InputStream in = c.getInputStream(); java.io.FileOutputStream out = new java.io.FileOutputStream(part)) {
                     byte[] buf = new byte[64 * 1024];
                     int n;
                     while ((n = in.read(buf)) > 0) {
@@ -287,6 +312,11 @@ public class MainActivity extends Activity {
                         if (pct != last) { last = pct; js("window.kinoUpdate && window.kinoUpdate({state:'downloading', progress:" + pct + "})"); }
                     }
                 }
+                if (total > 0 && got != total) throw new Exception("The download got cut off, try again");
+                // Android would refuse a wrong one anyway, but say so here instead of a vague installer error
+                String bad = checkUpdate(part);
+                if (bad != null) { part.delete(); throw new Exception(bad); }
+                if (!part.renameTo(apk)) throw new Exception("Couldn't save the update");
                 runOnUiThread(() -> {
                     Uri uri = UpdateProvider.uri(this);
                     Intent i = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
@@ -298,8 +328,37 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 String m = e.getMessage() == null ? "Download failed" : e.getMessage();
                 js("window.kinoUpdate && window.kinoUpdate({state:'error', message:" + JSONObject.quote(m) + "})");
+            } finally {
+                updating.set(false);
             }
         }).start();
+    }
+
+    /** Looks inside the downloaded apk, returns what is wrong with it or null when it is a newer Kino with the same signing key */
+    private String checkUpdate(java.io.File f) {
+        PackageManager pm = getPackageManager();
+        int flags = Build.VERSION.SDK_INT >= 28 ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
+        android.content.pm.PackageInfo got = pm.getPackageArchiveInfo(f.getPath(), flags);
+        if (got == null) return "That isn't a valid app file";
+        if (!getPackageName().equals(got.packageName)) return "That isn't the Kino app";
+        long code = Build.VERSION.SDK_INT >= 28 ? got.getLongVersionCode() : got.versionCode;
+        if (code <= BuildConfig.VERSION_CODE) return "That isn't a newer version";
+        try {
+            android.content.pm.PackageInfo mine = pm.getPackageInfo(getPackageName(), flags);
+            android.content.pm.Signature[] a, b;
+            if (Build.VERSION.SDK_INT >= 28) {
+                if (got.signingInfo == null || mine.signingInfo == null) return "Couldn't check who signed the update";
+                a = got.signingInfo.getApkContentsSigners();
+                b = mine.signingInfo.getApkContentsSigners();
+            } else {
+                a = got.signatures;
+                b = mine.signatures;
+            }
+            if (a == null || b == null || a.length == 0 || !java.util.Arrays.equals(a, b)) return "The update isn't signed with the same key as this app";
+        } catch (Exception e) {
+            return "Couldn't check who signed the update";
+        }
+        return null;
     }
 
     private void showOffline() {
@@ -318,7 +377,8 @@ public class MainActivity extends Activity {
         try {
             DownloadManager.Request r = new DownloadManager.Request(Uri.parse(url));
             String name = URLUtil.guessFileName(url, disposition, mime);
-            r.addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url));
+            String ck = CookieManager.getInstance().getCookie(url);
+            if (ck != null) r.addRequestHeader("Cookie", ck);
             r.addRequestHeader("User-Agent", ua);
             r.setTitle(name);
             r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
@@ -448,13 +508,15 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         Uri data = intent.getData();
-        if (data != null && isKino(data)) web.loadUrl(data.toString());
+        if (data != null && isKinoLink(data)) web.loadUrl(data.toString());
     }
 
     @Override
     protected void onSaveInstanceState(Bundle out) {
         super.onSaveInstanceState(out);
-        web.saveState(out);
+        // While the page is let go for the player its url is about:blank, so keep the real one or coming back would be a black screen
+        if (parkedUrl != null) out.putString("parked", parkedUrl);
+        else web.saveState(out);
     }
 
     @Override
@@ -494,7 +556,11 @@ public class MainActivity extends Activity {
 
         // Downloads the newer app from the server and opens androids installer for it
         @JavascriptInterface
-        public void installUpdate(String path) { runOnUiThread(() -> startUpdate(path)); }
+        public void installUpdate(String path) {
+            // Only the real app download, a page (or an embed frame) cant point it anywhere else
+            if (!"/app".equals(path)) return;
+            runOnUiThread(() -> startUpdate(path));
+        }
 
         // Plays a video in the native player (exoplayer) instead of the web one, the page hands over everything it needs
         @JavascriptInterface

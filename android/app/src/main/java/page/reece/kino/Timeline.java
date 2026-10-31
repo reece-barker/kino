@@ -112,6 +112,13 @@ class Timeline extends View {
     }
 
     @Override
+    protected void onDetachedFromWindow() {
+        // A pending seek must not fire once the player has been closed
+        h.removeCallbacks(commit);
+        super.onDetachedFromWindow();
+    }
+
+    @Override
     public boolean onTouchEvent(MotionEvent e) {
         if (dur <= 0) return false;
         float pad = 9 * dp, frac = Math.max(0, Math.min(1, (e.getX() - pad) / (getWidth() - 2 * pad)));
@@ -124,8 +131,13 @@ class Timeline extends View {
                 cb.onPreview(preview);
                 invalidate();
                 return true;
-            case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
+                // A system gesture or a call took the touch, thats not a seek
+                dragging = false;
+                preview = -1;
+                invalidate();
+                return true;
+            case MotionEvent.ACTION_UP:
                 dragging = false;
                 preview = (long) (frac * dur);
                 commit.run();

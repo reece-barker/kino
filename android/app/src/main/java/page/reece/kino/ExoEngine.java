@@ -57,6 +57,7 @@ class ExoEngine implements Engine {
                         .setTargetBufferBytes(48 * 1024 * 1024).setPrioritizeTimeOverSizeThresholds(false).build() : new DefaultLoadControl())
                 .build();
         player.setAudioAttributes(AudioAttributes.DEFAULT, true);
+        player.setHandleAudioBecomingNoisy(true);  // Pauses when headphones or bluetooth go away instead of blasting out of the speaker
 
         view = new PlayerView(c);
         view.setUseController(false);

@@ -305,6 +305,41 @@
   }
   const closeSheet = () => sheetClose && sheetClose();
 
+  // Taking something out of Continue Watching on a tv: hold OK on the card (or press the remotes menu button), like the
+  // streaming apps do. A quick press still plays it
+  if (TV) {
+    let hold = null, sheetAt = 0;
+    const cwSheet = (el) => {
+      sheetAt = Date.now();
+      const sh = sheet(`<h2>${esc(el.dataset.cwname || "This")}</h2><p class="secondary">Remove it from Continue Watching? It comes back if you start watching it again.</p>
+        <div class="actions end"><button class="btn secondary" id="cwNo">Cancel</button><button class="btn primary" id="cwYes">Remove</button></div>`);
+      const no = $("#cwNo", sh.el); no.onclick = sh.close;
+      setTimeout(() => no.focus(), 60);
+      $("#cwYes", sh.el).onclick = async () => {
+        sh.close();
+        await api("/api/continue/hide", { file_id: el.dataset.cw }).catch(() => {});
+        toast("Removed from Continue Watching");
+        route();
+      };
+    };
+    document.addEventListener("keydown", (e) => {
+      // The key you are still holding when the sheet opens keeps repeating, it must not press a button in it
+      if (e.key === "Enter" && e.repeat && Date.now() - sheetAt < 900) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+      const el = !sheetClose && e.target.closest && e.target.closest("[data-cw]");
+      if (!el) return;
+      if (e.key === "ContextMenu") { e.preventDefault(); return cwSheet(el); }
+      if (e.key !== "Enter") return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (e.repeat || hold) return;
+      hold = { el, fired: false, t: setTimeout(() => { hold.fired = true; cwSheet(el); }, 550) };
+    }, true);
+    document.addEventListener("keyup", (e) => {
+      if (e.key !== "Enter" || !hold) return;
+      const h = hold; hold = null; clearTimeout(h.t);
+      if (!h.fired && document.contains(h.el)) h.el.click();
+    }, true);
+  }
+
   function confirmSheet(title, text, action, danger = true) {
     return new Promise((res) => {
       let done = false;
@@ -923,8 +958,8 @@
     const logo = t.logo && t.background && opts.progress == null ? `<img class="logo-over" loading="lazy" decoding="async" src="${img(t.logo, 1, LITE ? 240 : 480)}" alt="" data-fallback="hide">` : "";
     const bar = opts.progress != null && opts.progress > 0 ? `<div class="bar"><i style="width:${Math.min(100, opts.progress * 100)}%"></i></div>` : "";
     const href = opts.href || (t.external ? extHref(t) : `#/title/${t.id}`);
-    const x = opts.hide ? `<button class="tile-x" data-hide="${esc(opts.hide)}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
-    return `<a class="tile landscape" href="${href}" ${opts.play ? `data-play="${esc(opts.play)}" data-tid="${esc(t.id)}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
+    const x = opts.hide && !TV ? `<button class="tile-x" data-hide="${esc(opts.hide)}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
+    return `<a class="tile landscape" href="${href}" ${TV && opts.hide ? `data-cw="${esc(opts.hide)}" data-cwname="${esc(t.name)}"` : ""} ${opts.play ? `data-play="${esc(opts.play)}" data-tid="${esc(t.id)}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
       <div class="cap">${esc(t.name)}</div><div class="sub">${esc(opts.sub || t.genres?.slice(0, 2).join(", ") || t.releaseInfo || "")}</div></a>`;
   }
   const metaLine = (t) => [t.kind === "video" ? "" : t.kind === "series" ? "TV Show" : "Movie", t.releaseInfo, t.genres?.slice(0, 2).join(", "), t.runtime, t.rating ? `IMDb ${t.rating}` : ""].filter(Boolean);
@@ -953,9 +988,9 @@
         ${heroes.length > 1 ? `<div class="hero-dots glass" role="tablist">${heroes.map((t, i) => `<button role="tab" aria-selected="${i === 0}" aria-label="Show ${esc(t.name)}" data-dot="${i}"><i></i></button>`).join("")}</div>` : ""}
       </section>
       <main class="page under-hero" style="padding-top:8px">
-        ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${esc(s.more)}">See All</a>` : ""}</h2>
+        ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${TV && s.style === "continue" ? ` <span class="from">Hold OK to remove</span>` : ""}${s.more ? ` <a href="${esc(s.more)}">See All</a>` : ""}</h2>
           <div class="row ${s.style === "poster" ? "posters" : "wide"}" ${s.next != null ? `data-shelf="${esc(s.id)}" data-next="${esc(s.next)}" data-style="${esc(s.style)}"` : ""} ${s.pending ? "data-pending" : ""}>${s.pending ? Array.from({ length: 8 }, () => `<div class="sk ${s.style === "poster" ? "sk-poster" : "sk-wide"}"></div>`).join("") : ""}${s.items.map((t) => s.style === "poster" ? posterTile(t)
-            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: TV ? null : t.file_id, href: t.stream ? extHref(t) : undefined,
+            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
             : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster", s.more === "#/shows" ? "All TV Shows" : "All Movies") : ""}</div></section>`).join("")}
       </main>`;
@@ -1067,7 +1102,7 @@
           : `<div class="hero-meta">${metaLine(t).map((m, j) => `<span class="${j ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
           ${t.description ? `<p class="hero-desc">${esc(t.description)}</p>` : ""}`}
         <div class="actions">
-          ${t.cont ? `<button class="btn primary" data-heroresume="${esc(t.file_id)}" data-tid="${esc(t.id || "")}" ${tab}>${ic("play")} ${t.next_episode ? "Play" : "Resume"}${t.season != null ? " " + esc(epLabel(t.season, t.episode)) : ""}</button>`
+          ${t.cont ? `<button class="btn primary" data-heroresume="${esc(t.file_id)}" data-tid="${esc(t.id || "")}" ${TV ? `data-cw="${esc(t.file_id)}" data-cwname="${esc(t.name)}"` : ""} ${tab}>${ic("play")} ${t.next_episode ? "Play" : "Resume"}${t.season != null ? " " + esc(epLabel(t.season, t.episode)) : ""}</button>`
             : `<button class="btn primary" data-heroplay="${esc(t.id)}" ${tab}>${ic("play")} Play</button>`}
           <a class="btn secondary glass-btn-lg" href="${link}" ${tab}>More Info</a>
           ${t.cont && !TV ? `<button class="round-btn" data-hide="${esc(t.file_id)}" ${tab} aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}

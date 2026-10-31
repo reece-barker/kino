@@ -370,6 +370,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         bBack.setOnClickListener(v -> { if (live) switchChannel(-1); else seekTo(Math.max(0, pos() - 10)); bump(); });
         bFwd.setOnClickListener(v -> { if (live) switchChannel(1); else seekTo(pos() + 10); bump(); });
         if (live) {
+            bSpeed.setVisibility(View.GONE);  // a live stream cant be sped up, the web player hides it too
             tlRow.setVisibility(View.GONE);
             bBack.setImageResource(R.drawable.ic_back);
             bBack.setContentDescription("Previous channel");
@@ -970,7 +971,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                 }
                 if (hls) item("Pick audio on the Kino web player when the TV converts", false, null);
                 // Audio sync: resync on the spot, and for files that go through the server, shift the sound by hand
-                item("Resync Audio", false, () -> {
+                item("Resync Now", false, () -> {
                     if (hls) { relaunchLoading("Resyncing"); startHls(pos()); } else seekTo(Math.max(0, pos() - 0.05));
                     toast("Audio resynced");
                 });
@@ -1327,7 +1328,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
                 case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
                 case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD: if (live) return true; seekTo(pos() + 10); showControls(line); return true;
                 case KeyEvent.KEYCODE_MEDIA_REWIND:
-                case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD: seekTo(Math.max(0, pos() - 10)); showControls(line); return true;
+                case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD: if (live) return true; seekTo(Math.max(0, pos() - 10)); showControls(line); return true;
                 case KeyEvent.KEYCODE_MEDIA_STOP: done(); return true;
             }
         }

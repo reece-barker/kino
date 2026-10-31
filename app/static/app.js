@@ -21,7 +21,7 @@
     refresh: "M12 5V2L8 6l4 4V7a5 5 0 11-5 5H5a7 7 0 107-7z",
     check: "M9 16.2l-3.5-3.5L4 14.2l5 5 11-11-1.5-1.4z",
     plus: "M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z",
-    link: "M10.6 13.4a1 1 0 001.4 1.4l3.5-3.5a3 3 0 00-4.2-4.2l-1.8 1.7 1.4 1.4 1.8-1.7a1 1 0 011.4 1.4l-3.5 3.5zm2.8-2.8a1 1 0 00-1.4-1.4l-3.5 3.5a3 3 0 004.2 4.2l1.8-1.7-1.4-1.4-1.8 1.7a1 1 0 01-1.4-1.4l3.5-3.5z",
+    link: "M3.9 12c0-1.7 1.4-3.1 3.1-3.1h4V7H7c-2.8 0-5 2.2-5 5s2.2 5 5 5h4v-1.9H7c-1.7 0-3.1-1.4-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.7 0 3.1 1.4 3.1 3.1s-1.4 3.1-3.1 3.1h-4V17h4c2.8 0 5-2.2 5-5s-2.2-5-5-5z",
     up: "M2 10h4v11H2zm6 11h9.2c.9 0 1.6-.6 1.9-1.4l2.6-7.2c.3-1-.4-2.1-1.5-2.1H14l.9-4.5c.2-.9-.2-1.8-1-2.2L13 3 8 9v12z",
     down: "M22 14h-4V3h4zM16 3H6.8c-.9 0-1.6.6-1.9 1.4L2.3 11.6c-.3 1 .4 2.1 1.5 2.1H10l-.9 4.5c-.2.9.2 1.8 1 2.2l.9.6 5-6V3z",
     love: "M1 11h3v9H1zm5 9h7.4c.8 0 1.4-.5 1.7-1.2l2-5.6c.3-.9-.4-1.9-1.4-1.9H12l.7-3.6c.1-.7-.2-1.4-.8-1.7L11 5.6 6 11v9zm8.6-14.7L19 1l.6.4c.6.4.9 1.1.8 1.7L19.8 6H23c1 0 1.7 1 1.4 1.9l-1.7 4.8-2-2 .6-1.6H16.6z",
@@ -2618,7 +2618,7 @@
         const b = pl.v.buffered, t = pl.v.currentTime;
         let ahead = 0;
         for (let i = 0; i < b.length; i++) if (t >= b.start(i) - 0.3 && t <= b.end(i)) ahead = b.end(i) - t;
-        if (pl.v.paused) { pl.liveStale = true; return; }
+        if (pl.v.paused && pl.v.readyState > 0) { pl.liveStale = true; return; }
         // Most of these are blips so it quietly goes again a few times (the playlist at the live edge if theres nothing
         // left to play) before saying the channel is broken, the count starts over after a minute without any
         const now = Date.now();
@@ -2632,8 +2632,9 @@
         spinner(false);
         api(`/api/live/${pl.info.id}/bad`, {}).catch(() => {});
         showMsg("This channel isn't working", "It might be off air right now, or the link stopped working.",
-          `${LIVE_NOW.list.length > 1 ? `<button class="btn primary small" id="lvNext">Next Channel</button>` : ""}<button class="btn secondary small" id="lvAgain">Try Again</button>`);
+          `${LIVE_NOW.list.length > 1 ? `<button class="btn primary small" id="lvNext">Next Channel</button>` : ""}<button class="btn secondary small" id="lvAgain">Try Again</button><button class="btn secondary small" id="lvClose">Close</button>`);
         const n = $("#lvNext"); if (n) { n.onclick = () => switchLive(1); n.focus(); }
+        $("#lvClose").onclick = () => closePlayer();
         $("#lvAgain").onclick = () => tune();
       });
       h.on(Hls.Events.MANIFEST_PARSED, () => pl.v.play().catch(() => {}));
@@ -3928,7 +3929,10 @@
     if (!info || !info.intro) { btn.hidden = true; return; }
     const p = pos(), inIntro = p >= info.intro.start - 1 && p < info.intro.end - 2;
     if (inIntro && info.prefs && info.prefs.skip_intro && !pl.introSkipped) { pl.introSkipped = true; seekTo(info.intro.end); toast("Intro skipped"); return; }
+    const was = btn.hidden;
     btn.hidden = !inIntro;
+    // On a tv the remote lands on Skip Intro as it appears, so OK skips it (like the app), unless a menu is open
+    if (TV && was && inIntro && !$(".player .menu:not([hidden])")) btn.focus({ preventScroll: true });
   }
 
   // Up next card with a countdown like netflix, during the credits or the last 25 seconds
@@ -3946,6 +3950,7 @@
       <div class="un-body"><div class="lbl">Next episode${auto ? ` in <b id="unLeft">${left}</b>` : ""}</div><div class="nm">${esc(epLabel(n.season, n.episode))}${n.name ? "  " + esc(nice(n.name)) : ""}</div>
       <div class="actions"><button class="btn primary small" id="unPlay">${ic("play")} Play Now</button><button class="btn secondary small" id="unHide">${auto ? "Cancel" : "Hide"}</button></div></div>`;
     box.hidden = false;
+    if (TV && !$(".player .menu:not([hidden])")) $("#unPlay").focus({ preventScroll: true });
     const go = () => { clearInterval(pl.upNextT); box.hidden = true; saveProgress(); playNext(n); };
     $("#unPlay").onclick = go;
     $("#unHide").onclick = () => { clearInterval(pl.upNextT); box.hidden = true; };
@@ -4178,6 +4183,16 @@
   }
   ["mousemove", "pointerdown", "keydown"].forEach((ev) => pl.el.addEventListener(ev, wakeUi));
 
+  // Holding left or right on a tv remote speeds up the longer it is held (10s, then 30s, 60s and 2 minutes at a time), same as the app. A mouse or keyboard
+  // keeps the plain 10 seconds
+  const seekStep = (dir) => {
+    if (!TV) return dir * 10;
+    const now = performance.now();
+    pl.seekN = now - (pl.seekAt || 0) < 600 ? (pl.seekN || 0) + 1 : 0;
+    pl.seekAt = now;
+    return dir * 10 * (pl.seekN < 3 ? 1 : pl.seekN < 8 ? 3 : pl.seekN < 16 ? 6 : 12);
+  };
+
   document.addEventListener("keydown", (e) => {
     if (pl.el.hidden || e.target.tagName === "INPUT" || sheetClose) return;
     const onControl = TV && e.target.closest && e.target.closest(".player-row, .menu, .up-next, .player-top, .skip-intro");
@@ -4186,8 +4201,12 @@
     // Live tv: left and right flick between channels and they are the only keys that do, up and down used to change channel
     // when the buttons were hiden which kept happening by acident
     else if (pl.info && pl.info.live && (e.key === "ArrowLeft" || e.key === "ArrowRight") && !onControl) { e.preventDefault(); switchLive(e.key === "ArrowLeft" ? -1 : 1); }
-    else if (e.key === "ArrowLeft" && e.target !== scrub && !onControl) seekTo(pos() - 10);
-    else if (e.key === "ArrowRight" && e.target !== scrub && !onControl) seekTo(pos() + 10);
+    else if (e.key === "ArrowLeft" && e.target !== scrub && !onControl) seekTo(pos() + seekStep(-1));
+    else if (e.key === "ArrowRight" && e.target !== scrub && !onControl) seekTo(pos() + seekStep(1));
+    else if (e.key === "j" && !(pl.info && pl.info.live)) seekTo(pos() - 10);
+    else if (e.key === "l" && !(pl.info && pl.info.live)) seekTo(pos() + 10);
+    else if (e.key === "c" && !$("#pSubs").hidden) $("#pSubs").click();
+    else if (/^[0-9]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey && total() && !(pl.info && pl.info.live)) seekTo(total() * Number(e.key) / 10);
     else if (e.key === "f") $("#pFull").click();
     else if (e.key === "m") $("#pMute").click();
     else if (e.key === "s" && !$("#skipIntro").hidden) $("#skipIntro").click();

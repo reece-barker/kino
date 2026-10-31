@@ -131,6 +131,17 @@
   // Set when running inside the kino android app, and on android tv / fire tv
   const ANDROID = /KinoAndroid/.test(navigator.userAgent) && !!window.KinoAndroid;
   const TV = /KinoTV/.test(navigator.userAgent) || /[?&]tv=1/.test(location.search);
+  // Added to the home screen it is an app, so pinch and double tap zoom are switched off like in the Android app. In a normal browser
+  // tab pinching still works, zooming is a real need there. Safari ignores user-scalable=no a lot of the time so it also stops its
+  // own gesture events and any two finger move
+  const STANDALONE = navigator.standalone === true || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+  if (STANDALONE) {
+    const vp = document.querySelector('meta[name="viewport"]');
+    if (vp && !/user-scalable/.test(vp.content)) vp.content += ", maximum-scale=1, user-scalable=no";
+    document.documentElement.classList.add("standalone");
+    for (const t of ["gesturestart", "gesturechange", "gestureend"]) document.addEventListener(t, (e) => e.preventDefault(), { passive: false });
+    document.addEventListener("touchmove", (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+  }
   // TVs and low memory devices get a lighter version: smaller pictures, no glass blur, fewer effects. Everything else is untouched
   const LITE = TV || (navigator.deviceMemory && navigator.deviceMemory <= 2);
   if (LITE) document.documentElement.classList.add("lite");

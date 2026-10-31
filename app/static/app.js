@@ -3181,6 +3181,8 @@
           ${a.config_required ? `<span class="badge warn">Needs Setting Up</span>` : ""}</div>
         ${a.uses.streams ? `<label class="set-row"><span><b>Source Priority</b><span class="secondary">After your TorBox copies and sources that played fine before, Play tries this addon's sources before the rest. First goes before Second and so on</span></span>
           <select class="plain" data-aprio="${a.id}" aria-label="Source priority for ${esc(a.name)}">${[["0", "Normal"], ["1", "First"], ["2", "Second"], ["3", "Third"], ["4", "Fourth"]].map(([v, l]) => `<option value="${v}" ${Number(a.prio || 0) === Number(v) ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
+        ${a.uses.streams ? `<label class="set-row"><span><b>Play Directly</b><span class="secondary">Browsers fetch this addon's videos themselves instead of through the server. Takes the load off the server and the addon sees each viewer's own address, but it doesn't work if the addon ties links to one address, and the app on TVs and phones still goes through the server</span></span>
+          <input type="checkbox" class="switch" data-adir="${a.id}" ${a.direct ? "checked" : ""} aria-label="Play ${esc(a.name)} directly"></label>` : ""}
         ${a.config_required ? `<div class="note">This addon has to be set up on its own website first. Paste the link it gives you after setting it up.</div>` : ""}
         ${onlySearch(a) ? `<div class="note">${ic("info")} This addon only has search catalogs, so its videos show up in Search but it has nothing to put on Home. In the addon's own settings add your cookies, a playlist or a channel as a catalog, then install the new link it gives you.</div>` : ""}
         <div class="addon-foot">
@@ -3201,6 +3203,9 @@
       try { const x = await api("/api/admin/addons", { url: $("#addonUrl").value }); toast(`${x.name || "Addon"} installed`); ME.features = null; drawAddons(); }
       catch (er) { $("#addonErr").textContent = er.message; b.disabled = false; }
     };
+    $$("[data-adir]", box).forEach((c) => (c.onchange = async () => {
+      try { await api(`/api/admin/addons/${c.dataset.adir}`, { direct: c.checked }, "PUT"); toast(c.checked ? "Browsers play it directly" : "Back through the server"); } catch (er) { toast(er.message, 5000); c.checked = !c.checked; }
+    }));
     $$("[data-aprio]", box).forEach((c) => (c.onchange = async () => {
       try { await api(`/api/admin/addons/${c.dataset.aprio}`, { prio: Number(c.value) }, "PUT"); toast(c.value === "0" ? "Back to the normal order" : `Its sources are tried ${["", "first", "second", "third", "fourth"][Number(c.value)]}`); } catch (er) { toast(er.message, 5000); }
     }));
@@ -3468,6 +3473,7 @@
 
   async function drawServer() {
     const s = await api("/api/admin/stats");
+    const up = await api("/api/admin/upstream").catch(() => null);
     const b = $("#srvBody");
     if (!b) return;
     const h = s.hist, last = h[h.length - 1] || { cpu: 0, mem: 0, rx: 0, tx: 0, rd: 0, wr: 0 };
@@ -3483,6 +3489,12 @@
         <div class="legend"><span><i style="background:#64d2ff"></i>In ${rate(last.rx)}</span><span><i style="background:#bf5af2"></i>Out ${rate(last.tx)}</span></div></section>
       <section class="card span-3"><h3>Disk Activity</h3><div class="big" style="font-size:26px">${rate(last.rd + last.wr)}</div>${spark(h.map((x) => x.rd + x.wr), ioMax, "#ff9f0a")}
         <div class="legend"><span>Read ${rate(last.rd)}</span><span>Write ${rate(last.wr)}</span></div></section>
+      ${up ? `<section class="card span-12"><h3>Source Hosts</h3>
+        <div class="note" style="margin:2px 0 10px">What the server asked other hosts for in the last hour. A host that says "too many requests" is left alone for as long as it asks.
+          ${up.merged ? `${up.merged} identical request${up.merged === 1 ? " was" : "s were"} merged into one. ` : ""}${up.stale ? `${up.stale} time${up.stale === 1 ? "" : "s"} an older answer was used. ` : ""}${up.ips.length ? `Leaving from ${up.ips.length} addresses.` : "Leaving from one address (set OUTBOUND_IPS to spread it)."}</div>
+        ${up.hosts.length ? `<div class="list">${up.hosts.map((h) => `<div class="li"><span class="grow"><b>${esc(h.host)}</b> <span class="secondary">${h.list} data, ${h.check} checks, ${h.play} video · ${h.open} open now, most at once ${h.peak}</span>
+          ${h.last.length ? `<span class="addon-desc secondary">Said too many requests ${h.last.map((l) => `${l.ago < 90 ? l.ago + "s" : Math.round(l.ago / 60) + " min"} ago with ${l.open} open and ${l.recent} requests in the minute before`).join(", ")}</span>` : ""}</span>
+          <span class="r">${h.wait ? `<span class="badge warn">Waiting ${h.wait}s</span>` : h.limited ? `<span class="badge warn">${h.limited} limited</span>` : `<span class="badge">Fine</span>`}</span></div>`).join("")}</div>` : `<div class="secondary">Nothing asked yet.</div>`}</section>` : ""}
       ${storageCard("Storage Box", s.disks.box, "blue", "The watchdog reconnects it automatically within a minute.")}
       ${storageCard("VPS Disk", s.disks.vps, "")}
       <section class="card span-8"><h3>Busiest Processes</h3><div class="list">${s.procs.map((p) => `<div class="li"><span class="grow">${esc(p.name)} <span class="tertiary">${esc(p.user || "")}</span></span><span class="r">${p.cpu.toFixed(1)}% CPU</span><span class="r">${bytes(p.mem)}</span></div>`).join("")}</div></section>
@@ -3815,7 +3827,10 @@
       setupDeviceButtons();
       pl.mode = "direct";
       loadStep("Connecting to the source");
-      pl.v.src = info.src;
+      // An addon set to Direct Play gives a link of its own that this device fetches itself (the server isn't carrying the video), if that
+      // doesn't play it goes back through the server below
+      let viaCdn = !!info.cdn;
+      pl.v.src = info.cdn || info.src;
       const from = opts.from != null ? opts.from : info.resume || 0;
       pl.v.addEventListener("loadedmetadata", () => { if (pl.info !== info || my !== PLAY_N) return; if (from && from < pl.v.duration - 10) pl.v.currentTime = from; }, { once: true });
       let retried = false;
@@ -3823,6 +3838,15 @@
         if (pl.info !== info || my !== PLAY_N) return;
         const code = pl.v.error && pl.v.error.code;
         if (code === 1) { pl.v.addEventListener("error", onErr, { once: true }); return; }   // aborted on purpose, not a real problem
+        if (viaCdn) {
+          viaCdn = false;
+          const at0 = pl.v.currentTime || (opts.from || 0);
+          pl.v.addEventListener("error", onErr, { once: true });
+          pl.v.src = info.src;
+          pl.v.addEventListener("loadedmetadata", () => { if (pl.info !== info || my !== PLAY_N) return; if (at0) pl.v.currentTime = at0; }, { once: true });
+          pl.v.play().catch(() => {});
+          return;
+        }
         // Online sources often stall on the first try, one more go before saying it won't play
         // A format this browser can't play, or still failing after the retry: the next source if there is one
         // It was playing fine and then broke, nearly always right after a seek: the same source gets another go from

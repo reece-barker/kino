@@ -239,6 +239,8 @@ def migrate():
     for c in ("items", "title_key", "image_key"):
         if c not in ecols:
             d.q(f"ALTER TABLE embed_sources ADD COLUMN {c} TEXT")  # where the list is in the JSON and which fields to use
+    if "direct" not in [r["name"] for r in d.q("PRAGMA table_info(addons)")]:
+        d.q("ALTER TABLE addons ADD COLUMN direct INTEGER DEFAULT 0")  # 1 = viewers' own devices fetch this addon's videos (web player)
     if "src_prio" not in [r["name"] for r in d.q("PRAGMA table_info(addons)")]:
         d.q("ALTER TABLE addons ADD COLUMN src_prio INTEGER DEFAULT 0")  # 1 = its sources are tried first, 2 next, and so on, 0 = normal
     if "device" not in [r["name"] for r in d.q("PRAGMA table_info(sessions)")]:
@@ -1285,7 +1287,7 @@ async def unexpected_error(request: Request, exc: Exception):
     more = f"{type(exc).__name__}: {str(exc)[:160]}" if admin_user(request) else type(exc).__name__
     return JSONResponse({"detail": f"Something went wrong on the server ({more})"}, status_code=500)
 
-CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
+CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https:; style-src 'self' 'unsafe-inline'; "
        "script-src 'self'; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-src https:; frame-ancestors 'none'; "
        "base-uri 'none'; form-action 'self'")
 
@@ -3669,6 +3671,94 @@ async def img(u: str, trim: int = 0, w: int = 0):
 # Kino talks the stremio addon protocol (github.com/Stremio/stremio-addon-sdk/blob/master/docs/protocol.md)
 # and uses addons for catalogs, metadata, subtitles and watch activity events. Stream resources are never used
 
+# ---------------------------------------------------------------- limits on what is asked of other hosts
+# Addons and the sources they point at can answer "too many requests" (429), and everything the server asks leaves from one address, so a
+# few people at once add up. These keep it down: the same request asked twice at once is made once, only a few at a time per host, a host
+# that says it is busy is left alone for as long as it asks (Retry-After) and a bit longer each time it happens again, an old answer is used
+# when a host can't give a new one, and the stats (Server page) show what is going on. OUTBOUND_IPS (comma separated addresses of this
+# machine) spreads the requests over more than one address, each source sticks to one so a link tied to an address keeps working
+UPSTREAM_PER_HOST = max(1, int(env("UPSTREAM_PER_HOST", "3")))
+OUTBOUND_IPS = [x.strip() for x in env("OUTBOUND_IPS", "").split(",") if x.strip()]
+UP = {}
+INFLIGHT = {}
+UP_SAVED = {"merged": 0, "stale": 0}
+
+
+class UpHost:
+    def __init__(self):
+        self.sem = asyncio.Semaphore(UPSTREAM_PER_HOST)
+        self.blocked_until = 0.0
+        self.strikes = 0
+        self.last_429 = 0.0
+        self.events = deque(maxlen=2000)  # (when, kind, status)
+        self.active = 0
+        self.peak = 0
+        self.limited_at = []  # (when, open, requests in the minute before)
+
+
+def up_host(host):
+    return UP.get(host) or UP.setdefault(host, UpHost())
+
+
+def retry_after(v):
+    v = (v or "").strip()
+    if v.isdigit():
+        return min(600, int(v))
+    try:
+        from email.utils import parsedate_to_datetime
+        return min(600, max(0, parsedate_to_datetime(v).timestamp() - time.time()))
+    except Exception:
+        return None
+
+
+def up_note(host, kind, status, retry=None):
+    """Remembers what a host answered. kind is list (addon data), check (is a source alive) or play (the video itself)"""
+    st = up_host(host)
+    now = time.time()
+    st.events.append((now, kind, status))
+    if status == 429:
+        HOST_BUSY[host] = now
+        if now - st.last_429 > 600:
+            st.strikes = 0
+        st.strikes += 1
+        st.last_429 = now
+        wait = retry or min(300, 15 * 2 ** (st.strikes - 1))
+        st.blocked_until = max(st.blocked_until, now + wait)
+        recent = sum(1 for t, _, _ in st.events if now - t < 60)
+        st.limited_at.append((now, st.active, recent))
+        del st.limited_at[:-20]
+        log.info("kino: %s said too many requests (429), left alone for %ds (%d requests in the last minute, %d open)", logsafe(host), wait, recent, st.active)
+
+
+def up_wait(host):
+    st = UP.get(host)
+    return max(0.0, st.blocked_until - time.time()) if st else 0.0
+
+
+def up_stats():
+    now = time.time()
+    rows = []
+    for host, st in UP.items():
+        ev = [e for e in st.events if now - e[0] < 3600]
+        if not ev and st.blocked_until < now:
+            continue
+        kinds = collections.Counter(k for _, k, _ in ev)
+        rows.append({"host": host, "list": kinds.get("list", 0), "check": kinds.get("check", 0), "play": kinds.get("play", 0),
+                     "limited": sum(1 for _, _, s_ in ev if s_ == 429), "failed": sum(1 for _, _, s_ in ev if s_ >= 500 or s_ == 0),
+                     "wait": int(max(0, st.blocked_until - now)), "open": st.active, "peak": st.peak,
+                     "last": [{"ago": int(now - t), "open": a, "recent": r_} for t, a, r_ in st.limited_at[-3:]]})
+    rows.sort(key=lambda r_: -(r_["limited"] * 1000 + r_["list"] + r_["check"] + r_["play"]))
+    return {"hosts": rows[:30], "merged": UP_SAVED["merged"], "stale": UP_SAVED["stale"], "ips": OUTBOUND_IPS, "per_host": UPSTREAM_PER_HOST}
+
+
+def ac(key="", **kw):
+    """An httpx client. With OUTBOUND_IPS it leaves from one of those addresses, picked by key so the same source always uses the same one"""
+    if OUTBOUND_IPS and "transport" not in kw:
+        ip = OUTBOUND_IPS[int(hashlib.sha1(str(key).encode()).hexdigest(), 16) % len(OUTBOUND_IPS)]
+        kw["transport"] = httpx.AsyncHTTPTransport(local_address=ip)
+    return httpx.AsyncClient(**kw)
+
+
 ADDON_CACHE = {}  # url -> (time, data)
 SUB_LINKS = {}    # (file id, sub id) -> subtitle url from an addon
 OSHASH = {}       # file id -> opensubtitles hash
@@ -3723,21 +3813,32 @@ async def pinned_request(client, method, url, headers=None, local=False):
     return client.build_request(method, u._replace(netloc=netloc).geturl(), headers=h, extensions={"sni_hostname": host})
 
 
-async def safe_fetch(url, max_bytes=5 * 1024**2, timeout=12, allow_http=False):
+async def safe_fetch(url, max_bytes=5 * 1024**2, timeout=12, allow_http=False, kind="list"):
     for _ in range(4):
         u = urlparse(url)
         if u.scheme != "https" and not (u.scheme == "http" and (allow_http or ADDON_ALLOW_PRIVATE)):
             raise HTTPException(400, "Only https addresses are supported")
         if not u.hostname:
             raise HTTPException(400, "That isn't a valid address")
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False,
-                                     headers={"User-Agent": "Kino (Stremio addon client)"}) as c:
+        host = u.hostname
+        st = up_host(host)
+        async with ac(url, timeout=timeout, follow_redirects=False, headers={"User-Agent": "Kino (Stremio addon client)"}) as c:
             req = await pinned_request(c, "GET", url)
-            r = await c.send(req, stream=True)
+            st.active += 1
+            st.peak = max(st.peak, st.active)
             try:
+                r = await c.send(req, stream=True)
+            except BaseException:
+                st.active -= 1
+                up_note(host, kind, 0)
+                raise
+            try:
+                up_note(host, kind, r.status_code, retry_after(r.headers.get("retry-after")))
                 if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                     url = urljoin(url, r.headers["location"])  # Each redirect gets the same private network check
                     continue
+                if r.status_code == 429:
+                    raise HTTPException(429, f"{host} is busy (it answered 429, too many requests)")
                 if r.status_code != 200:
                     raise HTTPException(502, f"The addon answered with an error ({r.status_code})")
                 buf = bytearray()
@@ -3747,6 +3848,7 @@ async def safe_fetch(url, max_bytes=5 * 1024**2, timeout=12, allow_http=False):
                         raise HTTPException(502, "The addon sent back too much data")
                 return bytes(buf), r.headers.get("content-type", "")
             finally:
+                st.active -= 1
                 await r.aclose()
     raise HTTPException(502, "Too many redirects")
 
@@ -3755,13 +3857,48 @@ async def fetch_json(url, ttl=3600, timeout=12):
     hit = ADDON_CACHE.get(url)
     if hit and time.time() - hit[0] < ttl:
         return hit[1]
-    data, _ = await safe_fetch(url, timeout=timeout)
+    # The same request already on its way (twenty people opening the same title) is waited for instead of made again
+    fl = INFLIGHT.get(url)
+    if fl is None:
+        fl = asyncio.ensure_future(fetch_json_now(url, timeout, hit))
+        INFLIGHT[url] = fl
+        fl.add_done_callback(lambda f, u=url: INFLIGHT.pop(u, None))
+    else:
+        UP_SAVED["merged"] += 1
+    return await asyncio.shield(fl)
+
+
+async def fetch_json_now(url, timeout, old):
+    host = urlparse(url).hostname or ""
+    st = up_host(host)
     try:
-        j = json.loads(data)
-    except ValueError:
-        raise HTTPException(502, "The addon didn't send valid JSON")
+        async with st.sem:  # a few at a time per host
+            for attempt in (0, 1):
+                wait = up_wait(host)
+                if wait > 8:
+                    raise HTTPException(429, f"{host} is busy (too many requests), it needs {int(wait)} seconds")
+                if wait:
+                    await asyncio.sleep(wait)
+                try:
+                    data, _ = await safe_fetch(url, timeout=timeout)
+                    break
+                except HTTPException as e:
+                    if e.status_code == 429 and attempt == 0 and up_wait(host) <= 8:
+                        continue  # it said wait a moment, so one more go after that
+                    raise
+        try:
+            j = json.loads(data)
+        except ValueError:
+            raise HTTPException(502, "The addon didn't send valid JSON")
+    except HTTPException:
+        # An old answer beats none: a host that is busy or down still has what it said last time
+        if old:
+            UP_SAVED["stale"] += 1
+            return old[1]
+        raise
     if len(ADDON_CACHE) > 2000:
-        ADDON_CACHE.clear()
+        for k in sorted(ADDON_CACHE, key=lambda k: ADDON_CACHE[k][0])[:500]:  # the oldest go, the rest stay (it used to be emptied)
+            ADDON_CACHE.pop(k, None)
     ADDON_CACHE[url] = (time.time(), j)
     return j
 
@@ -3776,7 +3913,7 @@ def addon_base(url):
 
 
 def addon_rows(enabled_only=True):
-    rows = db().q("SELECT id, url, manifest, enabled, hidden, src_prio FROM addons " + ("WHERE enabled = 1 " if enabled_only else "") + "ORDER BY id")
+    rows = db().q("SELECT id, url, manifest, enabled, hidden, src_prio, direct FROM addons " + ("WHERE enabled = 1 " if enabled_only else "") + "ORDER BY id")
     out = []
     for r in rows:
         try:
@@ -3784,7 +3921,7 @@ def addon_rows(enabled_only=True):
         except ValueError:
             continue
         out.append({"id": r["id"], "url": r["url"], "base": r["url"][: -len("/manifest.json")], "m": m,
-                    "enabled": bool(r["enabled"]), "hidden": json.loads(r["hidden"] or "[]"), "prio": int(r["src_prio"] or 0)})
+                    "enabled": bool(r["enabled"]), "hidden": json.loads(r["hidden"] or "[]"), "prio": int(r["src_prio"] or 0), "direct": bool(r["direct"])})
     return out
 
 
@@ -3832,7 +3969,7 @@ def manifest_summary(a):
                      "search": any(e.get("name") == "search" for e in c.get("extra") or []) or "search" in (c.get("extraSupported") or []),
                      "home": not needs, "shown": f"{c.get('type')}/{c.get('id')}" not in a["hidden"],
                      "problem": CAT_ERR.get(catalog_url(a, c)) if not needs else None})
-    return {"id": a["id"], "url": a["url"], "enabled": a["enabled"], "prio": a.get("prio", 0), "name": m.get("name") or m.get("id"),
+    return {"id": a["id"], "url": a["url"], "enabled": a["enabled"], "prio": a.get("prio", 0), "direct": a.get("direct", False), "name": m.get("name") or m.get("id"),
             "version": m.get("version"), "description": m.get("description"), "logo": https_url(m.get("logo")),
             "uses": {"catalogs": bool(cats), "meta": "meta" in res, "subtitles": "subtitles" in res,
                      "events": bool(res & {"player", "library"}), "streams": "stream" in res},
@@ -4218,6 +4355,8 @@ async def addons_edit(aid: int, request: Request, admin=Depends(require_admin)):
         raise HTTPException(404, "That addon isn't installed")
     if "enabled" in b:
         db().q("UPDATE addons SET enabled = ? WHERE id = ?", (1 if b["enabled"] else 0, aid))
+    if "direct" in b:
+        db().q("UPDATE addons SET direct = ? WHERE id = ?", (1 if b["direct"] else 0, aid))
     if "prio" in b:
         try:
             pr = max(0, min(9, int(b["prio"])))
@@ -4777,7 +4916,8 @@ async def stream_file_info(sid, p, request):
                 "default_audio": a["n"] if a else 0, "subs": [], "badges": badges(pr), "duration": pr.get("duration"),
                 "download": None if is_hls(r["url"]) else f"/api/rstream/{sid}?dl=1", **common}
     ext = Path(urlparse(r["url"]).path).suffix.lower()
-    return {"id": sid, "stream": True, "name": r["name"], "src": f"/api/rstream/{sid}", "direct": True,
+    cdn = await direct_link(r)  # only for addons set to Direct Play, the web player uses it and falls back to src, the app always uses src
+    return {"id": sid, "stream": True, "name": r["name"], "src": f"/api/rstream/{sid}", "cdn": cdn, "direct": True,
             "video": {"codec": None}, "audio": [], "default_audio": 0, "subs": [], "badges": [],
             "download": f"/api/rstream/{sid}?dl=1", "resume": w[0]["pos"] if w and not w[0]["watched"] else 0,
             "season": cur["season"] if cur else None, "episode": cur["episode"] if cur else None,
@@ -4814,10 +4954,15 @@ async def tb_open(url, headers):
         raise
 
 
-async def pd_open(url, headers):
+async def pd_open(url, headers, kind="play"):
     """Opens a public domain video, following redirects but only ever to public domain hosts"""
-    client = httpx.AsyncClient(timeout=httpx.Timeout(30, read=60), follow_redirects=False,
-                               headers={"User-Agent": "Kino (Stremio addon client)"})
+    first = urlparse(url).hostname or ""
+    wait = up_wait(first)
+    if wait > 0:
+        # It asked to be left alone, so it is. The player takes the next source instead of making it worse
+        raise HTTPException(503, f"{first} is busy right now (too many requests), it needs {int(wait)} seconds")
+    client = ac(url, timeout=httpx.Timeout(30, read=60), follow_redirects=False,
+                headers={"User-Agent": "Kino (Stremio addon client)"})
     try:
         for _ in range(5):
             # Some hosts redirect to plain http, if the https version is on the list that gets used instead
@@ -4829,6 +4974,7 @@ async def pd_open(url, headers):
                 raise HTTPException(400, f"That stream sent Kino on to {host}, which isn't on the public domain list (PD_HOSTS)")
             await check_host(urlparse(url).hostname)
             r = await client.send(client.build_request("GET", url, headers=headers), stream=True)
+            up_note(urlparse(url).hostname or "", kind, r.status_code, retry_after(r.headers.get("retry-after")))
             if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                 await r.aclose()
                 url = urljoin(url, r.headers["location"])
@@ -4860,7 +5006,7 @@ HOST_BUSY = {}  # host -> when it last said it was busy (429)
 
 
 def host_busy(host, secs=90):
-    return time.time() - HOST_BUSY.get(host, 0) < secs
+    return time.time() - HOST_BUSY.get(host, 0) < secs or up_wait(host) > 0
 
 
 def probe_cached(url):
@@ -4881,7 +5027,7 @@ async def probe_source(url):
         return None, "busy", None
 
     async def go():
-        client, up = await pd_open(url, {"Range": "bytes=0-1023"})
+        client, up = await pd_open(url, {"Range": "bytes=0-1023"}, "check")
         try:
             if up.status_code == 429:
                 HOST_BUSY[host] = time.time()
@@ -4934,6 +5080,38 @@ async def probe_source(url):
     return ok, why, size
 
 
+DIRECT_CACHE = {}
+
+
+async def direct_link(r):
+    """Where a source sends the player on to (a debrid service answers with a redirect to a link of its own), for the addons the admin set to
+    Direct Play: the viewer's own device fetches the video from there, so the server isn't carrying it and the source sees each viewer's
+    address and not just this one. The address of the addon itself (it often has an API key in it) never goes to the viewer, only where it
+    led to. Nothing when it answers with the video itself, then it goes through the server as usual"""
+    if not any(a["direct"] and a["m"].get("name") == r["addon"] for a in addon_rows()):
+        return None
+    hit = DIRECT_CACHE.get(r["id"])
+    if hit and time.time() - hit[0] < 300:
+        return hit[1]
+    final = None
+    host = urlparse(r["url"]).hostname or ""
+    if up_wait(host) <= 0:
+        try:
+            client, up = await pd_open(r["url"], {"Range": "bytes=0-0"}, "check")
+            try:
+                cand = str(up.request.url)
+                if video_answer(up.status_code, up.headers.get("content-type", "")) and cand != r["url"] and (urlparse(cand).scheme == "https" or ADDON_ALLOW_PRIVATE) and urlparse(cand).hostname != host:
+                    final = cand
+            finally:
+                await up.aclose(); await client.aclose()
+        except Exception:
+            final = None
+    DIRECT_CACHE[r["id"]] = (time.time(), final)
+    if len(DIRECT_CACHE) > 500:
+        DIRECT_CACHE.clear()
+    return final
+
+
 async def stream_proxy(r, request, dl=0):
     hdr = {"Range": request.headers["range"]} if request.headers.get("range") else {}
     if r["url"].startswith("torbox:"):
@@ -4956,11 +5134,16 @@ async def stream_proxy(r, request, dl=0):
         name = re.sub(r"[^\w .()-]", "", r["name"])[:80] or "video"
         out["Content-Disposition"] = f'attachment; filename="{name}{Path(urlparse(r["url"]).path).suffix}"'
 
+    uh = up_host(urlparse(r["url"]).hostname or "")
+
     async def body():
+        uh.active += 1
+        uh.peak = max(uh.peak, uh.active)
         try:
             async for chunk in up.aiter_bytes(256 * 1024):
                 yield chunk
         finally:
+            uh.active -= 1
             await up.aclose()
             await client.aclose()
     return StreamingResponse(body(), status_code=up.status_code, headers=out, media_type=ctype or "video/mp4")
@@ -6825,6 +7008,11 @@ def note_live_play(pid, cid):
     row = db().q("SELECT name FROM channels WHERE id = ?", (cid,)) if cid.startswith("c") else None
     if row:
         db().q("INSERT INTO live_usage (name, plays, last) VALUES (?, 1, ?) ON CONFLICT(name) DO UPDATE SET plays = plays + 1, last = excluded.last", (row[0]["name"].lower(), now))
+
+
+@app.get("/api/admin/upstream")
+async def upstream_stats(admin=Depends(require_admin)):
+    return up_stats()
 
 
 @app.get("/api/admin/live/filter")

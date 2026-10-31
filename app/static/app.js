@@ -2947,7 +2947,7 @@
         </div>
         <div class="addon-tags">${uses(a.uses).map((u) => `<span class="badge">${u}</span>`).join("")}${a.uses.streams ? `<span class="badge">Streams</span>` : ""}
           ${a.config_required ? `<span class="badge warn">Needs Setting Up</span>` : ""}</div>
-        ${a.uses.streams ? `<label class="set-row"><span><b>Source Priority</b><span class="secondary">Play tries this addon's sources first, before the rest. First goes before Second and so on</span></span>
+        ${a.uses.streams ? `<label class="set-row"><span><b>Source Priority</b><span class="secondary">After your TorBox copies and sources that played fine before, Play tries this addon's sources before the rest. First goes before Second and so on</span></span>
           <select class="plain" data-aprio="${a.id}" aria-label="Source priority for ${esc(a.name)}">${[["0", "Normal"], ["1", "First"], ["2", "Second"], ["3", "Third"], ["4", "Fourth"]].map(([v, l]) => `<option value="${v}" ${Number(a.prio || 0) === Number(v) ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
         ${a.config_required ? `<div class="note">This addon has to be set up on its own website first. Paste the link it gives you after setting it up.</div>` : ""}
         ${onlySearch(a) ? `<div class="note">${ic("info")} This addon only has search catalogs, so its videos show up in Search but it has nothing to put on Home. In the addon's own settings add your cookies, a playlist or a channel as a catalog, then install the new link it gives you.</div>` : ""}

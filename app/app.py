@@ -4490,17 +4490,24 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         return 0
     for x in out:
         x["health"] = ("good", "untried", "failed")[rank(x)]
-    # The admin can put an addon first in Settings (Addons, Source Priority). Ones set to First come before everything but
-    # copies that failed before, then the TorBox copies, then addons left on normal
+    # Order: your TorBox copies, then sources that played fine before, then ones from addons the admin put first in Settings
+    # (Addons, Source Priority, First before Second and so on), then everything else not tried yet, and copies that failed
+    # before go last whoever they are
     prio = {}
     for a in rows:
         if a.get("prio"):
             prio[a["m"].get("name")] = min(prio.get(a["m"].get("name"), 99), a["prio"])
-    def order(x):
+
+    def group(x):
+        r = rank(x)
+        if r == 2:
+            return 4
         if x.get("torbox"):
-            return 50
-        return prio.get(x.get("addon"), 100)
-    out.sort(key=lambda x: (rank(x) == 2, order(x), not x.get("torbox"), rank(x), not x["plays"], -x["height"], -(x["bytes"] or 0)))
+            return 0
+        if r == 0:
+            return 1
+        return 2 if x.get("addon") in prio else 3
+    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100), not x["plays"], -x["height"], -(x["bytes"] or 0)))
     if video_type(kind):
         # Youtubio lists every quality twice (its own sponsor cutting player and the plain one), the top few is plenty
         out = out[:12]

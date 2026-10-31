@@ -1836,6 +1836,9 @@
     return true;
   }
 
+  // What to say about a film that is too new to have a real HD copy yet (the server works the window out from the kind of film)
+  const tooNewText = (t, dayOf) => `This film came out ${t.age} day${t.age === 1 ? "" : "s"} ago. A real HD copy usually isn't around until about ${t.window} days after release (about ${t.left} more day${t.left === 1 ? "" : "s"}, around ${dayOf(t.from)}), so HD sources before then are probably fakes or camera recordings. The best of what there is is tried first.`;
+
   // The sources a title or episode was played from. When one turns out broken it gets marked on the server (so it
   // goes to the back of the list next time) and the next one plays straight away, instead of asking about players
   let SOURCES = null;
@@ -1856,7 +1859,13 @@
     const left = SOURCES.list.filter((x) => !SOURCES.tried.has(x.id)).length;
     const note = `${why || "That source didn't work"}, trying ${n.addon ? `one from ${n.addon}` : "another one"}`;
     if (SOURCES.skips === 1) toast(note, 4000);
-    playFile(n.id, { from: from || 0, note: SOURCES.skips > 1 ? `${note} (${left} left)` : "" });
+    // A dead source answers in a blink, so each try waits a second at least. Without that the loading screen flashed through the whole list.
+    // The loading screen stays up and its line says what is happening
+    const tok = PLAY_N, wait = Math.max(0, 1000 - (Date.now() - (SOURCES.lastAt || 0)));
+    SOURCES.lastAt = Date.now() + wait;
+    if (LOAD.on) loadStep(SOURCES.skips > 1 ? `${note} (${left} left)` : note);
+    const go = () => { if (PLAY_N !== tok) return; playFile(n.id, { from: from || 0, note: SOURCES.skips > 1 ? `${note} (${left} left)` : "", chain: true }); };
+    if (wait) setTimeout(go, wait); else go();
     return true;
   }
 
@@ -1911,7 +1920,7 @@
         ${lb}
         ${isAdmin() && (kind === "movie" || kind === "series") ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
       </div>
-      ${r.fresh ? `<div class="note pd-note">${ic("info")} This only just came out. Some sources can be camera recordings or fakes until it is properly released, the better ones are tried first.</div>` : ""}
+      ${r.too_new ? `<div class="note pd-note">${ic("info")} ${esc(tooNewText(r.too_new, dayOf))}</div>` : r.fresh ? `<div class="note pd-note">${ic("info")} This only just came out. Some sources can be camera recordings or fakes until it is properly released, the better ones are tried first.</div>` : ""}
       ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
     const play = (s) => { SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0 }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
     $("#pdPlay").onclick = () => play(first);
@@ -1929,7 +1938,7 @@
             <span class="src-body"><b>${esc(nice(s.label))}</b>
               <span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>
               ${s.health === "dead" ? `<span class="src-warn">${ic("info")} Not answering right now${s.why ? `, it ${esc(s.why)}` : ""}</span>` : ""}
-              ${s.suspect && s.suspect.length ? `<span class="src-warn">${ic("info")} Probably not the real thing, it looks like ${esc(s.suspect.join(" and "))}</span>` : ""}
+              ${s.suspect && s.suspect.length ? `<span class="src-warn">${ic("info")} Probably not the real thing: ${esc(s.suspect.join(", "))}</span>` : ""}
               ${!s.plays ? `<span class="src-warn">${ic("info")} Might not play in this browser, saving it to the Library always works</span>` : ""}
               ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
             ${i === 0 ? `<span class="src-tag">Best</span>` : ""}
@@ -1956,7 +1965,8 @@
       <button class="round-btn sm" data-close aria-label="Close">${ic("close")}</button></div>`;
     const sh = sheet(head + `<div class="src-list" id="srcList"></div>`, { wide: true });
     const list = $("#srcList", sh.el);
-    let streams = null, err = "";
+    let streams = null, err = "", tooNew = null;
+    const dayOf2 = (d) => new Date(d + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
     const draw = (loading) => {
       list.innerHTML = `<h3 class="sr-sub">On the Storage Box</h3>` + (own.map((f, i) => {
         const p = f.progress && !f.watched && f.progress.dur ? f.progress.pos / f.progress.dur : 0;
@@ -1966,14 +1976,14 @@
             ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
           <span class="src-play">${ic("play")}</span></button>`;
       }).join("") || `<p class="secondary sr-empty">Not on the Storage Box.</p>`)
-        + `<h3 class="sr-sub">From Addons</h3>` + (streams ? (streams.length ? streams.map((x, i) => {
+        + `<h3 class="sr-sub">From Addons</h3>` + (tooNew ? `<div class="note pd-note">${ic("info")} ${esc(tooNewText(tooNew, dayOf2))}</div>` : "") + (streams ? (streams.length ? streams.map((x, i) => {
         const p = x.progress && !x.progress.watched && x.progress.dur ? x.progress.pos / x.progress.dur : 0;
         const meta = [x.format, x.bytes ? bytes(x.bytes) : "", x.seeders != null ? `${x.seeders} seeder${x.seeders === 1 ? "" : "s"}` : "", x.peers != null ? `${x.peers} peer${x.peers === 1 ? "" : "s"}` : "", x.addon, x.tier].filter(Boolean);
         return `<button class="src ${x.health === "dead" ? "dead" : ""}" data-str="${i}">
           <span class="src-q ${x.height >= 720 ? "hd" : ""}">${esc(x.quality)}</span>
           <span class="src-body"><b>${esc(nice(x.label))}</b><span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>
             ${x.health === "dead" ? `<span class="src-warn">${ic("info")} Not answering right now${x.why ? `, it ${esc(x.why)}` : ""}</span>` : ""}
-            ${x.suspect && x.suspect.length ? `<span class="src-warn">${ic("info")} Probably not the real thing, it looks like ${esc(x.suspect.join(" and "))}</span>` : ""}
+            ${x.suspect && x.suspect.length ? `<span class="src-warn">${ic("info")} Probably not the real thing: ${esc(x.suspect.join(", "))}</span>` : ""}
             ${!x.plays ? `<span class="src-warn">${ic("info")} Might not play in this browser, saving it to the Library always works</span>` : ""}
             ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
           <span class="src-play">${ic("play")}</span></button>`;
@@ -1991,9 +2001,9 @@
     const url = `/api/streams/${t.kind}/${encodeURIComponent(vid)}`;
     try {
       let r = await api(url + "?quick=1");
-      streams = r.streams; if (r.upcoming) err = `Not out yet, comes out on ${new Date(r.upcoming + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}`;
+      streams = r.streams; tooNew = r.too_new || null; if (r.upcoming) err = `Not out yet, comes out on ${new Date(r.upcoming + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}`;
       draw(!!r.partial);
-      if (r.partial) { r = await api(url); if (!sh.el.isConnected) return; streams = r.streams; draw(false); }
+      if (r.partial) { r = await api(url); if (!sh.el.isConnected) return; streams = r.streams; tooNew = r.too_new || null; draw(false); }
     } catch (e) { err = e.message; streams = []; draw(false); }
   }
 
@@ -3750,13 +3760,14 @@
     if (!opts.web && useNative()) return nativePlay(fid, opts);
     // Each press gets a number, anything still loading from an earlier press stops when it sees a newer one
     const my = ++PLAY_N;
-    closePlayer(true);
+    const chain = !!opts.chain && LOAD.on;
+    closePlayer(true, chain);
     clearInterval(HERO_T);
     pl.el.hidden = false;
     document.body.style.overflow = "hidden";
     spinner(false);
     const tt = opts.title;
-    loadShow(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "");
+    if (!chain) loadShow(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "");
     loadStep(opts.note || "Getting the file ready");
     $("#pMsg").hidden = true;
     $("#upNext").hidden = true;
@@ -3810,7 +3821,7 @@
           pl.v.play().catch(() => {});
           return;
         }
-        if ((retried || code !== 2) && moreSources(info.id)) { closePlayer(true); if (nextSource(info.id, opts.from)) return; }
+        if ((retried || code !== 2) && moreSources(info.id)) { closePlayer(true, true); if (nextSource(info.id, opts.from)) return; }
         if (!retried && code === 2) {
           retried = true;
           const at = pl.v.currentTime || (opts.from || 0);
@@ -3991,7 +4002,7 @@
     api("/api/event", { file_id: pl.info.id, action, pos: pos(), dur: total() }).catch(() => {});
   }
 
-  function closePlayer(keepOpen) {
+  function closePlayer(keepOpen, keepLoading) {
     const wasOpen = !pl.el.hidden;
     if (pl.info) { saveProgress(); if (pl.evStarted) sendEvent("stop"); pl.evStarted = false; }
     clearInterval(pl.saveT);
@@ -4010,7 +4021,8 @@
       $("#pBack").innerHTML = ic("back10"); $("#pBack").setAttribute("aria-label", "Back 10 seconds"); $("#pBack").title = "Back 10 Seconds";
       $("#pFwd").innerHTML = ic("fwd10"); $("#pFwd").setAttribute("aria-label", "Forward 10 seconds"); $("#pFwd").title = "Forward 10 Seconds";
     }
-    loadHide(); $("#pStill").hidden = true; clearTimeout(STILL.t);
+    if (!keepLoading) loadHide();  // moving along the sources list keeps the loading screen up instead of fading it out and back in
+    $("#pStill").hidden = true; clearTimeout(STILL.t);
     if (!keepOpen && wasOpen) {
       pl.el.hidden = true;
       document.body.style.overflow = "";

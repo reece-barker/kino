@@ -4449,10 +4449,21 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
     cur = (await ep_context(kind, vid))[1] if kind == "series" else None
     rel = released_at(cur.get("released") if cur else meta.get("released"))
     now_t = time.time()
+    # No exact date but the year is still to come: not out either
+    if not rel:
+        yr = str(meta.get("releaseInfo") or "")[:4]
+        if yr.isdigit() and int(yr) > datetime.datetime.now().year:
+            rel = datetime.datetime(int(yr), 1, 1, tzinfo=datetime.timezone.utc).timestamp()
     if rel and rel > now_t + 86400:
         return {"streams": [], "dropped": 0, "checked": 0, "partial": False, "upcoming": datetime.datetime.fromtimestamp(rel, datetime.timezone.utc).strftime("%Y-%m-%d")}
-    fresh = bool(rel and now_t - rel < (2 if cur else 60) * 86400)
     minutes = parse_runtime(meta)
+    # Films: inside the window after release real HD copies dont exist yet. Episodes: new ones are out within a day or two
+    window = hd_window(meta, minutes) if kind == "movie" else 0
+    age = (now_t - rel) / 86400 if rel else None
+    young = window if (kind == "movie" and age is not None and 0 <= age < window) else 0
+    too_new = {"age": int(age), "window": window, "left": max(1, math.ceil(window - age)),
+               "from": datetime.datetime.fromtimestamp(rel + window * 86400, datetime.timezone.utc).strftime("%Y-%m-%d")} if young else None
+    fresh = bool(rel and not young and now_t - rel < (2 if cur else 60) * 86400)
 
     async def one(a):
         try:
@@ -4517,12 +4528,14 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
 
         async def alive(x):
             async with sem:
-                x["_ok"], x["why"] = await probe_source(x["_url"])
+                x["_ok"], x["why"], size = await probe_source(x["_url"])
+                if size and not x["bytes"]:
+                    x["bytes"] = size  # the source's own size, for the ones whose addon didnt say
         await asyncio.gather(*(alive(x) for x in out[:16]))
     for x in out:
         x["health"] = "dead" if x.get("_ok") is False else ("good", "untried", "failed")[rank(x)]
         x.pop("_ok", None)
-        x["suspect"] = suspect_reasons(f"{x['label']} {x.get('file') or ''}", x["height"], x["bytes"], minutes, kind) if kind in ("movie", "series") else []
+        x["suspect"] = suspect_reasons(f"{x['label']} {x.get('file') or ''}", x["height"], x["bytes"], minutes, kind, young) if kind in ("movie", "series") else []
     prio = {}
     for a in rows:
         if a.get("prio"):
@@ -4530,30 +4543,31 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
 
     def group(x):
         if x["health"] == "dead":
-            return 6
+            return 5
         r = rank(x)
         if r == 2:
-            return 5
-        if x["suspect"]:
             return 4
-        if r == 0:
-            return 1
-        return 2 if x.get("addon") in prio else 3
-    # Order: sources that played fine before, then the addons you put first in Settings (Source Priority: First, then Second and so on, a
-    # priority addon's sources stay together), then every other source not tried yet, then ones that failed before, probably-fake ones, and
-    # dead ones last. Inside each of those the most seeders first, then the best quality and size. Addons you didn't rank are not
-    # lined up by when they were installed, that put poor sources first
+        if x["suspect"]:
+            return 3
+        if x.get("addon") in prio:
+            return 0
+        return 1 if r == 0 else 2
+    # Order: the addons you put first in Settings (Source Priority: First, then Second and so on) come before everything, a priority addon's
+    # sources stay together and the ones that played fine before lead inside it. Then other sources that played fine before, then every
+    # source not tried yet, then probably-fake ones, ones that failed before, and dead ones last. Inside each the most seeders first, then
+    # the best quality and size
+    names = ["", "First", "Second", "Third", "Fourth"]
     for x in out:
         g = group(x)
-        x["tier"] = "Worked before" if g == 1 else f"Priority: {['', 'First', 'Second', 'Third', 'Fourth'][min(4, prio[x['addon']])]}" if g == 2 else ""
-    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100) if group(x) in (1, 2) else 0, not x["plays"],
+        x["tier"] = (f"Priority: {names[min(4, prio[x['addon']])]}" + (", worked before" if rank(x) == 0 else "")) if g == 0 else "Worked before" if g == 1 else ""
+    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100) if group(x) == 0 else 0, rank(x) if group(x) == 0 else 0, not x["plays"],
                             -(x["seeders"] if x.get("seeders") is not None else -1), -x["height"], -(x["bytes"] or 0)))
     if video_type(kind):
         # Youtubio lists every quality twice (its own sponsor cutting player and the plain one), the top few is plenty
         out = out[:12]
     for x in out:
         x.pop("_url", None)
-    res = {"streams": out, "dropped": dropped, "checked": len(rows), "partial": bool(quick and any(x["error"] == "took too long to answer" for x in report)), "fresh": fresh}
+    res = {"streams": out, "dropped": dropped, "checked": len(rows), "partial": bool(quick and any(x["error"] == "took too long to answer" for x in report)), "fresh": fresh, "too_new": too_new}
     # What this title turned out to have, for hiding ones with nothing. Found something always counts, nothing only
     # counts for a film when every addon answered (shows get checked by there first episodes in the background)
     if kind in ("movie", "series") and rows and not inline:
@@ -4601,13 +4615,35 @@ CAM_RE = re.compile(r"(?<![A-Za-z0-9])(?:cam|hdcam|camrip|cam-rip|hd-?ts|telesyn
 CAM_RE_TS = re.compile(r"(?<![A-Za-z0-9])TS(?![A-Za-z0-9])")
 
 
-def suspect_reasons(text, height, size, minutes, kind):
-    """Why a source is probably not the real thing: a camera recording, or a file far too small for what it says it is"""
+# How long after a film's release a real HD copy (WEB-DL or better) turns up: big films 45 to 60 days or more, smaller ones 20 to 35. Before
+# then an "HD" copy is a fake or a camera recording passed off as one. Streaming service films (Netflix and the like) come after 14 to 21
+# days, the metadata doesnt say who made a film so those are treated like smaller films
+HD_BIG_DAYS, HD_SMALL_DAYS = 55, 28
+BIG_GENRES = {"Action", "Adventure", "Animation", "Sci-Fi", "Fantasy", "Family"}
+HD_RE = re.compile(r"web-?dl|web-?rip|blu-?ray|bdrip|brrip|hdrip|remux|(?<![A-Za-z0-9])(?:2160|1440|1080|720)p|(?<![A-Za-z0-9])4k(?![A-Za-z0-9])", re.I)
+
+
+def hd_window(meta, minutes):
+    """Days a film needs before a real HD copy is likely to exist: a long action, adventure, animation, sci-fi or fantasy film is a major one"""
+    big = bool(set(meta.get("genres") or []) & BIG_GENRES) and (minutes or 0) >= 95
+    return HD_BIG_DAYS if big else HD_SMALL_DAYS
+
+
+def suspect_reasons(text, height, size, minutes, kind, young=0):
+    """Why a source is probably not the real thing: a camera recording, a file far too small for what it says it is, or an HD copy of a film
+    that is too new to have one (young is the days a real HD copy usually takes, 0 when the film is old enough)"""
     why = []
     text = re.sub(r"\.(?:ts|mkv|mp4|m4v|avi|mov|webm|wmv)$", "", str(text).strip(), flags=re.I)
-    if CAM_RE.search(text) or CAM_RE_TS.search(text):
+    cam = bool(CAM_RE.search(text) or CAM_RE_TS.search(text))
+    if cam:
         why.append("a camera recording")
-    if size and height:
+    elif young and (height >= 720 or HD_RE.search(text)):
+        why.append(f"an HD copy of a film that is too new for one, they usually turn up about {young} days after release")
+    mins = minutes or (110 if kind == "movie" else 45)
+    # A real video is never under about 1.5 MB for every minute it runs, a 30 second clip standing in for a film is nowhere near it
+    if size and size < mins * 1.5e6:
+        why.append("far too small to be the whole thing")
+    elif size and height:
         floor = {2160: 4.0e9, 1440: 2.5e9, 1080: 1.0e9, 720: 0.45e9}.get(height)
         if floor:
             mins = minutes or (110 if kind == "movie" else 45)
@@ -4811,39 +4847,54 @@ SRC_PROBE = {}
 
 
 async def probe_source(url):
+    """(working, why not, size in bytes or None). The size comes from the server itself, addons often dont say, and it is how a fake that is
+    far too small gets spotted"""
     hit = SRC_PROBE.get(url)
     if hit and time.time() - hit[0] < (1200 if hit[1] else 600):
-        return hit[1], hit[2]
+        return hit[1], hit[2], hit[3]
 
     async def go():
         client, up = await pd_open(url, {"Range": "bytes=0-1023"})
         try:
             if is_hls(url):
                 if up.status_code != 200:
-                    return False, f"answered {up.status_code}"
+                    return False, f"answered {up.status_code}", None
                 head = b""
                 async for ch in up.aiter_bytes(512):
                     head += ch
                     break
-                return (True, "") if head.lstrip().startswith(b"#EXTM3U") else (False, "isn't a playlist")
+                return (True, "", None) if head.lstrip().startswith(b"#EXTM3U") else (False, "isn't a playlist", None)
             if not video_answer(up.status_code, up.headers.get("content-type", "")):
-                return False, f"didn't send a video (answered {up.status_code})"
-            return True, ""
+                return False, f"didn't send a video (answered {up.status_code})", None
+            size = None
+            m = re.search(r"/(\d+)\s*$", up.headers.get("content-range", ""))
+            if m:
+                size = int(m.group(1))
+            elif up.status_code == 200 and (up.headers.get("content-length") or "").isdigit():
+                size = int(up.headers["content-length"])
+            head = b""
+            async for ch in up.aiter_bytes(64):
+                head += ch
+                break
+            # A web page or an error message sent with a video label
+            if head.lstrip()[:1] in (b"<", b"{"):
+                return False, "sent a web page, not a video", size
+            return True, "", size
         finally:
             await up.aclose(); await client.aclose()
     try:
-        ok, why = await asyncio.wait_for(go(), 3.5)
+        ok, why, size = await asyncio.wait_for(go(), 3.5)
     except asyncio.TimeoutError:
-        ok, why = False, "didn't answer"
+        ok, why, size = False, "didn't answer", None
     except HTTPException as e:
-        ok, why = False, str(e.detail)[:100]
+        ok, why, size = False, str(e.detail)[:100], None
     except Exception as e:
-        ok, why = False, "couldn't be reached"
-    SRC_PROBE[url] = (time.time(), ok, why)
+        ok, why, size = False, "couldn't be reached", None
+    SRC_PROBE[url] = (time.time(), ok, why, size)
     if len(SRC_PROBE) > 2000:
         for k in sorted(SRC_PROBE, key=lambda k: SRC_PROBE[k][0])[:500]:
             SRC_PROBE.pop(k, None)
-    return ok, why
+    return ok, why, size
 
 
 async def stream_proxy(r, request, dl=0):

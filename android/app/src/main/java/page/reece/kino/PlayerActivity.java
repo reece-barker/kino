@@ -39,6 +39,7 @@ import android.webkit.CookieManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -91,6 +92,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     private ImageView logo, plLogo, plBg;
     private Timeline line;
     private RoundButton bPlay, bBack, bFwd, bSubs, bAudio, bSpeed, bPlayer, bClose;
+    private ProgressBar bufSpin;   // the ring in the middle while a picture that was playing stops to load, like the web player has
+    private final Runnable showSpin = () -> { if (bufSpin != null && !loading) bufSpin.setVisibility(View.VISIBLE); };
     private TextView skip;
     private View focusBeforeMenu;
     private ObjectAnimator pulse;
@@ -386,12 +389,16 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         bBack.setOnClickListener(v -> { if (live) switchChannel(-1); else seekTo(Math.max(0, pos() - 10)); bump(); });
         bFwd.setOnClickListener(v -> { if (live) switchChannel(1); else seekTo(pos() + 10); bump(); });
         if (live) {
-            bSpeed.setVisibility(View.GONE);  // a live stream cant be sped up, the web player hides it too
+            // The same controls as the web player has for live: previous and next channel, play and pause. No subtitles or audio tracks (the
+            // server sends one stream with neither), no speed, and the player menu is not for live (it only plays in the Kino player)
+            bSubs.setVisibility(View.GONE);
+            bAudio.setVisibility(View.GONE);
+            bSpeed.setVisibility(View.GONE);
+            bPlayer.setVisibility(View.GONE);
             tlRow.setVisibility(View.GONE);
-            bBack.setImageResource(R.drawable.ic_back);
+            bBack.setImageResource(R.drawable.ic_chev_l);
             bBack.setContentDescription("Previous channel");
-            bFwd.setImageResource(R.drawable.ic_back);
-            bFwd.setRotation(180f);
+            bFwd.setImageResource(R.drawable.ic_chev_r);
             bFwd.setContentDescription("Next channel");
         }
         bSubs.setOnClickListener(v -> openMenu("subs"));
@@ -467,6 +474,12 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(dp(560), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL | Gravity.TOP);
         sl.topMargin = getResources().getDisplayMetrics().heightPixels / 2 + dp(84);
         loadLayer.addView(stats, sl);
+        bufSpin = new ProgressBar(this);
+        bufSpin.setIndeterminate(true);
+        bufSpin.setIndeterminateTintList(ColorStateList.valueOf(Color.WHITE));
+        bufSpin.setFocusable(false);
+        bufSpin.setVisibility(View.GONE);
+        root.addView(bufSpin, new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER));
         // The loading screen covers the controls, so it has its own close button (not on a tv, the remote has Back)
         if (!tv) {
             RoundButton lc = new RoundButton(R.drawable.ic_close, 44, "Close");
@@ -692,6 +705,10 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onBuffering(boolean b) {
+        // A stall once it is playing shows the ring after half a second (a short one is not worth a flash)
+        h.removeCallbacks(showSpin);
+        if (b && !loading) h.postDelayed(showSpin, 500);
+        else if (bufSpin != null) bufSpin.setVisibility(View.GONE);
         // A live channel stuck loading for 20 seconds gets tuned in again by its self, it nearly allways just needs that
         if (live) {
             h.removeCallbacks(liveStall);
@@ -711,7 +728,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     public void onPlaying(boolean p) {
         bPlay.setImageResource(p ? R.drawable.ic_pause : R.drawable.ic_play);
         bPlay.setContentDescription(p ? "Pause" : "Play");
-        if (p) { hlsRetries = 0; loaded(); bump(); }
+        if (p) { hlsRetries = 0; loaded(); bump(); h.removeCallbacks(showSpin); if (bufSpin != null) bufSpin.setVisibility(View.GONE); }
         else { save(); showControls(null); }
     }
 
@@ -880,7 +897,9 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             eng.subsRaised(true);
             subText.animate().translationY(-dp(130)).setDuration(220).start();
         }
-        if (focus != null && (getCurrentFocus() == null || !isInControls(getCurrentFocus()))) focus.requestFocus();
+        // Controls that come up on their own (a pause, a stall) put the remote on Play, not on whichever button is first in the row
+        if (focus == null) focus = bPlay;
+        if (getCurrentFocus() == null || !isInControls(getCurrentFocus())) focus.requestFocus();
         bump();
     }
 

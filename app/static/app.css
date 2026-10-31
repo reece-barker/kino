@@ -1852,7 +1852,7 @@ body.tv .page-back { display: none !important; }
 .tile.tile-open { position: relative; z-index: 6; }
 .tile.tile-open .art { transform: none; transition: height 0.38s var(--ease), box-shadow 0.38s var(--ease); box-shadow: 0 26px 60px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.12); }
 .tile.tile-open .cap, .tile.tile-open .sub { opacity: 0; }
-.tile-trailer { position: absolute; inset: 0; z-index: 1; overflow: hidden; opacity: 0; transition: opacity 0.6s ease; pointer-events: none; }
+.tile-trailer { position: absolute; left: 0; top: 0; z-index: 1; overflow: hidden; opacity: 0; transition: opacity 0.6s ease; pointer-events: none; }
 .art.tr-on .tile-trailer { opacity: 1; }
 .tile-ov { position: absolute; z-index: 3; left: 0; right: 0; bottom: 0; padding: 36px 16px 14px; display: flex; flex-direction: column; gap: 2px; background: linear-gradient(to top, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0)); pointer-events: none; }
 .tile-ov b { font-size: 17px; font-weight: 700; color: #fff; padding-right: 48px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1861,8 +1861,16 @@ body.tv .page-back { display: none !important; }
 .tile-snd:hover { background: rgba(255, 255, 255, 0.9); color: #000; }
 /* The Trailer button: the trailer on its own */
 .trailer-view { position: fixed; inset: 0; z-index: 140; display: grid; place-items: center; background: rgba(0, 0, 0, 0.94); animation: fadeIn 0.2s ease; }
-.trailer-view .glass-btn.round { position: absolute; z-index: 2; top: max(18px, env(safe-area-inset-top)); left: max(18px, env(safe-area-inset-left)); }
 .tr-box { position: relative; width: min(96vw, calc(86vh * 16 / 9)); aspect-ratio: 16 / 9; background: #000; border-radius: 14px; overflow: hidden; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7); }
 body.tv .tr-box { width: min(90vw, calc(80vh * 16 / 9)); }
-/* The trailer viewer has no YouTube controls, its own sound button sits bottom right */
-.trailer-view .tr-snd { position: absolute; z-index: 2; right: max(18px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom)); }
+/* The trailer viewer: nothing of YouTube's shows. The video is zoomed a little and clicks never reach it, Kino's own controls sit on top:
+   close top right, play and pause bottom left, sound bottom right */
+.tr-box iframe { z-index: 0; }
+.tr-load { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; background: #000; pointer-events: none; }
+.tr-load[hidden] { display: none; }
+.tr-hit { position: absolute; inset: 0; z-index: 2; background: transparent; cursor: pointer; }
+.tr-bar { position: absolute; z-index: 3; left: 0; right: 0; bottom: 0; padding: 40px 18px 16px; display: flex; justify-content: space-between; background: linear-gradient(to top, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0)); opacity: 0; transition: opacity 0.3s ease; pointer-events: none; }
+.tr-bar button { pointer-events: auto; }
+.tr-bar.tr-up, .tr-bar.tr-still, .tr-bar:focus-within { opacity: 1; }
+.trailer-view .tr-x { position: absolute; z-index: 5; top: max(18px, env(safe-area-inset-top)); right: max(18px, env(safe-area-inset-right)); width: 46px; height: 46px; background: rgba(255, 255, 255, 0.16); }
+.trailer-view .tr-x:hover, .trailer-view .tr-x:focus-visible { background: #fff; color: #000; }

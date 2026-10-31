@@ -1001,7 +1001,7 @@
   function mountTrailer(host, yt, o = {}) {
     const f = document.createElement("iframe");
     f.src = ytSrc(yt, { ...o, mute: o.mute || o.sound });
-    let soundDone = false;
+    let soundDone = false, state = -1;
     f.title = "Trailer";
     f.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture; fullscreen");
     f.setAttribute("sandbox", "allow-scripts allow-same-origin allow-presentation");
@@ -1012,7 +1012,7 @@
       if (!o.cover) { f.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0"; return; }
       const r = host.getBoundingClientRect(), w = r.width, h = r.height;
       const W = Math.max(w, (h * 16) / 9), H = (W * 9) / 16;
-      f.style.cssText = `position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;border:0;transform:translate(-50%,-50%) scale(1.38);pointer-events:none`;
+      f.style.cssText = `position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;border:0;transform:translate(-50%,-50%) scale(${o.scale || 1.5});pointer-events:none`;
     };
     fit();
     const on = (e) => {
@@ -1020,6 +1020,8 @@
       let d = e.data;
       try { if (typeof d === "string") d = JSON.parse(d); } catch (_) { return; }
       if (!d) return;
+      const st = d.event === "onStateChange" ? d.info : d.event === "infoDelivery" && d.info && typeof d.info.playerState === "number" ? d.info.playerState : null;
+      if (st !== null && st !== state) { state = st; o.onState && o.onState(st); }
       if (d.event === "onError") o.onFail && o.onFail(d.info);
       else if ((d.event === "onStateChange" && d.info === 1) || (d.event === "infoDelivery" && d.info && d.info.playerState === 1)) {
         o.onPlay && o.onPlay();
@@ -1036,18 +1038,20 @@
       stop() { window.removeEventListener("message", on); window.removeEventListener("resize", fit); f.remove(); },
       mute(b) { soundDone = true; ytCmd(f, b ? "mute" : "unMute"); if (!b) ytCmd(f, "setVolume", [100]); },
       pause() { ytCmd(f, "pauseVideo"); },
+      get state() { return state; },
       play() { ytCmd(f, "playVideo"); },
     };
   }
   const trailerAttrs = (t) => { const im = t.imdb || (/^tt\d+$/.test(String(t.id || "")) ? t.id : ""); return im && t.kind !== "video" ? `data-imdb="${esc(im)}" data-kind="${t.kind === "series" ? "series" : "movie"}"` : ""; };
 
   // The card on a row: after half a second of hovering it grows to a wide card playing the trailer and the rest of the row slides aside
-  const HV = { tile: null, timer: null, closeT: null, ctl: null };
+  const HV = { tile: null, timer: null, closeT: null, ctl: null, wait: null, fade: null };
   function closeTile(now) {
-    clearTimeout(HV.timer); clearTimeout(HV.closeT);
+    clearTimeout(HV.timer); clearTimeout(HV.closeT); clearTimeout(HV.wait); clearTimeout(HV.fade);
     const tile = HV.tile;
     if (HV.ctl) { HV.ctl.stop(); HV.ctl = null; }
     HV.tile = null;
+    if (tile && !tile.classList.contains("tile-open")) $$(".tile-trailer", tile).forEach((x) => x.remove());  // one that never got to show
     if (!tile || !tile.classList.contains("tile-open")) return;
     const art = $(".art", tile), row = tile.parentElement;
     tile.classList.remove("tile-open");
@@ -1065,28 +1069,40 @@
     const ar = art.getBoundingClientRect(), th = Math.round(tile.getBoundingClientRect().height);
     const ow = Math.round(Math.min((th * 16) / 9, ar.width * 2.3)), oh = Math.round(Math.min(th, Math.max(ar.height, (ow * 9) / 16))), extra = ow - Math.round(ar.width);
     if (extra < 30) return;
-    const kids = [...row.children], i = kids.indexOf(tile);
-    // Grows to the right when there is room in the row, otherwise to the left
-    const dir = row.getBoundingClientRect().right - tile.getBoundingClientRect().right - 24 >= extra ? 1 : -1;
-    tile.classList.add("tile-open");
-    tile.style.height = th + "px";
-    tile.style.width = ow + "px";
-    if (dir < 0) tile.style.transform = `translateX(${-extra}px)`;
-    art.style.aspectRatio = "auto";
-    art.style.height = oh + "px";
-    kids.forEach((k, j) => { if (dir > 0 && j > i) k.style.transform = `translateX(${extra}px)`; if (dir < 0 && j < i) k.style.transform = `translateX(${-extra}px)`; });
-    const host = document.createElement("div"); host.className = "tile-trailer";
-    const ov = document.createElement("div"); ov.className = "tile-ov";
-    ov.innerHTML = `<b>${esc($(".cap", tile) ? $(".cap", tile).textContent : "")}</b><span>${esc($(".sub", tile) ? $(".sub", tile).textContent : "")}</span><button type="button" class="tile-snd" aria-label="Sound on" title="Sound on">${ic("mute")}</button>`;
-    art.appendChild(host); art.appendChild(ov);
-    // The video is added once the card has grown (it needs the final size to fill it)
-    setTimeout(() => {
-      if (HV.tile !== tile || !tile.isConnected) return;
-      let muted = true;
-      const snd = $(".tile-snd", ov), show = (m) => { muted = m; snd.innerHTML = ic(m ? "mute" : "vol"); snd.title = m ? "Sound on" : "Sound off"; snd.setAttribute("aria-label", snd.title); };
-      HV.ctl = mountTrailer(host, yt, { sound: wantSound(), loop: true, cover: true, onMuted: show, onPlay: () => art.classList.add("tr-on"), onFail: () => { noTrailer(kind, imdb); closeTile(); } });
+    // The video goes in first, at the size the card will be and invisible (the card clips it), and the card stays exactly as it is
+    const host = document.createElement("div");
+    host.className = "tile-trailer";
+    host.style.cssText = `width:${ow}px;height:${oh}px`;
+    art.appendChild(host);
+    let grown = false, muted = true;
+    const grow = () => {
+      if (grown || HV.tile !== tile || !tile.isConnected) return;
+      grown = true;
+      clearTimeout(HV.wait);
+      const kids = [...row.children], i = kids.indexOf(tile);
+      // Grows to the right when there is room in the row, otherwise to the left
+      const dir = row.getBoundingClientRect().right - tile.getBoundingClientRect().right - 24 >= extra ? 1 : -1;
+      tile.classList.add("tile-open");
+      tile.style.height = th + "px";
+      tile.style.width = ow + "px";
+      if (dir < 0) tile.style.transform = `translateX(${-extra}px)`;
+      art.style.aspectRatio = "auto";
+      art.style.height = oh + "px";
+      kids.forEach((k, j) => { if (dir > 0 && j > i) k.style.transform = `translateX(${extra}px)`; if (dir < 0 && j < i) k.style.transform = `translateX(${-extra}px)`; });
+      const ov = document.createElement("div");
+      ov.className = "tile-ov";
+      ov.innerHTML = `<b>${esc($(".cap", tile) ? $(".cap", tile).textContent : "")}</b><span>${esc($(".sub", tile) ? $(".sub", tile).textContent : "")}</span><button type="button" class="tile-snd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`;
+      art.appendChild(ov);
+      const snd = $(".tile-snd", ov);
+      show(muted);
       snd.onclick = (e) => { e.preventDefault(); e.stopPropagation(); HV.ctl && HV.ctl.mute(!muted); show(!muted); };
-    }, 380);
+      // The video shows once the card has finished growing
+      HV.fade = setTimeout(() => art.classList.add("tr-on"), 420);
+    };
+    const show = (m) => { muted = m; const snd = $(".tile-snd", art); if (snd) { snd.innerHTML = ic(m ? "mute" : "vol"); snd.title = m ? "Sound on" : "Sound off"; snd.setAttribute("aria-label", snd.title); } };
+    HV.ctl = mountTrailer(host, yt, { sound: wantSound(), loop: true, cover: true, onMuted: show, onPlay: grow, onFail: () => { noTrailer(kind, imdb); closeTile(); } });
+    // If it never starts (blocked, slow) nothing was changed, so it is just dropped
+    HV.wait = setTimeout(() => { if (!grown && HV.tile === tile) closeTile(); }, 9000);
   }
   document.addEventListener("mouseover", (e) => {
     if (!previewsOn()) return;
@@ -1109,7 +1125,7 @@
 
   // The background of a title's page: after 2.5 seconds a trailer fades in behind the title, muted, with a sound button. It pauses when the page
   // is scrolled past it or the tab is hidden
-  const HERO = { timer: null, ctl: null, io: null };
+  const HERO = { timer: null, ctl: null, io: null, args: null };
   function stopHero() {
     clearTimeout(HERO.timer);
     if (HERO.ctl) HERO.ctl.stop();
@@ -1120,6 +1136,7 @@
     stopHero();
     const box = $("#heroTrailer"), btn = $("#trailerBtn");
     if (!box || !imdb) return;
+    HERO.args = [kind, imdb];
     const n = ROUTE_N;
     const yt = await trailerFor(kind, imdb);
     if (n !== ROUTE_N || !box.isConnected) return;
@@ -1158,32 +1175,52 @@
   function closeTrailer() {
     if (!TRAILER_VIEW) return false;
     const v = TRAILER_VIEW; TRAILER_VIEW = null;
+    clearTimeout(v.hideT);
     v.ctl.stop(); v.el.remove();
     document.body.style.overflow = "";
     if (v.back && v.back.isConnected) v.back.focus({ preventScroll: true });
-    if (HERO.ctl) HERO.ctl.play();
+    // The page's own background trailer was stopped for it, it starts again (with its short wait) when this is closed
+    if (HERO.args && $("#heroTrailer")) heroTrailer(...HERO.args);
     return true;
   }
+  // The trailer on its own, full screen. Nothing of YouTube's shows: the video is zoomed a little so its title strip and bar fall outside the box,
+  // clicks never reach it, and the controls are Kino's own: a close button top right, play and pause bottom left, sound bottom right
   function openTrailer(yt, kind, imdb) {
-    closeTrailer(); closeTile(); if (HERO.ctl) HERO.ctl.pause();
+    closeTrailer(); closeTile();
+    stopHero();  // the page's background trailer is stopped, not just paused, so nothing plays or makes a sound behind this
     const back = document.activeElement;
     const el = document.createElement("div");
     el.className = "trailer-view"; el.setAttribute("role", "dialog"); el.setAttribute("aria-label", "Trailer");
-    el.innerHTML = `<button type="button" class="glass-btn round" id="trClose" aria-label="Close trailer">${ic("close")}</button><div class="tr-box" id="trBox"></div>
-      <button type="button" class="glass-btn round tr-snd" id="trSnd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`;
+    el.innerHTML = `<div class="tr-box" id="trBox"><div class="tr-load" id="trLoad"><div class="spin"></div></div><button type="button" class="tr-hit" id="trHit" aria-label="Pause or play"></button>
+        <div class="tr-bar" id="trBar"><button type="button" class="glass-btn round" id="trPlay" aria-label="Pause" title="Pause (Space)">${ic("pause")}</button><button type="button" class="glass-btn round" id="trSnd" aria-label="Sound off" title="Sound off (M)">${ic("vol")}</button></div></div>
+      <button type="button" class="glass-btn round tr-x" id="trClose" aria-label="Close trailer" title="Close (Esc)">${ic("close")}</button>`;
     document.body.appendChild(el);
     document.body.style.overflow = "hidden";
-    let muted = false;
-    const snd = $("#trSnd", el), show = (m) => { muted = m; snd.innerHTML = ic(m ? "mute" : "vol"); snd.title = m ? "Sound on" : "Sound off"; snd.setAttribute("aria-label", snd.title); };
-    // It was asked for with a click, so the sound is allowed from the start
-    const ctl = mountTrailer($("#trBox", el), yt, { loop: true, sound: true, onMuted: show, onFail: () => { noTrailer(kind, imdb); closeTrailer(); toast("This trailer can't be played here", 4000); } });
-    TRAILER_VIEW = { el, ctl, back };
-    snd.onclick = () => { ctl.mute(!muted); show(!muted); };
+    let muted = false, playing = false;
+    const snd = $("#trSnd", el), pp = $("#trPlay", el), bar = $("#trBar", el);
+    const showSnd = (m) => { muted = m; snd.innerHTML = ic(m ? "mute" : "vol"); snd.title = m ? "Sound on (M)" : "Sound off (M)"; snd.setAttribute("aria-label", snd.title); };
+    const showPlay = (on) => { playing = on; pp.innerHTML = ic(on ? "pause" : "play"); pp.title = on ? "Pause (Space)" : "Play (Space)"; pp.setAttribute("aria-label", on ? "Pause" : "Play"); bar.classList.toggle("tr-still", !on); };
+    // It was asked for with a click, so it starts with the sound on
+    const ctl = mountTrailer($("#trBox", el), yt, { loop: true, cover: true, scale: 1.2, onMuted: showSnd,
+      onState: (st) => { if (st === 1) { $("#trLoad", el).hidden = true; showPlay(true); } else if (st === 2 || st === 0) showPlay(false); },
+      onFail: () => { noTrailer(kind, imdb); closeTrailer(); toast("This trailer can't be played here", 4000); } });
+    TRAILER_VIEW = { el, ctl, back, toggle: () => (playing ? ctl.pause() : ctl.play()), mute: () => { ctl.mute(!muted); showSnd(!muted); } };
+    // The bar hides after a moment without the mouse moving, and stays up while it is paused
+    const wake = () => { bar.classList.add("tr-up"); clearTimeout(TRAILER_VIEW && TRAILER_VIEW.hideT); if (TRAILER_VIEW) TRAILER_VIEW.hideT = setTimeout(() => bar.classList.remove("tr-up"), 2500); };
+    el.addEventListener("mousemove", wake); wake();
+    $("#trHit", el).onclick = () => TRAILER_VIEW && TRAILER_VIEW.toggle();
+    pp.onclick = () => TRAILER_VIEW && TRAILER_VIEW.toggle();
+    snd.onclick = () => TRAILER_VIEW && TRAILER_VIEW.mute();
     $("#trClose", el).onclick = closeTrailer;
     el.addEventListener("mousedown", (e) => { if (e.target === el) closeTrailer(); });
     setTimeout(() => $("#trClose", el) && $("#trClose", el).focus({ preventScroll: true }), 50);
   }
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && TRAILER_VIEW) { e.preventDefault(); e.stopImmediatePropagation(); closeTrailer(); } }, true);
+  document.addEventListener("keydown", (e) => {
+    if (!TRAILER_VIEW) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); closeTrailer(); }
+    else if ((e.key === " " || e.key === "k") && !(e.target.closest && e.target.closest("button"))) { e.preventDefault(); e.stopImmediatePropagation(); TRAILER_VIEW.toggle(); }
+    else if (e.key === "m") { e.preventDefault(); e.stopImmediatePropagation(); TRAILER_VIEW.mute(); }
+  }, true);
   const stopPreviews = () => { closeTile(); stopHero(); };
 
   // ---------------------------------------------------------- home
@@ -4800,7 +4837,7 @@
     }
     // An open dropdown keeps the remote inside it until it's closed, otherwise down could land on the page behind it
     const openMenu = cur && cur.closest && cur.closest(".menu:not([hidden])");
-    const scope = sheetClose ? $$(".sheet-wrap").pop() : EMB ? EMB.el : openMenu || (playerOpen ? pl.el : document);
+    const scope = sheetClose ? $$(".sheet-wrap").pop() : EMB ? EMB.el : TRAILER_VIEW ? TRAILER_VIEW.el : openMenu || (playerOpen ? pl.el : document);
     if (playerOpen) wakeUi();
     const items = $$('a[href], button, input, select, summary, [tabindex]:not([tabindex="-1"])', scope).filter((el) => {
       // Things inside a closed section can't take focus, only the section's own toggle can

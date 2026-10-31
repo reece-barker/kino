@@ -243,7 +243,7 @@
       ME.admin = null;
       throw new Error((j && j.detail) || "Sign in as admin to do that");
     }
-    if (!r.ok) { const e = new Error((j && j.detail) || `Request failed (${r.status})`); e.status = r.status; throw e; }
+    if (!r.ok) { const e = new Error((j && j.detail) || (r.status >= 500 ? `The server couldn't open that (error ${r.status})` : `Request failed (${r.status})`)); e.status = r.status; throw e; }
     if (r.status === 202) return { ...j, _pending: true };
     return j;
   }
@@ -1828,9 +1828,10 @@
     let r;
     toast("Getting it ready", 2500);
     try { r = await api(`/api/streams/${encodeURIComponent(kind)}/${encodeURIComponent(vid)}`); } catch (e) { toast(e.message, 5000); return false; }
+    if (r.upcoming) { toast(`Not out yet, comes out on ${new Date(r.upcoming + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long" })}`, 5000); return false; }
     if (!r.streams.length) { toast(kind === "series" ? "There's no public domain copy of this episode" : "The addon didn't send anything Kino can play for that"); return false; }
     const s = r.streams[0];
-    SOURCES = { list: r.streams, tried: new Set() };
+    SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0 };
     playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
     return true;
   }
@@ -1838,15 +1839,24 @@
   // The sources a title or episode was played from. When one turns out broken it gets marked on the server (so it
   // goes to the back of the list next time) and the next one plays straight away, instead of asking about players
   let SOURCES = null;
+  // The ones the server found dead (no answer, an error, not a video) stay out of the list the player moves through by itself, unless nothing else is left
+  const liveSources = (list) => { const ok = list.filter((x) => x.health !== "dead" && !(x.suspect && x.suspect.length)); return ok.length ? ok : list.filter((x) => x.health !== "dead").length ? list.filter((x) => x.health !== "dead") : list; };
   const moreSources = (fid) => !!(SOURCES && SOURCES.list.some((x) => x.id !== fid && !SOURCES.tried.has(x.id)));
   function nextSource(fid, from, why) {
     api(`/api/streams/${fid}/bad`, {}).catch(() => {});
     if (!SOURCES || !SOURCES.list.some((x) => x.id === fid)) return false;
     SOURCES.tried.add(fid);
+    SOURCES.skips = (SOURCES.skips || 0) + 1;
     const n = SOURCES.list.find((x) => !SOURCES.tried.has(x.id));
-    if (!n) { toast("None of the sources for this would play. Try again later, or another player from the player's menu.", 7000); return false; }
-    toast(`${why || "That source didn't work"}, trying ${n.addon ? `one from ${n.addon}` : "another one"}`, 4000);
-    playFile(n.id, { from: from || 0 });
+    if (!n || SOURCES.skips > 8) {
+      toast(n ? "A lot of the sources aren't working right now. Try again in a bit, or pick one from the Sources list yourself." : "None of the sources for this would play. Try again later, or another player from the player's menu.", 7000);
+      return false;
+    }
+    // Only the first skip says so in a toast, the ones after it show on the loading screen so a run of dead sources isnt a run of popups
+    const left = SOURCES.list.filter((x) => !SOURCES.tried.has(x.id)).length;
+    const note = `${why || "That source didn't work"}, trying ${n.addon ? `one from ${n.addon}` : "another one"}`;
+    if (SOURCES.skips === 1) toast(note, 4000);
+    playFile(n.id, { from: from || 0, note: SOURCES.skips > 1 ? `${note} (${left} left)` : "" });
     return true;
   }
 
@@ -1861,6 +1871,7 @@
   async function drawStreams(kind, id, t, ep, got) {
     const box = $("#pdBox");
     const none = `<div class="not-lib glass" style="margin-top:14px">${ic("info")}<span>${kind === "movie" || kind === "series" ? "Not in Your Library" : "Nothing Kino Can Play"}</span></div>`;
+    const dayOf = (d) => new Date(d + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
     const url = `/api/streams/${kind}/${encodeURIComponent(id)}`;
     let r = got;
     // First whatever answers in a few seconds (TorBox and the quick addons) so Play shows straight away, then the
@@ -1872,6 +1883,12 @@
       else api(url).then((r2) => { if ($("#pdBox") === box && r2.streams.length > r.streams.length && !sheetClose) drawStreams(kind, id, t, ep, r2); }).catch(() => {});
     }
     const lb = listBtn(t.in_list);
+    // Not out yet: whatever is on offer for it is fake, so nothing is shown to play
+    if (r.upcoming) {
+      box.innerHTML = `<div class="actions">${lb}</div><div class="not-lib glass" style="margin-top:14px">${ic("info")}<span>Not out yet, comes out on ${esc(dayOf(r.upcoming))}</span></div>`;
+      wireListBtn({ kind, id: t.list_key }, t.list_key);
+      return;
+    }
     if (!r.streams.length) {
       // Admins get told why nothing can play, so a missing addon or a slow archive.org is easy to spot
       let why = "";
@@ -1894,8 +1911,9 @@
         ${lb}
         ${isAdmin() && (kind === "movie" || kind === "series") ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
       </div>
+      ${r.fresh ? `<div class="note pd-note">${ic("info")} This only just came out. Some sources can be camera recordings or fakes until it is properly released, the better ones are tried first.</div>` : ""}
       ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
-    const play = (s) => { SOURCES = { list: r.streams, tried: new Set() }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
+    const play = (s) => { SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0 }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
     $("#pdPlay").onclick = () => play(first);
     if (grabFocus) $("#pdPlay").focus({ preventScroll: true });
     wireListBtn({ kind, id: t.list_key }, t.list_key);
@@ -1906,10 +1924,12 @@
         <div class="src-list">${r.streams.map((s, i) => {
           const p = s.progress && !s.progress.watched && s.progress.dur ? s.progress.pos / s.progress.dur : 0;
           const meta = [s.format, s.bytes ? bytes(s.bytes) : "", s.seeders != null ? `${s.seeders} seeder${s.seeders === 1 ? "" : "s"}` : "", s.peers != null ? `${s.peers} peer${s.peers === 1 ? "" : "s"}` : "", s.addon].filter(Boolean);
-          return `<button class="src ${i === 0 ? "best" : ""}" data-src="${i}">
+          return `<button class="src ${i === 0 ? "best" : ""} ${s.health === "dead" ? "dead" : ""}" data-src="${i}">
             <span class="src-q ${s.height >= 720 ? "hd" : ""}">${esc(s.quality)}</span>
             <span class="src-body"><b>${esc(nice(s.label))}</b>
               <span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>
+              ${s.health === "dead" ? `<span class="src-warn">${ic("info")} Not answering right now${s.why ? `, it ${esc(s.why)}` : ""}</span>` : ""}
+              ${s.suspect && s.suspect.length ? `<span class="src-warn">${ic("info")} Probably not the real thing, it looks like ${esc(s.suspect.join(" and "))}</span>` : ""}
               ${!s.plays ? `<span class="src-warn">${ic("info")} Might not play in this browser, saving it to the Library always works</span>` : ""}
               ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
             ${i === 0 ? `<span class="src-tag">Best</span>` : ""}
@@ -1949,9 +1969,11 @@
         + `<h3 class="sr-sub">From Addons</h3>` + (streams ? (streams.length ? streams.map((x, i) => {
         const p = x.progress && !x.progress.watched && x.progress.dur ? x.progress.pos / x.progress.dur : 0;
         const meta = [x.format, x.bytes ? bytes(x.bytes) : "", x.seeders != null ? `${x.seeders} seeder${x.seeders === 1 ? "" : "s"}` : "", x.peers != null ? `${x.peers} peer${x.peers === 1 ? "" : "s"}` : "", x.addon].filter(Boolean);
-        return `<button class="src" data-str="${i}">
+        return `<button class="src ${x.health === "dead" ? "dead" : ""}" data-str="${i}">
           <span class="src-q ${x.height >= 720 ? "hd" : ""}">${esc(x.quality)}</span>
           <span class="src-body"><b>${esc(nice(x.label))}</b><span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>
+            ${x.health === "dead" ? `<span class="src-warn">${ic("info")} Not answering right now${x.why ? `, it ${esc(x.why)}` : ""}</span>` : ""}
+            ${x.suspect && x.suspect.length ? `<span class="src-warn">${ic("info")} Probably not the real thing, it looks like ${esc(x.suspect.join(" and "))}</span>` : ""}
             ${!x.plays ? `<span class="src-warn">${ic("info")} Might not play in this browser, saving it to the Library always works</span>` : ""}
             ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
           <span class="src-play">${ic("play")}</span></button>`;
@@ -1960,7 +1982,7 @@
       $$("[data-str]", list).forEach((b) => (b.onclick = () => {
         const x = streams[Number(b.dataset.str)];
         sh.close();
-        SOURCES = { list: streams, tried: new Set() };
+        SOURCES = { list: liveSources(streams), tried: new Set(), skips: 0 };
         playFile(x.id, { from: x.progress && !x.progress.watched ? x.progress.pos : 0 });
       }));
       if (TV) { const f = $("[data-own], [data-str]", list); if (f && !list.contains(document.activeElement)) f.focus({ preventScroll: true }); }
@@ -1969,7 +1991,8 @@
     const url = `/api/streams/${t.kind}/${encodeURIComponent(vid)}`;
     try {
       let r = await api(url + "?quick=1");
-      streams = r.streams; draw(!!r.partial);
+      streams = r.streams; if (r.upcoming) err = `Not out yet, comes out on ${new Date(r.upcoming + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}`;
+      draw(!!r.partial);
       if (r.partial) { r = await api(url); if (!sh.el.isConnected) return; streams = r.streams; draw(false); }
     } catch (e) { err = e.message; streams = []; draw(false); }
   }
@@ -3634,7 +3657,7 @@
       base: location.origin, ua: navigator.userAgent, fid, url, title: (t && t.name) || info.show || info.name, sub,
       start: opts.from != null ? opts.from : info.resume || 0, duration: info.duration || 0,
       audioN, audioChosen: audioN !== info.default_audio, audioLang: langCode(prefs.audio_lang), subLang: langCode(prefs.sub_lang), subs,
-      checkFake: !!(info.stream && (info.kind === "movie" || info.kind === "series")), autoNextSource: !!prefs.auto_next_source,
+      checkFake: !!(info.stream && (info.kind === "movie" || info.kind === "series")), expect: info.expect || 0, autoNextSource: !!prefs.auto_next_source,
       intro: info.intro, autoSkip: !!prefs.skip_intro, stillMins: Number(prefs.still_watching) || 0, dovi: !!(info.video && info.video.dovi),
       forceHls: !!(info.video && info.video.codec && !["h264", "hevc", "av1", "vp9", "mpeg4", "mpeg2video", "vp8"].includes(info.video.codec)),
     }));
@@ -3699,13 +3722,18 @@
     spinner(false);
     const tt = opts.title;
     loadShow(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "");
-    loadStep("Getting the file ready");
+    loadStep(opts.note || "Getting the file ready");
     $("#pMsg").hidden = true;
     $("#upNext").hidden = true;
     $("#skipIntro").hidden = true;
     $("#subsLayer").innerHTML = "";
     let info;
-    try { info = await api(`/api/file/${fid}`); } catch (e) { if (my !== PLAY_N) return; loadHide(); showMsg("Can't play this file", e.message); return; }
+    try { info = await api(`/api/file/${fid}`); } catch (e) {
+      if (my !== PLAY_N) return;
+      // A source that wont even open moves on to the next one by itself (that was a dead end before, with only a message)
+      if (SOURCES && SOURCES.list.some((x) => x.id === fid) && moreSources(fid) && nextSource(fid, opts.from, "That source didn't open")) return;
+      loadHide(); showMsg("Can't play this file", e.message); return;
+    }
     if (my !== PLAY_N || pl.el.hidden) return;
     loadArt(info.art, (opts.title && opts.title.name) || info.show || info.name);
     if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
@@ -4139,6 +4167,8 @@
   // TorBox has a second one now: about 2 minutes, black with text (Already downloading and a QR code). A real film or episode is never
   // that short, so that length plus a dark picture with text on it counts, and where the picture cant be read the length alone does
   const isFakeLen = (d) => d >= 27 && d <= 33;
+  // Far shorter than the film or episode should be (the metadata says how long it is): a fake, a trailer or a clip that stands in for it
+  const tooShort = (d) => { const e = pl.info && pl.info.expect; return !!(e && e >= 20 && d > 0 && d < e * 60 * 0.35); };
   const isLongFakeLen = (d) => d >= 100 && d <= 140;
   function darkTextFrame() {
     try {
@@ -4169,7 +4199,7 @@
     const info = pl.info;
     if (!info || pl.fakeAsked || !info.stream || (info.kind !== "movie" && info.kind !== "series")) return;
     const p = pos();
-    let fake = isFakeLen(total());
+    let fake = isFakeLen(total()) || tooShort(total());
     if (!fake && p > 1.5 && p < 8 && !pl.v.paused && pl.mode === "direct" && !pl.greenChecked) { pl.greenChecked = true; fake = greenFrame() && (!total() || total() < 120); }
     // The text comes in a little after the start, so the picture gets looked at every couple of seconds for the first 40
     if (!fake && isLongFakeLen(total()) && p > 1.5 && p < 40 && !pl.v.paused && Date.now() - (pl.frameAt || 0) > 2000) {
@@ -4178,14 +4208,15 @@
       fake = f === null || f;
     }
     if (!fake) return;
-    const long = !isFakeLen(total()) && total() > 60, what = long ? "2 minute" : "30 second";
+    const dur = total(), mins = Math.max(1, Math.round(dur / 60)), short = dur < 45;
+    const what = short ? "30 second" : `${mins} minute`;
     pl.fakeAsked = true;
     const fid = info.id, more = moreSources(fid), auto = info.prefs && info.prefs.auto_next_source;
     if (auto && more) { nextSource(fid, 0, `That copy was a ${what} placeholder`); return; }
     api(`/api/streams/${fid}/bad`, {}).catch(() => {});
     pl.v.pause();
     const box = $("#upNext");
-    box.innerHTML = `<div class="un-body"><div class="lbl">Probably a TorBox placeholder${more ? "" : ", and there's no other source"}</div><div class="nm">This Copy is Only ${long ? "2 Minutes" : "30 Seconds"}</div>
+    box.innerHTML = `<div class="un-body"><div class="lbl">Probably a placeholder or fake${more ? "" : ", and there's no other source"}</div><div class="nm">This Copy is Only ${short ? "30 Seconds" : `${mins} Minute${mins === 1 ? "" : "s"}`}</div>
       <div class="actions">${more ? `<button class="btn primary small" id="fkNext">Next Source</button>` : ""}<button class="btn secondary small" id="fkKeep">${more ? "Keep Watching" : "OK"}</button></div></div>`;
     box.hidden = false;
     if (more) $("#fkNext").onclick = () => { box.hidden = true; nextSource(fid, 0, "Skipped the placeholder"); };

@@ -2626,7 +2626,7 @@
       // The app's own player, with the channels around this one so up and down change channel without leaving it
       const lo = Math.max(0, i - 100), near = list.slice(lo, i + 100);
       window.KinoAndroid.playNative(JSON.stringify({
-        live: true, fid: ch.id, url: `/api/live/${ch.id}/index.m3u8`, title: ch.name, sub: ch.now ? `Live  ·  ${ch.now.title}` : "Live",
+        live: true, fid: ch.id, url: `/api/live/${ch.id}/index.m3u8`, title: ch.name, sub: ch.now ? ch.now.title : "",
         channels: near.map((c) => ({ id: c.id, name: c.name, now: c.now ? c.now.title : "", logo: c.logo || "" })), index: i - lo,
         base: location.origin, ua: navigator.userAgent, start: 0, duration: 0, art: { background: null, logo: ch.logo || null }, video: {}, subs: [], audioN: 0,
         isStream: false, moreSources: false, autoplay: false, loadStats: false, subSize: (ME.profile && ME.profile.prefs && ME.profile.prefs.sub_size) || "m",
@@ -2650,7 +2650,7 @@
     liveChrome();
     pl.info = { live: true, id: ch.id, name: ch.name, prefs: (ME.profile && ME.profile.prefs) || {}, subs: [], audio: [], stream: false, duration: 0 };
     $("#pTitle").textContent = ch.name;
-    $("#pSub").textContent = ch.now ? `Live  ·  ${ch.now.title}` : "Live";
+    $("#pSub").textContent = ch.now ? ch.now.title : "";  // the red chip says Live, with nothing on the guide the name stands alone next to the logo
     // The channels logo sits in front of its name, if it cant load the name is still there
     const pg = $("#pLogo");
     pg.hidden = true;

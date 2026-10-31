@@ -1558,7 +1558,7 @@ body.tv .search input:focus, body.tv .sheet .search input:focus { outline: none;
 @media (max-width: 700px) { .guide { --g-ch: 110px; } .g-ch img { display: none; } .ch-grid { grid-template-columns: 1fr; } }
 /* the player for live tv: no timeline, the 10 second buttons change channel */
 .player.live .tl-row { visibility: hidden; }
-.player.live #pSub { color: #ff6b6d; }
+.player.live #pSub { color: rgba(255, 255, 255, 0.72); }  /* what is on, the red chip already says Live */
 body.tv .ch-card:focus-visible, body.tv .g-ch:focus-visible { outline: none; transform: scale(1.04); box-shadow: 0 0 0 3px #fff, 0 14px 30px rgba(0, 0, 0, 0.5); z-index: 2; }
 body.tv .g-prog:focus-visible { outline: none; box-shadow: inset 0 0 0 3px #fff; background: var(--bg-4); z-index: 2; }
 body.tv .live-tabs a:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; }
@@ -1764,6 +1764,19 @@ body.tv .who-tile:hover:not(:focus-visible) .av.av-duo .av-half:last-child { box
 .player-title { flex: 1; min-width: 0; }
 .live-chip { margin-left: auto; flex: none; padding: 4px 10px; border-radius: 6px; background: #e5383b; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
 .player:not(.live) .live-chip, .player:not(.live) .player-logo { display: none; }
+/* Live: logo, then the channel name with what is on under it. With nothing on the guide the name is on its own and sits level with the logo */
+.player-title .secondary:empty { display: none; }
+.player.live .player-top { gap: 14px; }
+.player.live .player-logo { height: 48px; max-width: 150px; }
+.player.live .player-title { align-self: center; }
+.player.live .player-title div:first-child { line-height: 1.2; }
+@media (max-width: 760px) {
+  .player.live .player-logo { height: 38px; max-width: 84px; }
+  .player.live .player-top { gap: 10px; }
+  .player.live .player-title div:first-child { font-size: 16px; }
+  .player.live .player-title .secondary { font-size: 12.5px; }
+}
+@media (min-width: 761px) and (hover: hover) { .player.live .player-logo { height: 52px; max-width: 170px; } }
 
 /* No double tap zoom anywhere (pinch stays in a browser tab), and as a home screen app no pinch either */
 html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }

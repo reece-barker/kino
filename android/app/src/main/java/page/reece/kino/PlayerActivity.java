@@ -279,25 +279,39 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             View gap = new View(this);
             top.addView(gap, new LinearLayout.LayoutParams(dp(16), 1));
         }
+        // Live tv: the channel logo sits to the left of its name and what is on now (like the web player), the name stays centred
+        // with the logo when nothing is known about what is on. A film or episode shows its logo instead of the name, stacked
         LinearLayout names = new LinearLayout(this);
-        names.setOrientation(LinearLayout.VERTICAL);
+        names.setOrientation(live ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        if (live) names.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout col = names;
         logo = new ImageView(this);
         logo.setAdjustViewBounds(true);
-        logo.setMaxHeight(dp(64));
-        logo.setMaxWidth(dp(300));
-        logo.setScaleType(ImageView.ScaleType.FIT_START);
+        logo.setMaxHeight(dp(live ? 48 : 64));
+        logo.setMaxWidth(dp(live ? 130 : 300));
+        logo.setScaleType(live ? ImageView.ScaleType.FIT_CENTER : ImageView.ScaleType.FIT_START);
         logo.setVisibility(View.GONE);
-        names.addView(logo, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams lgp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        if (live) lgp.rightMargin = dp(14);
+        names.addView(logo, lgp);
+        if (live) {
+            col = new LinearLayout(this);
+            col.setOrientation(LinearLayout.VERTICAL);
+            col.setGravity(Gravity.CENTER_VERTICAL);
+            names.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        }
         title = text(22, Color.WHITE, true);
         title.setText(info.optString("title"));
         title.setMaxLines(1);
         title.setEllipsize(TextUtils.TruncateAt.END);
-        names.addView(title);
+        col.addView(title);
         sub = text(15, 0xB3FFFFFF, false);
         sub.setText(info.optString("sub"));
-        sub.setPadding(0, dp(6), 0, 0);
+        sub.setPadding(0, dp(live ? 2 : 6), 0, 0);
+        sub.setMaxLines(1);
+        sub.setEllipsize(TextUtils.TruncateAt.END);
         sub.setVisibility(info.optString("sub").isEmpty() ? View.GONE : View.VISIBLE);
-        names.addView(sub);
+        col.addView(sub);
         top.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         if (live) {
             // Same red chip as the Live one on a favourites card, on the right of the top bar
@@ -484,7 +498,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         loadImage(img(url, true, 640), b -> {
             if (tok != logoTok) return;
             plLogo.setImageBitmap(b); plLogo.setVisibility(View.VISIBLE); plName.setVisibility(View.GONE);
-            logo.setImageBitmap(b); logo.setVisibility(View.VISIBLE); title.setVisibility(View.GONE);
+            logo.setImageBitmap(b); logo.setVisibility(View.VISIBLE); title.setVisibility(live ? View.VISIBLE : View.GONE);
         });
     }
 
@@ -1206,8 +1220,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         plName.setText(ch.optString("name"));
         showLogo(ch.optString("logo"));
         String now = ch.optString("now");
-        sub.setText(now.isEmpty() ? "Live" : "Live  ·  " + now);
-        sub.setVisibility(View.VISIBLE);
+        sub.setText(now);
+        sub.setVisibility(now.isEmpty() ? View.GONE : View.VISIBLE);
         toast((liveIdx + 1) + "  " + ch.optString("name"));
         errorShown = false;
         closeDialog();

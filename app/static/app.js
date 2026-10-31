@@ -2866,6 +2866,7 @@
         <div class="form-err" id="ipErr" role="alert"></div>`)}
       ${fold("devicesCard", "Allowed Devices", "", `<div id="devicesBody"><div class="skel" style="height:80px"></div></div>`)}
       <section class="card set-card" id="liveCard"><div class="skel" style="height:80px"></div></section>
+      <section class="card set-card" id="liveFilterCard"><div class="skel" style="height:80px"></div></section>
       <section class="card set-card" id="embedCard"></section>
       <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>
       <section class="card set-card" id="mediaCard"><div class="skel" style="height:80px"></div></section>`;
@@ -2873,6 +2874,7 @@
     drawDevices();
     drawAddons();
     drawLiveAdmin();
+    drawLiveFilter();
     $$("[data-editp]", box).forEach((b) => (b.onclick = () => editProfile(pr.profiles.find((x) => x.id === Number(b.dataset.editp)), () => drawAdminSettings(), pr.folders)));
     $$("[data-papprove]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/profiles/${b.dataset.papprove}/approve`, {}); toast("Profile approved"); drawAdminSettings(); }));
     $$("[data-pdeny]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/profiles/${b.dataset.pdeny}`, undefined, "DELETE"); toast("Request removed"); drawAdminSettings(); }));
@@ -2892,6 +2894,33 @@
       try { await api("/api/admin/allowlist?cidr=" + encodeURIComponent(b.dataset.rmip), undefined, "DELETE"); toast("Network removed"); drawAdminSettings(); }
       catch (er) { $("#ipErr").textContent = er.message; }
     }));
+  }
+
+  // Live TV: hide the kinds of channel nobody here watches. Nothing is hidden until it is switched on. Favourites stay, whatever they are
+  async function drawLiveFilter() {
+    const box = $("#liveFilterCard");
+    if (!box) return;
+    let r;
+    try { r = await api("/api/admin/live/filter"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
+    if (!$("#liveFilterCard")) return;
+    box.innerHTML = `<h2 class="set-title">Hide Channels</h2>
+      <p class="secondary set-hint">Switch on the kinds of channel nobody here watches and they leave Live TV and the Guide for everyone. Channels that are favourites stay. Channels that get watched move to the top by themselves.</p>
+      ${r.categories.map((c) => `<label class="set-row"><span><b>${esc(c.label)}</b><span class="secondary">${c.count} channel${c.count === 1 ? "" : "s"} in your playlists</span></span><input type="checkbox" class="switch" data-fcat="${c.key}" ${c.on ? "checked" : ""}></label>`).join("")}
+      <h3 class="sr-sub">Words in a Channel's Name</h3>
+      <div class="int-list">${r.words.length ? r.words.map((w) => `<button class="int-chip" data-fword="${esc(w)}" aria-label="Show channels with ${esc(w)} again" title="Remove"><span>${esc(w)}</span>${ic("close")}</button>`).join("") : `<span class="secondary">No words yet. A channel with the word in its name is hidden.</span>`}</div>
+      <form class="ip-form" id="fwForm"><input id="fwWord" placeholder="A word, like shopping" maxlength="40" autocomplete="off"><button class="btn primary small" type="submit">${ic("plus")} Hide</button></form>`;
+    const save = async (cats, words, msg) => {
+      try { await api("/api/admin/live/filter", { cats, words }, "PUT"); toast(msg); drawLiveFilter(); } catch (e) { toast(e.message, 5000); }
+    };
+    const cur = () => ({ cats: $$("[data-fcat]", box).filter((c) => c.checked).map((c) => c.dataset.fcat), words: r.words });
+    $$("[data-fcat]", box).forEach((c) => (c.onchange = () => save(cur().cats, r.words, c.checked ? "Hidden from Live TV" : "Shown in Live TV again")));
+    $$("[data-fword]", box).forEach((b) => (b.onclick = () => save(cur().cats, r.words.filter((x) => x !== b.dataset.fword), "Shown again")));
+    $("#fwForm", box).onsubmit = (e) => {
+      e.preventDefault();
+      const w = $("#fwWord", box).value.trim().toLowerCase();
+      if (w.length < 2) return;
+      save(cur().cats, [...r.words, w], "Hidden from Live TV");
+    };
   }
 
   // Downloaded media: everything on the Storage Box, where it came from, and delete. Deleted things are remembered so the sync

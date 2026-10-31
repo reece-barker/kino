@@ -170,7 +170,9 @@ CREATE TABLE IF NOT EXISTS sources_seen (id TEXT PRIMARY KEY, kind TEXT, has INT
 CREATE TABLE IF NOT EXISTS iptv_lists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, epg TEXT, local INTEGER DEFAULT 0,
   enabled INTEGER DEFAULT 1, added REAL, refreshed REAL, count INTEGER DEFAULT 0, error TEXT);
 CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, list_id INTEGER, name TEXT, logo TEXT, grp TEXT, country TEXT, tvg TEXT,
-  url TEXT, headers TEXT, rank INTEGER, ok INTEGER, checked REAL);
+  url TEXT, headers TEXT, rank INTEGER, ok INTEGER, checked REAL, junk TEXT);
+CREATE TABLE IF NOT EXISTS live_usage (name TEXT PRIMARY KEY, plays INTEGER, last REAL);
+CREATE TABLE IF NOT EXISTS live_filter (kind TEXT, value TEXT, PRIMARY KEY (kind, value));
 CREATE INDEX IF NOT EXISTS channels_rank ON channels(rank, name);
 CREATE TABLE IF NOT EXISTS epg (tvg TEXT, start REAL, stop REAL, title TEXT, sub TEXT, descr TEXT);
 CREATE INDEX IF NOT EXISTS epg_ch ON epg(tvg, start);
@@ -260,6 +262,13 @@ def migrate():
         # Channels switched off by a single failed attempt or a busy provider get another look (the check runs again on its own)
         d.q("UPDATE channels SET ok = NULL, checked = NULL WHERE ok = 0")
         d.q("PRAGMA user_version = 3")
+    if "junk" not in [r["name"] for r in d.q("PRAGMA table_info(channels)")]:
+        d.q("ALTER TABLE channels ADD COLUMN junk TEXT")
+    if d.q("PRAGMA user_version")[0]["user_version"] < 4:
+        # Every channel gets the kind of channel it is (religious, shopping...), which the admin can choose to hide in Settings
+        for r in d.q("SELECT id, name, grp FROM channels"):
+            d.q("UPDATE channels SET junk = ? WHERE id = ?", (classify_junk(r["name"], r["grp"]), r["id"]))
+        d.q("PRAGMA user_version = 4")
     # First run with profiles: makes one profile per old login and moves there watch progress over
     if d.q("SELECT COUNT(*) AS n FROM profiles")[0]["n"]:
         return
@@ -6068,8 +6077,40 @@ M3U_ATTR = re.compile(r'([\w-]+)="([^"]*)"')
 UK_FIRST = ("bbc", "itv", "channel 4", "channel 5", "e4", "more4", "film4", "sky", "dave", "gb news", "tnt sports", "quest",
             "5usa", "s4c", "u&", "drama", "yesterday", "w ", "talk")
 EN_COUNTRIES = ("ie", "ca", "au", "nz")
+# Channels most people know, they come before the rest of their country in the list (the ones that actually get watched move up on top of that)
+POPULAR_RX = re.compile(r"\b(espn|cnn|bbc|sky|fox|nbc|cbs|abc|hbo|amc|fx|discovery|national geographic|nat geo|history|eurosport|dazn|tnt|bt sport|premier|formula|f1|nickelodeon|disney|cartoon network|mtv|comedy central|paramount|tlc|bravo|itv|channel 4|channel 5|e4|film4|dave|gb news|quest|cnbc|bloomberg|euronews|al jazeera|france 24)\b")
 GROUPS = [("News", r"news"), ("Sports", r"sport"), ("Movies", r"movie|film|cinema"), ("Kids", r"kid|animation|cartoon|family"),
           ("Music", r"music"), ("Documentary", r"documentar|science|education|nature"), ("Entertainment", r"entertain|general|series|comedy|lifestyle|culture|reality|show")]
+
+
+# Kinds of channel the admin can hide in Settings (Live TV, Hide Channels). Nothing is hidden until it is switched on. Matched on the channel name
+# and its group in the playlist
+JUNK = {
+    "religious": ("Religious", re.compile(r"\b(church|gospel|christian|jesus|bible|catholic|ewtn|tbn|god ?tv|daystar|hillsong|3abn|islam\w*|quran\w*|koran|muslim|makkah|mecca|madinah|madina|hajj|allah|ahmadi\w*|iqra|madani|peace ?tv|bhakti|bhajan|aastha|sanskar|sikh|gurbani|gurdwara|hindu|buddh\w*|torah|jewish|prayer|sermon|worship|spiritual|religio\w*|rosary|vatican)\b", re.I)),
+    "shopping": ("Shopping", re.compile(r"\b(shop|shopping|qvc|hsn|ideal world|jewellery maker|tjc|teleshop\w*|bid ?tv|price drop|gems? tv)\b", re.I)),
+    "adult": ("Adult", re.compile(r"\b(xxx|adult|erotic\w*|porn\w*|playboy|hustler|penthouse|brazzers)\b|18\+", re.I)),
+    "radio": ("Radio", re.compile(r"\bradio\b", re.I)),
+}
+
+
+def classify_junk(name, grp=""):
+    t = f"{name} {grp}"
+    for k, (_, rx) in JUNK.items():
+        if rx.search(t):
+            return k
+    return None
+
+
+def junk_where():
+    """What the admin chose to hide, as SQL for the channel lists (c is the channels table): whole kinds of channel and words in a name"""
+    cats = [r["value"] for r in db().q("SELECT value FROM live_filter WHERE kind = 'cat'")]
+    words = [r["value"] for r in db().q("SELECT value FROM live_filter WHERE kind = 'word'")]
+    sql, args = [], []
+    if cats:
+        sql.append("(c.junk IS NULL OR c.junk NOT IN (%s))" % ",".join("?" * len(cats))); args += cats
+    for w in words[:50]:
+        sql.append("lower(c.name) NOT LIKE ?"); args.append(f"%{w.lower()}%")
+    return sql, args
 
 
 def live_group(raw, name=""):
@@ -6102,7 +6143,7 @@ def live_rank(name, country, lang):
     if not english and base < 3:
         base = 3
     n = norm(name)
-    star = 0 if any(n.startswith(x) for x in UK_FIRST) else 1
+    star = 0 if any(n.startswith(x) for x in UK_FIRST) or POPULAR_RX.search(n) else 1
     return base * 10 + star
 
 
@@ -6140,7 +6181,7 @@ def parse_m3u(text, list_id, default_country=""):
                 out.append({"id": "c" + hashlib.sha1(f"{list_id}|{line}|{cur['name']}".encode()).hexdigest()[:15], "list_id": list_id,
                             "name": cur["name"][:120], "logo": a.get("tvg-logo") or None, "grp": grp, "country": country,
                             "tvg": (a.get("tvg-id") or "").strip() or None, "url": line, "headers": json.dumps(hdr) if hdr else None,
-                            "rank": live_rank(cur["name"], country, a.get("tvg-language"))})
+                            "rank": live_rank(cur["name"], country, a.get("tvg-language")), "junk": classify_junk(cur["name"], a.get("group-title") or grp)})
             cur = None
     return out, epg
 
@@ -6300,11 +6341,11 @@ async def refresh_list(row):
             guides = [(g, None) for g in guides]
         tags = {guide_tag(g) for g, _ in guides}
         rows = [(c["id"], lid, c["name"], c["logo"], c["grp"], c["country"], keep_tvg(c, old, tags), c["url"], c["headers"], c["rank"],
-                 (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked")) for c in chans]
+                 (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked"), c.get("junk")) for c in chans]
 
         def store():
             db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
-            db_chunks("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            db_chunks("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
         await asyncio.to_thread(store)
         for g, ctry in guides:
             try:
@@ -6485,6 +6526,9 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
     if q:
         where.append("c.name LIKE ?"); args.append(f"%{q.strip()[:40]}%")
     favs = fav_names(p["id"])
+    # Kinds of channel the admin hid (Settings, Live TV), favourites stay whatever they are
+    jsql, jargs = ([], []) if fav else junk_where()
+    where.extend(jsql); args.extend(jargs)
     # With no filter and some favourites, the page shows them in their own row on top, so the list below leaves them out (they were there twice)
     if favs and not (fav or group or country or q):
         where.append("lower(c.name) NOT IN (SELECT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL)"); args.append(p["id"])
@@ -6492,9 +6536,10 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
     # The same channel can be in a playlist more than once (a backup link, or the same one in two lists), a channel shows once, the copy that
     # works (or is first in the playlist) is the one that is used
     rows = db().q(f"WITH r AS (SELECT c.*, ROW_NUMBER() OVER (PARTITION BY lower(c.name) ORDER BY (c.ok = 1) DESC, c.rank, c.id) AS rn, "
-                  "(lower(c.name) IN (SELECT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL)) AS isfav "
+                  "(lower(c.name) IN (SELECT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL)) AS isfav, "
+                  "COALESCE((SELECT plays FROM live_usage u WHERE u.name = lower(c.name)), 0) AS plays "
                   f"FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {w}) "
-                  "SELECT * FROM r WHERE rn = 1 ORDER BY isfav DESC, rank, ok DESC, name LIMIT 120 OFFSET ?", [p["id"], *args, max(0, skip)])
+                  "SELECT * FROM r WHERE rn = 1 ORDER BY isfav DESC, plays DESC, rank, (tvg IS NOT NULL) DESC, ok DESC, name LIMIT 120 OFFSET ?", [p["id"], *args, max(0, skip)])
     guide = now_next({r["tvg"] for r in rows if r["tvg"]})
     out = {"channels": [{**chan_out(r, guide), "fav": r["name"].lower() in favs} for r in rows], "next": skip + len(rows) if len(rows) == 120 else None}
     if skip == 0:
@@ -6502,6 +6547,9 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
         out["recordings"] = db().q("SELECT COUNT(*) n FROM recordings WHERE state != 'cancelled'")[0]["n"]
         base = "FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1" + ("" if all else " AND (c.ok IS NULL OR c.ok = 1)") + (" AND c.grp = 'Kids'" if p.get("kids") else "") + (f" AND {cw}" if cw else "")
         bargs = list(LIVE_HOME_COUNTRIES) if cw else []
+        bj, bja = junk_where()
+        if bj:
+            base += " AND " + " AND ".join(bj); bargs += bja
         out["groups"] = [r["grp"] for r in db().q(f"SELECT c.grp, COUNT(*) n {base} GROUP BY c.grp ORDER BY n DESC LIMIT 30", bargs)]
         cs = [r["country"] for r in db().q(f"SELECT c.country, COUNT(*) n {base} AND c.country != '' GROUP BY c.country ORDER BY n DESC", bargs)]
         lead = [c for c in ("uk", "us", "fr", "de") if c in cs]
@@ -6540,6 +6588,8 @@ async def live_guide(start: float = 0, hours: float = 3, group: str = "", countr
     start = start or (time.time() // 1800) * 1800
     end = start + min(12, max(1, hours)) * 3600
     where, args = ["l.enabled = 1", "c.tvg IS NOT NULL", "(c.ok IS NULL OR c.ok = 1)", "EXISTS (SELECT 1 FROM epg e WHERE e.tvg = c.tvg AND e.stop > ?)"], [time.time()]
+    jsql, jargs = junk_where()
+    where.extend(jsql); args.extend(jargs)
     if p.get("kids"):
         where.append("c.grp = 'Kids'")
     cw = live_country_where(p)
@@ -6654,12 +6704,55 @@ LIVE_ERR = {}  # channel id -> (when, what went wrong) the last time it wouldnt 
 @app.get("/api/live/{cid}/index.m3u8")
 async def live_play(cid: str, request: Request, p=Depends(current_profile)):
     try:
-        return await live_play_inner(cid, request, p)
+        res = await live_play_inner(cid, request, p)
+        await asyncio.to_thread(note_live_play, p["id"], cid)
+        return res
     except HTTPException as e:
         LIVE_ERR[cid] = (time.time(), str(e.detail)[:200])
         if len(LIVE_ERR) > 500:
             LIVE_ERR.pop(next(iter(LIVE_ERR)), None)
         raise
+
+
+LIVE_PLAYED = {}  # (profile, channel) -> when it was last counted
+
+
+def note_live_play(pid, cid):
+    """Channels people actually watch float to the top of the list. One count per profile and channel every 10 minutes, so retuning or a
+    stream that restarts doesnt count again"""
+    now = time.time()
+    if now - LIVE_PLAYED.get((pid, cid), 0) < 600:
+        return
+    LIVE_PLAYED[(pid, cid)] = now
+    row = db().q("SELECT name FROM channels WHERE id = ?", (cid,)) if cid.startswith("c") else None
+    if row:
+        db().q("INSERT INTO live_usage (name, plays, last) VALUES (?, 1, ?) ON CONFLICT(name) DO UPDATE SET plays = plays + 1, last = excluded.last", (row[0]["name"].lower(), now))
+
+
+@app.get("/api/admin/live/filter")
+async def live_filter_get(admin=Depends(require_admin)):
+    counts = {r["junk"]: r["n"] for r in db().q("SELECT junk, COUNT(*) n FROM channels WHERE junk IS NOT NULL GROUP BY junk")}
+    on = {r["value"] for r in db().q("SELECT value FROM live_filter WHERE kind = 'cat'")}
+    return {"categories": [{"key": k, "label": v[0], "count": counts.get(k, 0), "on": k in on} for k, v in JUNK.items()],
+            "words": [r["value"] for r in db().q("SELECT value FROM live_filter WHERE kind = 'word' ORDER BY value")]}
+
+
+@app.put("/api/admin/live/filter")
+async def live_filter_set(request: Request, admin=Depends(require_admin)):
+    b = await request.json()
+    cats = [c for c in (b.get("cats") or []) if c in JUNK]
+    words = []
+    for w in (b.get("words") or [])[:50]:
+        w = re.sub(r"\s+", " ", str(w)).strip().lower()[:40]
+        if len(w) >= 2 and w not in words:
+            words.append(w)
+    db().q("DELETE FROM live_filter")
+    for c in cats:
+        db().q("INSERT INTO live_filter VALUES ('cat', ?)", (c,))
+    for w in words:
+        db().q("INSERT INTO live_filter VALUES ('word', ?)", (w,))
+    log.info("kino live filter set by %s: %s, %d words", logsafe(admin), ",".join(cats) or "no kinds", len(words))
+    return {"ok": True}
 
 
 @app.get("/api/live/{cid}/why")

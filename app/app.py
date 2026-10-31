@@ -107,7 +107,7 @@ IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.spa
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
 AVATAR_COUNT = 36  # Has to match the AVATARS list in app.js
-DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False}
+DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False, "previews": True}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("kino")
@@ -1742,7 +1742,7 @@ async def profile_update(request: Request, p=Depends(current_profile)):
             prefs[k] = str(v or "")[:30]
         elif k == "sub_size" and v in ("s", "m", "l"):
             prefs[k] = v
-        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source", "live_all_countries"):
+        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source", "live_all_countries", "previews"):
             prefs[k] = bool(v)
         elif k == "still_watching":
             # Minutes without touching anything before the player asks if anyones still there, 0 is off
@@ -7132,6 +7132,22 @@ def note_live_play(pid, cid):
     row = db().q("SELECT name FROM channels WHERE id = ?", (cid,)) if cid.startswith("c") else None
     if row:
         db().q("INSERT INTO live_usage (name, plays, last) VALUES (?, 1, ?) ON CONFLICT(name) DO UPDATE SET plays = plays + 1, last = excluded.last", (row[0]["name"].lower(), now))
+
+
+@app.get("/api/trailer/{kind}/{mid}")
+async def trailer_for(kind: str, mid: str, p=Depends(current_profile)):
+    """The YouTube id of a title's trailer, from the details Cinemeta has (trailerStreams first, then trailers). Nothing for a title without one, and
+    for ids that aren't an IMDb one (other addons dont give trailers). Asked through the same limited, merged and cached way as other addon data"""
+    if kind not in ("movie", "series") or not re.fullmatch(r"tt\d{5,10}", mid):
+        return {"yt": None}
+    try:
+        j = await fetch_json(f"{CINEMETA}/meta/{kind}/{mid}.json", ttl=86400, timeout=10)
+    except Exception:
+        return {"yt": None}
+    m = (j or {}).get("meta") or {}
+    ids = [str(t.get("ytId") or "") for t in (m.get("trailerStreams") or []) if isinstance(t, dict)]
+    ids += [str(t.get("source") or "") for t in sorted([t for t in (m.get("trailers") or []) if isinstance(t, dict)], key=lambda t: t.get("type") != "Trailer")]
+    return {"yt": next((i for i in ids if re.fullmatch(r"[\w-]{11}", i)), None)}
 
 
 @app.get("/api/admin/upstream")

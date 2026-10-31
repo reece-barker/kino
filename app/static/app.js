@@ -60,6 +60,7 @@
     guide: "M3 4h18v2H3zm0 4h5v5H3zm7 0h11v5H10zm-7 7h9v5H3zm11 0h7v5h-7z",
     video: "M4 6h12a2 2 0 012 2v1.5l4-2.5v10l-4-2.5V16a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2z",
     puzzle: "M20.5 11H19V7a2 2 0 00-2-2h-4V3.5a2.5 2.5 0 00-5 0V5H4a2 2 0 00-2 2v3.8h1.5a2.7 2.7 0 010 5.4H2V20a2 2 0 002 2h3.8v-1.5a2.7 2.7 0 015.4 0V22H17a2 2 0 002-2v-4h1.5a2.5 2.5 0 000-5z",
+    trailer: "M4 5h16a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2zM10 8.5v7l6-3.5z",
   };
   const ic = (n) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${P[n]}"/></svg>`;
 
@@ -957,7 +958,7 @@
       : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
     const mark = (t.watched ? `<span class="tile-check" title="Watched">${ic("check")}</span>` : "") + (t.family ? `<span class="tile-love ${t.loved ? "loved" : ""}" title="${esc(t.family)}">${ic(t.loved ? "love" : "up")}</span>` : "");
     const href = t.external ? extHref(t) : `#/title/${t.id}`;
-    return `<a class="tile poster ${t.external ? "ext" : ""} ${t.watched ? "is-watched" : ""}" href="${href}" ${t.external && t.poster ? `data-poster="${esc(t.poster)}"` : ""}><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
+    return `<a class="tile poster ${t.external ? "ext" : ""} ${t.watched ? "is-watched" : ""}" href="${href}" ${trailerAttrs(t)} ${t.external && t.poster ? `data-poster="${esc(t.poster)}"` : ""}><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
   }
   function wideTile(t, opts = {}) {
     const bg = t.background
@@ -967,10 +968,207 @@
     const bar = opts.progress != null && opts.progress > 0 ? `<div class="bar"><i style="width:${Math.min(100, opts.progress * 100)}%"></i></div>` : "";
     const href = opts.href || (t.external ? extHref(t) : `#/title/${t.id}`);
     const x = opts.hide && !TV ? `<button class="tile-x" data-hide="${esc(opts.hide)}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
-    return `<a class="tile landscape" href="${href}" ${TV && opts.hide ? `data-cw="${esc(opts.hide)}" data-cwname="${esc(t.name)}"` : ""} ${opts.play ? `data-play="${esc(opts.play)}" data-tid="${esc(t.id)}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
+    return `<a class="tile landscape" href="${href}" ${trailerAttrs(t)} ${TV && opts.hide ? `data-cw="${esc(opts.hide)}" data-cwname="${esc(t.name)}"` : ""} ${opts.play ? `data-play="${esc(opts.play)}" data-tid="${esc(t.id)}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
       <div class="cap">${esc(t.name)}</div><div class="sub">${esc(opts.sub || t.genres?.slice(0, 2).join(", ") || t.releaseInfo || "")}</div></a>`;
   }
   const metaLine = (t) => [t.kind === "video" ? "" : t.kind === "series" ? "TV Show" : "Movie", t.releaseInfo, t.genres?.slice(0, 2).join(", "), t.runtime, t.rating ? `IMDb ${t.rating}` : ""].filter(Boolean);
+
+  // ---------------------------------------------------------- trailers
+  // The YouTube id of a title's trailer comes from the details Cinemeta has (no addon needed, it can't touch the sources). A Trailer button on
+  // the title pages opens it. On computers a trailer also plays in the background of a title's page and when you hover a card on a row (the
+  // card grows and pushes the rest aside, like Netflix), muted. Touch screens and TVs only get the button. It uses youtube-nocookie.com, so
+  // YouTube sees the viewer's address when one plays.
+  const CAN_HOVER = !TV && !LITE && !!window.matchMedia && matchMedia("(hover: hover) and (pointer: fine)").matches && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const previewsOn = () => CAN_HOVER && !(ME.profile && ME.profile.prefs && ME.profile.prefs.previews === false);
+  const TRAILERS = new Map();  // kind/imdb -> a promise, then the id ("" for none or one that can't be embedded)
+  async function trailerFor(kind, imdb) {
+    if (!imdb || !/^tt\d+$/.test(imdb)) return "";
+    const key = `${kind === "series" ? "series" : "movie"}/${imdb}`;
+    if (!TRAILERS.has(key)) TRAILERS.set(key, api(`/api/trailer/${key}`).then((r) => r.yt || "").catch(() => ""));
+    return TRAILERS.get(key);
+  }
+  const noTrailer = (kind, imdb) => TRAILERS.set(`${kind === "series" ? "series" : "movie"}/${imdb}`, Promise.resolve(""));
+  const ytSrc = (id, o = {}) => `https://www.youtube-nocookie.com/embed/${id}?` + new URLSearchParams({
+    autoplay: 1, mute: o.mute ? 1 : 0, controls: o.controls ? 1 : 0, modestbranding: 1, rel: 0, playsinline: 1, iv_load_policy: 3, disablekb: o.controls ? 0 : 1,
+    fs: o.controls ? 1 : 0, loop: o.loop ? 1 : 0, ...(o.loop ? { playlist: id } : {}), enablejsapi: 1, origin: location.origin }).toString();
+  const ytCmd = (f, func, args = []) => { try { f.contentWindow.postMessage(JSON.stringify({ event: "command", func, args }), "*"); } catch (_) {} };
+  // An embedded trailer in host. o: mute, loop, controls, cover (fill the box and crop what YouTube draws on it), onPlay, onFail
+  function mountTrailer(host, yt, o = {}) {
+    const f = document.createElement("iframe");
+    f.src = ytSrc(yt, o);
+    f.title = "Trailer";
+    f.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture; fullscreen");
+    f.setAttribute("sandbox", "allow-scripts allow-same-origin allow-presentation");
+    f.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+    f.setAttribute("aria-hidden", o.controls ? "false" : "true");
+    if (!o.controls) f.tabIndex = -1;
+    const fit = () => {
+      if (!o.cover) { f.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0"; return; }
+      const r = host.getBoundingClientRect(), w = r.width, h = r.height;
+      const W = Math.max(w, (h * 16) / 9), H = (W * 9) / 16;
+      f.style.cssText = `position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;border:0;transform:translate(-50%,-50%) scale(1.25);pointer-events:none`;
+    };
+    fit();
+    const on = (e) => {
+      if (e.source !== f.contentWindow) return;
+      let d = e.data;
+      try { if (typeof d === "string") d = JSON.parse(d); } catch (_) { return; }
+      if (!d) return;
+      if (d.event === "onError") o.onFail && o.onFail(d.info);
+      else if ((d.event === "onStateChange" && d.info === 1) || (d.event === "infoDelivery" && d.info && d.info.playerState === 1)) o.onPlay && o.onPlay();
+    };
+    window.addEventListener("message", on);
+    window.addEventListener("resize", fit);
+    f.addEventListener("load", () => { try { f.contentWindow.postMessage(JSON.stringify({ event: "listening", id: 1, channel: "widget" }), "*"); } catch (_) {} });
+    host.appendChild(f);
+    return {
+      frame: f, refit: fit,
+      stop() { window.removeEventListener("message", on); window.removeEventListener("resize", fit); f.remove(); },
+      mute(b) { ytCmd(f, b ? "mute" : "unMute"); },
+      pause() { ytCmd(f, "pauseVideo"); },
+      play() { ytCmd(f, "playVideo"); },
+    };
+  }
+  const trailerAttrs = (t) => { const im = t.imdb || (/^tt\d+$/.test(String(t.id || "")) ? t.id : ""); return im && t.kind !== "video" ? `data-imdb="${esc(im)}" data-kind="${t.kind === "series" ? "series" : "movie"}"` : ""; };
+
+  // The card on a row: after half a second of hovering it grows to a wide card playing the trailer and the rest of the row slides aside
+  const HV = { tile: null, timer: null, closeT: null, ctl: null };
+  function closeTile(now) {
+    clearTimeout(HV.timer); clearTimeout(HV.closeT);
+    const tile = HV.tile;
+    if (HV.ctl) { HV.ctl.stop(); HV.ctl = null; }
+    HV.tile = null;
+    if (!tile || !tile.classList.contains("tile-open")) return;
+    const art = $(".art", tile), row = tile.parentElement;
+    tile.classList.remove("tile-open");
+    tile.style.width = tile.style.height = tile.style.transform = "";
+    if (art) { art.style.height = art.style.aspectRatio = ""; art.classList.remove("tr-on"); $$(".tile-trailer, .tile-ov", art).forEach((x) => x.remove()); }
+    if (row) [...row.children].forEach((k) => (k.style.transform = ""));
+  }
+  async function openTile(tile) {
+    const kind = tile.dataset.kind, imdb = tile.dataset.imdb;
+    const yt = await trailerFor(kind, imdb);
+    if (HV.tile !== tile || !tile.isConnected || !yt || !pl.el.hidden || sheetClose || !tile.matches(":hover")) return;
+    const row = tile.parentElement, art = $(".art", tile);
+    if (!row || !art) return;
+    // About twice as wide as a poster (a little over a third wider for a wide card), never taller than the card with its caption, so nothing below moves
+    const ar = art.getBoundingClientRect(), th = Math.round(tile.getBoundingClientRect().height);
+    const ow = Math.round(Math.min((th * 16) / 9, ar.width * 2.3)), oh = Math.round(Math.min(th, Math.max(ar.height, (ow * 9) / 16))), extra = ow - Math.round(ar.width);
+    if (extra < 30) return;
+    const kids = [...row.children], i = kids.indexOf(tile);
+    // Grows to the right when there is room in the row, otherwise to the left
+    const dir = row.getBoundingClientRect().right - tile.getBoundingClientRect().right - 24 >= extra ? 1 : -1;
+    tile.classList.add("tile-open");
+    tile.style.height = th + "px";
+    tile.style.width = ow + "px";
+    if (dir < 0) tile.style.transform = `translateX(${-extra}px)`;
+    art.style.aspectRatio = "auto";
+    art.style.height = oh + "px";
+    kids.forEach((k, j) => { if (dir > 0 && j > i) k.style.transform = `translateX(${extra}px)`; if (dir < 0 && j < i) k.style.transform = `translateX(${-extra}px)`; });
+    const host = document.createElement("div"); host.className = "tile-trailer";
+    const ov = document.createElement("div"); ov.className = "tile-ov";
+    ov.innerHTML = `<b>${esc($(".cap", tile) ? $(".cap", tile).textContent : "")}</b><span>${esc($(".sub", tile) ? $(".sub", tile).textContent : "")}</span><button type="button" class="tile-snd" aria-label="Sound on" title="Sound on">${ic("mute")}</button>`;
+    art.appendChild(host); art.appendChild(ov);
+    // The video is added once the card has grown (it needs the final size to fill it)
+    setTimeout(() => {
+      if (HV.tile !== tile || !tile.isConnected) return;
+      let muted = true;
+      HV.ctl = mountTrailer(host, yt, { mute: true, loop: true, cover: true, onPlay: () => art.classList.add("tr-on"), onFail: () => { noTrailer(kind, imdb); closeTile(); } });
+      $(".tile-snd", ov).onclick = (e) => { e.preventDefault(); e.stopPropagation(); muted = !muted; HV.ctl && HV.ctl.mute(muted); e.currentTarget.innerHTML = ic(muted ? "mute" : "vol"); e.currentTarget.title = muted ? "Sound on" : "Sound off"; };
+    }, 380);
+  }
+  document.addEventListener("mouseover", (e) => {
+    if (!previewsOn()) return;
+    const t = e.target.closest && e.target.closest("a.tile[data-imdb]");
+    if (!t || !t.parentElement || !t.parentElement.classList.contains("row")) return;
+    clearTimeout(HV.closeT);
+    if (HV.tile === t) return;
+    closeTile();
+    HV.tile = t;
+    HV.timer = setTimeout(() => openTile(t), 550);
+  });
+  document.addEventListener("mouseout", (e) => {
+    const t = e.target.closest && e.target.closest("a.tile[data-imdb]");
+    if (!t || HV.tile !== t || (e.relatedTarget && t.contains(e.relatedTarget))) return;
+    clearTimeout(HV.timer); clearTimeout(HV.closeT);
+    HV.closeT = setTimeout(() => closeTile(), 140);
+  });
+  document.addEventListener("scroll", () => { if (HV.tile) closeTile(); }, { capture: true, passive: true });
+  document.addEventListener("pointerdown", () => { if (HV.tile) closeTile(); }, true);
+
+  // The background of a title's page: after 2.5 seconds a trailer fades in behind the title, muted, with a sound button. It pauses when the page
+  // is scrolled past it or the tab is hidden
+  const HERO = { timer: null, ctl: null, io: null };
+  function stopHero() {
+    clearTimeout(HERO.timer);
+    if (HERO.ctl) HERO.ctl.stop();
+    if (HERO.io) HERO.io.disconnect();
+    HERO.ctl = HERO.io = null;
+  }
+  async function heroTrailer(kind, imdb) {
+    stopHero();
+    const box = $("#heroTrailer"), btn = $("#trailerBtn");
+    if (!box || !imdb) return;
+    const n = ROUTE_N;
+    const yt = await trailerFor(kind, imdb);
+    if (n !== ROUTE_N || !box.isConnected) return;
+    if (yt && btn) { btn.hidden = false; btn.onclick = () => openTrailer(yt, kind, imdb); }
+    if (!yt || !previewsOn()) return;
+    HERO.timer = setTimeout(() => {
+      if (n !== ROUTE_N || !box.isConnected || !pl.el.hidden || sheetClose || TRAILER_VIEW) return;
+      let muted = true;
+      const mute = $("#heroMute");
+      HERO.ctl = mountTrailer(box, yt, { mute: true, loop: true, cover: true, onPlay: () => { box.classList.add("tr-on"); if (mute) mute.hidden = false; }, onFail: () => { noTrailer(kind, imdb); stopHero(); if (btn) btn.hidden = true; } });
+      if (mute) mute.onclick = () => { muted = !muted; HERO.ctl && HERO.ctl.mute(muted); mute.innerHTML = ic(muted ? "mute" : "vol"); mute.setAttribute("aria-label", muted ? "Sound on" : "Sound off"); };
+      if ("IntersectionObserver" in window) {
+        HERO.io = new IntersectionObserver(([en]) => { if (!HERO.ctl) return; en.isIntersecting ? HERO.ctl.play() : HERO.ctl.pause(); }, { threshold: 0.25 });
+        HERO.io.observe(box);
+      }
+    }, 2500);
+  }
+  document.addEventListener("visibilitychange", () => { if (HERO.ctl) document.hidden ? HERO.ctl.pause() : HERO.ctl.play(); });
+
+  // A show page from an addon draws its buttons again as the sources come in, so the Trailer button is added to whatever is there
+  async function addTrailerButton(kind, id, box) {
+    const imdb = String(id || "").split(":")[0];
+    const yt = await trailerFor(kind, imdb);
+    const row = box && $(".actions", box);
+    if (!yt || !row || !box.isConnected || $("#trailerBtn", box)) return;
+    const b = document.createElement("button");
+    b.className = "btn secondary"; b.id = "trailerBtn"; b.type = "button";
+    b.innerHTML = `${ic("trailer")} Trailer`;
+    b.onclick = () => openTrailer(yt, kind, imdb);
+    const play = $("#pdPlay", row);
+    play ? play.after(b) : row.prepend(b);
+  }
+
+  // The Trailer button: the trailer on its own, full screen, with its controls and sound. Escape or Back closes it
+  let TRAILER_VIEW = null;
+  function closeTrailer() {
+    if (!TRAILER_VIEW) return false;
+    const v = TRAILER_VIEW; TRAILER_VIEW = null;
+    v.ctl.stop(); v.el.remove();
+    document.body.style.overflow = "";
+    if (v.back && v.back.isConnected) v.back.focus({ preventScroll: true });
+    if (HERO.ctl) HERO.ctl.play();
+    return true;
+  }
+  function openTrailer(yt, kind, imdb) {
+    closeTrailer(); closeTile(); if (HERO.ctl) HERO.ctl.pause();
+    const back = document.activeElement;
+    const el = document.createElement("div");
+    el.className = "trailer-view"; el.setAttribute("role", "dialog"); el.setAttribute("aria-label", "Trailer");
+    el.innerHTML = `<button type="button" class="glass-btn round" id="trClose" aria-label="Close trailer">${ic("close")}</button><div class="tr-box" id="trBox"></div>`;
+    document.body.appendChild(el);
+    document.body.style.overflow = "hidden";
+    const ctl = mountTrailer($("#trBox", el), yt, { controls: true, onFail: () => { noTrailer(kind, imdb); closeTrailer(); toast("This trailer can't be played here", 4000); } });
+    TRAILER_VIEW = { el, ctl, back };
+    $("#trClose", el).onclick = closeTrailer;
+    el.addEventListener("mousedown", (e) => { if (e.target === el) closeTrailer(); });
+    setTimeout(() => $("#trClose", el) && $("#trClose", el).focus({ preventScroll: true }), 50);
+  }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && TRAILER_VIEW) { e.preventDefault(); e.stopImmediatePropagation(); closeTrailer(); } }, true);
+  const stopPreviews = () => { closeTile(); stopHero(); };
 
   // ---------------------------------------------------------- home
   async function pageHome() {
@@ -1571,6 +1769,8 @@
     app.innerHTML = topbar(t.kind === "series" ? "shows" : "movies") + backBtn() + `
       <section class="detail-hero">
         <div class="hero-bg ${t.poster ? "has-tall" : ""}">${heroArt(t)}</div>
+        <div class="hero-trailer" id="heroTrailer" aria-hidden="true"></div>
+        <button type="button" class="round-btn hero-mute" id="heroMute" aria-label="Sound on" title="Sound on" hidden>${ic("mute")}</button>
         <div class="hero-content" style="z-index:2">
           ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1, LW())}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
           <div class="hero-meta">${metaLine(t).map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
@@ -1580,6 +1780,7 @@
             ${up ? `<button class="btn primary" id="playMain">${ic("play")} ${esc(playLabel)}</button>` : ""}
             ${resume ? `<button class="btn secondary" id="playStart">Start Over</button>` : ""}
             ${up && t.imdb ? `<button class="btn secondary" id="srcMain">${ic("link")} Sources</button>` : ""}
+            ${t.imdb ? `<button class="btn secondary" id="trailerBtn" type="button" hidden>${ic("trailer")} Trailer</button>` : ""}
             ${listBtn(t.in_list)}
             <button class="round-btn ${t.watched ? "on" : ""}" id="watchedBtn" aria-pressed="${t.watched}" aria-label="${t.watched ? "Mark as unwatched" : "Mark as watched"}" title="${t.watched ? "Watched" : "Mark as Watched"}">${ic(t.watched ? "check" : "eye")}</button>
             <span class="rate-group" role="group" aria-label="Rate this">${rateBtn(-1, "down", "Not for me")}${rateBtn(1, "up", "I like this")}${rateBtn(2, "love", "Love this")}</span>
@@ -1659,6 +1860,7 @@
     if (ps) ps.onclick = () => playFile(up.id, { title: t, from: 0 });
     const sm = $("#srcMain");
     if (sm) sm.onclick = () => openSources(t, up);
+    heroTrailer(t.kind, t.imdb);
     wireListBtn({ title_id: t.id }, t.list_key);
     const kt = $("#kidsT");
     if (kt) kt.onclick = async () => {
@@ -1738,6 +1940,8 @@
     app.innerHTML = topbar(kind === "series" ? "shows" : "movies") + backBtn() + `
       <section class="detail-hero">
         <div class="hero-bg ${t.poster ? "has-tall" : ""}">${heroArt(t)}</div>
+        <div class="hero-trailer" id="heroTrailer" aria-hidden="true"></div>
+        <button type="button" class="round-btn hero-mute" id="heroMute" aria-label="Sound on" title="Sound on" hidden>${ic("mute")}</button>
         <div class="hero-content" style="z-index:2">
           ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1, LW())}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
           <div class="hero-meta">${facts.map((m, i) => `<span class="${i ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
@@ -1757,6 +1961,7 @@
         </div></section>
       </main>`;
     wireTopbar();
+    heroTrailer(kind, String(id).split(":")[0]);
     if (!t.videos?.length) return drawStreams(kind, id, t);
     // Carries on where the profile left off, otherwise the first episode
     const started = t.videos.filter((v) => v.progress).sort((a, b) => b.progress.updated - a.progress.updated)[0];
@@ -1912,7 +2117,7 @@
     // Not out yet: whatever is on offer for it is fake, so nothing is shown to play
     if (r.upcoming) {
       box.innerHTML = `<div class="actions">${lb}</div><div class="not-lib glass" style="margin-top:14px">${ic("info")}<span>Not out yet, comes out on ${esc(dayOf(r.upcoming))}</span></div>`;
-      wireListBtn({ kind, id: t.list_key }, t.list_key);
+      wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box);
       return;
     }
     if (!r.streams.length) {
@@ -1924,7 +2129,7 @@
           : `${x.addon} found ${x.found}, but none could be used${x.other.length ? ` (${x.other.join(", ")})` : ""}.`).join(" ");
       }
       box.innerHTML = `<div class="actions">${lb}</div>` + none + (why ? `<div class="note pd-note">${ic("info")} ${esc(why)}</div>` : "");
-      wireListBtn({ kind, id: t.list_key }, t.list_key);
+      wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box);
       if (TV && (document.activeElement === document.body || document.activeElement === AUTO_FOCUS)) { const lbb = $("#listBtn"); if (lbb) lbb.focus({ preventScroll: true }); }
       return;
     }
@@ -1942,7 +2147,7 @@
     const play = (s) => { SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
     $("#pdPlay").onclick = () => play(first);
     if (grabFocus) $("#pdPlay").focus({ preventScroll: true });
-    wireListBtn({ kind, id: t.list_key }, t.list_key);
+    wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box);
     const more = $("#pdMore");
     if (more) more.onclick = () => {
       const sh = sheet(`<div class="src-head"><div><h2>Sources</h2><p class="secondary">${esc(t.name)}${ep ? ` · ${esc(epLabel(ep.season, ep.episode))}` : ""}</p></div>
@@ -2817,6 +3022,7 @@
         <div class="set-row"><span><b>Are You Still Watching?</b><span class="secondary">Pauses and asks after this long with nobody touching anything</span></span>${sel("pStill", [["0", "Never"], ["30", "30 Minutes"], ["60", "1 Hour"], ["90", "1.5 Hours"], ["120", "2 Hours"], ["180", "3 Hours"], ["240", "4 Hours"]], String(pr.still_watching || 0))}</div>
         ${toggle("pLiveAll", pr.live_all_countries, "Show All Countries in Live TV", "Live TV only lists the UK, US, France and Germany. Turn this on to see channels from every other country too")}
         ${toggle("pFake", pr.auto_next_source, "Switch Sources Automatically", "When a copy turns out to be a 30 second placeholder (TorBox sends one when a download didn't really finish) or keeps buffering, the next source plays by itself instead of asking")}
+        ${toggle("pPrev", pr.previews !== false, "Autoplay Previews", "Plays a trailer when you hover over a film or show, and in the background of its page. Only on computers, and it uses data")}
         ${toggle("pLoadStats", pr.load_stats !== false, "Loading Details", "Shows what Kino is doing while a video starts, like the speed and audio track")}
         ${toggle("pBlur", pr.blur_watched, "Blur Watched", "Blurs the artwork of films and episodes you've already watched")}
         ${toggle("pShare", pr.share_events, "Share Watch Activity with Addons", "Lets tracking addons like Trakt see what this profile watches")}
@@ -2851,14 +3057,14 @@
     wireThemePicker($("#setTheme"));
     drawInterests();
     const saveP = async () => {
-      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked, auto_next_source: $("#pFake").checked, live_all_countries: $("#pLiveAll").checked };
+      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked, previews: $("#pPrev").checked, auto_next_source: $("#pFake").checked, live_all_countries: $("#pLiveAll").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
       ME.profile = r.profile;
       applyPrefs();
       $("#prefSaved").textContent = "Saved";
       setTimeout(() => $("#prefSaved") && ($("#prefSaved").textContent = ""), 1800);
     };
-    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats", "pFake"].forEach((id) => $("#" + id).addEventListener("change", saveP));
+    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats", "pFake", "pPrev"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
     const pp = $("#pPlayer"); if (pp) pp.onchange = () => {
       const v = pp.value;
@@ -3802,6 +4008,7 @@
     if (!opts.web && useNative()) return nativePlay(fid, opts);
     // Each press gets a number, anything still loading from an earlier press stops when it sees a newer one
     const my = ++PLAY_N;
+    stopPreviews(); closeTrailer();
     const chain = !!opts.chain && LOAD.on;
     closePlayer(true, chain);
     clearInterval(HERO_T);
@@ -4940,6 +5147,7 @@
     clearTimeout(SCAN_T);
     stopFavRow();
     closeSheet();
+    stopPreviews(); closeTrailer();
     const [, page, arg] = (location.hash || "#/").split("?")[0].split("/");
     const n = ++ROUTE_N;
     const changed = (location.hash.split("?")[0]) !== LAST_PAGE;

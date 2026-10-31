@@ -4495,7 +4495,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         if r == 0:
             return 1
         return 2 if x.get("addon") in prio else 3
-    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100), not x["plays"], -x["height"], -(x["bytes"] or 0)))
+    out.sort(key=lambda x: (group(x), prio.get(x.get("addon"), 100), not x["plays"], -x["height"], -(x.get("seeders") or 0), -(x["bytes"] or 0)))
     if video_type(kind):
         # Youtubio lists every quality twice (its own sponsor cutting player and the plain one), the top few is plenty
         out = out[:12]
@@ -4543,8 +4543,33 @@ def stream_facts(st, url, label):
     lines = [x.strip() for x in re.split(r"[\n|]", str(st.get("title") or st.get("description") or "")) if x.strip()]
     name = lines[0] if lines else (str(st.get("name") or "").strip() or Path(urlparse(url).path).stem)
     q = "4K" if height >= 2160 else f"{height}p" if height else "SD"
-    return {"label": name[:120], "quality": q, "height": height, "format": fmt, "plays": plays,
+    seeders, peers = torrent_stats(st)
+    return {"label": name[:120], "quality": q, "height": height, "format": fmt, "plays": plays, "seeders": seeders, "peers": peers,
             "bytes": int(size) if isinstance(size, (int, float)) else None, "file": Path(urlparse(url).path).name[:120]}
+
+
+def torrent_stats(st):
+    """Seeders and peers when the addon gives them, as fields (seeders, seeds, peers, leechers) or in the text like torrentio does
+    (the person icon followed by a number, Seeders: 12, S: 12, Peers: 3)"""
+    bh = st.get("behaviorHints") or {}
+    def num(v):
+        try:
+            n = int(float(str(v).replace(",", "")))
+            return n if 0 <= n < 10**7 else None
+        except (TypeError, ValueError):
+            return None
+    seeders = next((n for n in [num(st.get(k)) for k in ("seeders", "seeds", "seeder")] + [num(bh.get("seeders"))] if n is not None), None)
+    peers = next((n for n in [num(st.get(k)) for k in ("peers", "leechers", "leeches", "leecher")] + [num(bh.get("peers"))] if n is not None), None)
+    text = " ".join(str(st.get(k) or "") for k in ("name", "title", "description"))
+    if seeders is None:
+        m = re.search(r"(?:\U0001F464|\U0001F331)\s*(\d[\d,]*)|\bseed(?:er)?s?\s*[:=]?\s*(\d[\d,]*)|\bS\s*[:=]\s*(\d[\d,]*)\b", text, re.I)
+        if m:
+            seeders = num(next(g for g in m.groups() if g))
+    if peers is None:
+        m = re.search(r"\b(?:peers?|leech(?:er)?s?)\s*[:=]?\s*(\d[\d,]*)|\bP\s*[:=]\s*(\d[\d,]*)\b", text, re.I)
+        if m:
+            peers = num(next(g for g in m.groups() if g))
+    return seeders, peers
 
 
 def is_hls(url):

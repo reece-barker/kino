@@ -451,6 +451,15 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(dp(560), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL | Gravity.TOP);
         sl.topMargin = getResources().getDisplayMetrics().heightPixels / 2 + dp(84);
         loadLayer.addView(stats, sl);
+        // The loading screen covers the controls, so it has its own close button (not on a tv, the remote has Back)
+        if (!tv) {
+            RoundButton lc = new RoundButton(R.drawable.ic_close, 44, "Close");
+            lc.setBackground(rounded(0x993C3C40, dp(22)));
+            lc.setOnClickListener(v -> done());
+            FrameLayout.LayoutParams lcp = new FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP | Gravity.START);
+            lcp.setMargins(safeX(), safeY() + dp(4), 0, 0);
+            loadLayer.addView(lc, lcp);
+        }
         root.addView(loadLayer, match());
 
         JSONObject art = info.optJSONObject("art");

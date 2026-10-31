@@ -24,6 +24,8 @@ ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+# Cloud metadata address, nothing kino does should ever talk to it, also covers the ffmpegs it starts
+IPAddressDeny=169.254.0.0/16
 
 [Install]
 WantedBy=multi-user.target

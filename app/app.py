@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import os
+import zlib
 import re
 import random
 import secrets
@@ -63,7 +64,27 @@ ALLOWLIST_APPLIED = Path(env("ALLOWLIST_APPLIED", str(DATA_DIR / "allowlist-appl
 WATCHDOG_STATUS = Path(env("WATCHDOG_STATUS", "/var/lib/kino-watchdog/status.json"))
 SYNC_UNIT = env("SYNC_UNIT", "torbox-sync.service")
 TIMER_UNIT = env("TIMER_UNIT", "torbox-sync.timer")
-SECRET = env("KINO_SECRET", "").encode()
+def load_secret():
+    """An empty secret would mean anyone can forge profile cookies and signed links, so if its not set one gets made and kept"""
+    given = env("KINO_SECRET", "").strip()
+    if len(given) >= 16:
+        return given.encode()
+    f = DATA_DIR / "secret.key"
+    try:
+        if f.exists() and len(f.read_text().strip()) >= 32:
+            return f.read_text().strip().encode()
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        key = secrets.token_hex(32)
+        fd = os.open(str(f), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(key)
+        return key.encode()
+    except OSError:
+        # Cant write it anywhere so use one that only lives till restart, still far better than empty
+        return secrets.token_hex(32).encode()
+
+
+SECRET = load_secret()
 COOKIE_SECURE = env("COOKIE_SECURE", "1") == "1"
 CINEMETA = env("CINEMETA_URL", "https://v3-cinemeta.strem.io")
 OFFLINE_META = env("OFFLINE_META", "0") == "1"  # Only for testing without internet
@@ -435,8 +456,16 @@ def ids_sql(ids):
     return ",".join("?" * len(ids))
 
 
+def pin_epoch(pid):
+    """A locked profile's cookie is tied to the current code, so changing or removing the code logs every other device out of it.
+    No code set means nothing extra, so cookies for open profiles carry on working"""
+    r = db().q("SELECT pin FROM profiles WHERE id = ?", (pid,))
+    return hashlib.sha1(r[0]["pin"].encode()).hexdigest()[:10] if r and r[0]["pin"] else ""
+
+
 def profile_cookie(pid, request):
-    return f"{pid}.{sign('profile', pid, browser_key(request))[:32]}"
+    e = pin_epoch(pid)
+    return f"{pid}.{sign('profile', f'{pid}:{e}' if e else pid, browser_key(request))[:32]}"
 
 
 def cookie_profile(request):
@@ -444,7 +473,10 @@ def cookie_profile(request):
     # in it, and a copied cookie on another device just lands on the profile picker
     raw = request.cookies.get("kino_profile", "")
     pid, _, sig = raw.partition(".")
-    if not pid.isdigit() or not hmac.compare_digest(sig, sign("profile", int(pid), browser_key(request))[:32]):
+    if not pid.isdigit():
+        return None
+    e = pin_epoch(int(pid))
+    if not hmac.compare_digest(sig, sign("profile", f"{pid}:{e}" if e else int(pid), browser_key(request))[:32]):
         return None
     return profile_row(int(pid))
 
@@ -687,8 +719,9 @@ async def rescan():
 # ---------------------------------------------------------------- ffprobe
 
 def run_probe(path):
+    net = ["-protocol_whitelist", "http,https,tcp,tls,crypto"] if str(path).startswith(("http://", "https://")) else []
     out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams",
-                          "-show_chapters", path], capture_output=True, timeout=120)
+                          "-show_chapters", *net, path], capture_output=True, timeout=120)
     j = json.loads(out.stdout or b"{}")
     fmt = j.get("format") or {}
     video, audio, subs = None, [], []
@@ -1036,8 +1069,8 @@ STATIC_VERSION = {"v": "1"}
 @asynccontextmanager
 async def lifespan(app):
     db()
-    if not SECRET:
-        log.warning("KINO_SECRET is empty, set it in /etc/kino/kino.env")
+    if len(env("KINO_SECRET", "").strip()) < 16:
+        log.warning("KINO_SECRET is missing or under 16 chars, using the generated one in %s, set a proper one in /etc/kino/kino.env", DATA_DIR / "secret.key")
     shutil.rmtree(HLS_DIR, ignore_errors=True)
     HLS_DIR.mkdir(parents=True, exist_ok=True)
     SUBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1073,7 +1106,9 @@ async def unexpected_error(request: Request, exc: Exception):
     # "Request failed (500)". Now it says what went wrong, and the admin sees it on the Server page
     log.exception("error on %s", request.url.path)
     SERVER_ERRORS.appendleft({"at": time.time(), "path": request.url.path, "error": f"{type(exc).__name__}: {str(exc)[:300]}"})
-    return JSONResponse({"detail": f"Something went wrong on the server ({type(exc).__name__}: {str(exc)[:160]})"}, status_code=500)
+    # The message part can have paths or sql in it, so only the admin gets that, everyone else just gets the type
+    more = f"{type(exc).__name__}: {str(exc)[:160]}" if admin_user(request) else type(exc).__name__
+    return JSONResponse({"detail": f"Something went wrong on the server ({more})"}, status_code=500)
 
 CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
        "script-src 'self'; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-src https:; frame-ancestors 'none'; "
@@ -1361,12 +1396,37 @@ def pin_ok(pid, code):
     return any(h and check_pw(code, h) for h in hashes)
 
 
-def pin_guard(request):
+def logsafe(v):
+    """Client text goes in the log, so no new lines and no fake login lines that fail2ban could pick up"""
+    return re.sub(r"[\x00-\x1f\x7f]", " ", str(v)).replace("kino login", "kino_login")
+
+
+def pin_guard(request, *pids):
+    """Wrong code limiter. Counted per ip and profile, plus a looser global count per profile so rotating ips doesnt help"""
+    now = time.time()
     ip = client_ip(request)
-    tries = [t for t in PIN_TRIES.get(ip, []) if time.time() - t < 300]
-    if len(tries) >= 8:
-        raise HTTPException(429, "Too many wrong codes, wait a few minutes and try again")
-    return ip, tries
+    mine = [f"{ip}|{p}" for p in pids]
+    allk = mine + [f"*|{p}" for p in pids]
+    for k in allk:
+        recent = [t for t in PIN_TRIES.get(k, []) if now - t < 300]
+        PIN_TRIES[k] = recent
+        if len(recent) >= (6 if not k.startswith("*") else 20):
+            raise HTTPException(429, "Too many wrong codes, wait a few minutes and try again")
+    if len(PIN_TRIES) > 4000:
+        for k in [k for k, v in PIN_TRIES.items() if not v or now - v[-1] > 300]:
+            PIN_TRIES.pop(k, None)
+    return mine, allk
+
+
+def pin_fail(keys):
+    for k in keys[1]:
+        PIN_TRIES.setdefault(k, []).append(time.time())
+
+
+def pin_pass(keys):
+    # Only forgets this ip on this profile, a good code on one profile must never wipe the count for another
+    for k in keys[0]:
+        PIN_TRIES.pop(k, None)
 
 
 @app.post("/api/profiles/{pid}/select")
@@ -1379,14 +1439,14 @@ async def profile_select(pid: int, request: Request):
             b = await request.json()
         except Exception:
             b = {}
-        ip, tries = pin_guard(request)
+        keys = pin_guard(request, pid)
         code = str(b.get("pin") or "")
         if not code:
             raise HTTPException(401, "This profile is locked")
-        if not re.fullmatch(r"\d{4}", code) or not pin_ok(pid, code):
-            PIN_TRIES[ip] = tries + [time.time()]
+        if not re.fullmatch(r"\d{4}", code) or not await asyncio.to_thread(pin_ok, pid, code):
+            pin_fail(keys)
             raise HTTPException(403, "That code isn't right")
-        PIN_TRIES.pop(ip, None)
+        pin_pass(keys)
     resp = JSONResponse({"ok": True, "profile": p})
     set_cookie(resp, "kino_profile", profile_cookie(pid, request), 365 * 86400)
     return resp
@@ -1403,12 +1463,19 @@ async def profile_pin(request: Request, p=Depends(current_profile)):
         raise HTTPException(400, "A joint profile uses the codes of the people in it, change those instead")
     new, old = str(b.get("pin") or ""), str(b.get("old") or "")
     row = db().q("SELECT pin FROM profiles WHERE id = ?", (p["id"],))
-    if row[0]["pin"] and not (re.fullmatch(r"\d{4}", old) and check_pw(old, row[0]["pin"])):
-        raise HTTPException(403, "The current code isn't right")
+    if row[0]["pin"]:
+        keys = pin_guard(request, p["id"])
+        if not (re.fullmatch(r"\d{4}", old) and await asyncio.to_thread(check_pw, old, row[0]["pin"])):
+            pin_fail(keys)
+            raise HTTPException(403, "The current code isn't right")
+        pin_pass(keys)
     if new and not re.fullmatch(r"\d{4}", new):
         raise HTTPException(400, "The code has to be 4 numbers")
     db().q("UPDATE profiles SET pin = ? WHERE id = ?", (hash_pw(new) if new else None, p["id"]))
-    return {"ok": True, "profile": profile_row(p["id"])}
+    resp = JSONResponse({"ok": True, "profile": profile_row(p["id"])})
+    # The code is part of the cookie, so this device gets a fresh one and the others have to pick the profile again
+    set_cookie(resp, "kino_profile", profile_cookie(p["id"], request), 365 * 86400)
+    return resp
 
 
 @app.post("/api/admin/profiles/{pid}/pin-reset")
@@ -1597,15 +1664,15 @@ async def joint_create(request: Request):
         raise HTTPException(400, "That's the most joint profiles Kino can have, split one first")
     # Both people have to agree, so a locked profile needs its own code. The admin can skip that
     if not admin_user(request):
-        ip, tries = pin_guard(request)
+        keys = pin_guard(request, a, c)
         pins = b.get("pins") or {}
         for pid in (a, c):
             if rows[pid]["pin"]:
                 code = str(pins.get(str(pid)) or "")
-                if not re.fullmatch(r"\d{4}", code) or not check_pw(code, rows[pid]["pin"]):
-                    PIN_TRIES[ip] = tries + [time.time()]
+                if not re.fullmatch(r"\d{4}", code) or not await asyncio.to_thread(check_pw, code, rows[pid]["pin"]):
+                    pin_fail(keys)
                     raise HTTPException(403, f"{rows[pid]['name']}'s code isn't right")
-        PIN_TRIES.pop(ip, None)
+        pin_pass(keys)
     name = clean_name(b.get("name") or f"{rows[a]['name']} & {rows[c]['name']}")
     folder = clean_folder(b.get("folder") if "folder" in b else (rows[a]["folder"] or rows[c]["folder"]))
     # If either of them is a kids profile the joint one is too, so nothing gets past the kids rules by joining
@@ -1626,11 +1693,12 @@ async def joint_create(request: Request):
 async def profile_check_pin(pid: int, request: Request):
     """Checks someones code without switching to there profile, used when two people join there profiles"""
     b = await request.json()
-    ip, tries = pin_guard(request)
+    keys = pin_guard(request, pid)
     code = str(b.get("pin") or "")
-    if not re.fullmatch(r"\d{4}", code) or not pin_ok(pid, code):
-        PIN_TRIES[ip] = tries + [time.time()]
+    if not re.fullmatch(r"\d{4}", code) or not await asyncio.to_thread(pin_ok, pid, code):
+        pin_fail(keys)
         raise HTTPException(403, "That code isn't right")
+    pin_pass(keys)
     return {"ok": True}
 
 
@@ -1645,12 +1713,12 @@ async def joint_split(jid: int, request: Request):
     except Exception:
         b = {}
     if not admin_user(request) and prof_public(r[0])["locked"]:
-        ip, tries = pin_guard(request)
+        keys = pin_guard(request, jid)
         code = str(b.get("pin") or "")
-        if not re.fullmatch(r"\d{4}", code) or not pin_ok(jid, code):
-            PIN_TRIES[ip] = tries + [time.time()]
+        if not re.fullmatch(r"\d{4}", code) or not await asyncio.to_thread(pin_ok, jid, code):
+            pin_fail(keys)
             raise HTTPException(403, "That code isn't right")
-        PIN_TRIES.pop(ip, None)
+        pin_pass(keys)
     drop_profile(jid)
     log.info("kino joint profile %s split", jid)
     return {"ok": True}
@@ -1749,7 +1817,7 @@ async def admin_login(request: Request):
     if not rows or not ok:
         FAILS.setdefault(ip, deque()).append(time.time())
         # fail2ban watches for this exact line
-        log.warning("kino login failed user=%s ip=%s", user, ip)
+        log.warning("kino login failed user=%s ip=%s", re.sub(r"\s", "_", logsafe(user))[:64], ip)
         raise HTTPException(401, "That username and password don't match")
     FAILS.pop(ip, None)
     tok = secrets.token_urlsafe(32)
@@ -3301,6 +3369,7 @@ IMG_WIDTHS = {240, 342, 480, 640, 960, 1280}
 
 def shrink_image(data, w):
     from PIL import Image
+    Image.MAX_IMAGE_PIXELS = 25_000_000  # A small file can be a huge image once its opened, this stops that eating the ram
     try:
         im = Image.open(io.BytesIO(data))
         im.load()
@@ -3408,6 +3477,32 @@ async def check_host(host):
         raise HTTPException(400, "That address points to a private network, which isn't allowed")
 
 
+# Only these protocols for anything ffmpeg gets a url for, so a hostile playlist cant make it read local files or other schemes
+FF_NET = ["-protocol_whitelist", "http,https,tcp,tls,crypto"]
+
+
+async def pinned_request(client, method, url, headers=None, local=False):
+    """Resolves the host once, checks it is public and then connects to that exact ip, so the dns cant change its answer
+    between the check and the connect (rebinding). Https still checks the cert against the real name"""
+    u = urlparse(url)
+    host = u.hostname
+    if local or ADDON_ALLOW_PRIVATE or not host:
+        return client.build_request(method, url, headers=headers)
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, u.port or (443 if u.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise HTTPException(502, f"Couldn't find {host}")
+    if not infos or not all(ip_is_public(i[4][0]) for i in infos):
+        raise HTTPException(400, "That address points to a private network, which isn't allowed")
+    ip = infos[0][4][0]
+    netloc = f"[{ip}]" if ":" in ip else ip
+    if u.port:
+        netloc += f":{u.port}"
+    h = dict(headers or {})
+    h["Host"] = f"{host}:{u.port}" if u.port else host
+    return client.build_request(method, u._replace(netloc=netloc).geturl(), headers=h, extensions={"sni_hostname": host})
+
+
 async def safe_fetch(url, max_bytes=5 * 1024**2, timeout=12, allow_http=False):
     for _ in range(4):
         u = urlparse(url)
@@ -3415,10 +3510,11 @@ async def safe_fetch(url, max_bytes=5 * 1024**2, timeout=12, allow_http=False):
             raise HTTPException(400, "Only https addresses are supported")
         if not u.hostname:
             raise HTTPException(400, "That isn't a valid address")
-        await check_host(u.hostname)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False,
                                      headers={"User-Agent": "Kino (Stremio addon client)"}) as c:
-            async with c.stream("GET", url) as r:
+            req = await pinned_request(c, "GET", url)
+            r = await c.send(req, stream=True)
+            try:
                 if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                     url = urljoin(url, r.headers["location"])  # Each redirect gets the same private network check
                     continue
@@ -3430,6 +3526,8 @@ async def safe_fetch(url, max_bytes=5 * 1024**2, timeout=12, allow_http=False):
                     if len(buf) > max_bytes:
                         raise HTTPException(502, "The addon sent back too much data")
                 return bytes(buf), r.headers.get("content-type", "")
+            finally:
+                await r.aclose()
     raise HTTPException(502, "Too many redirects")
 
 
@@ -3838,7 +3936,11 @@ async def video_id_for(f):
 
 def decode_sub(raw):
     if raw[:2] == b"\x1f\x8b":
-        raw = gzip.decompress(raw)
+        # A tiny gzip can unpack to gigabytes, so it only gets to be a few mb
+        d = zlib.decompressobj(31)
+        raw = d.decompress(raw, 4 * 1024**2)
+        if d.unconsumed_tail:
+            raise HTTPException(502, "That subtitle file is too big")
     for enc in ("utf-8-sig", "cp1252", "latin-1"):
         try:
             txt = raw.decode(enc)
@@ -4337,8 +4439,7 @@ async def tb_open(url, headers):
         for _ in range(5):
             if urlparse(url).scheme != "https" and not ADDON_ALLOW_PRIVATE:
                 raise HTTPException(502, "TorBox sent an unexpected link")
-            await check_host(urlparse(url).hostname)
-            r = await client.send(client.build_request("GET", url, headers=headers), stream=True)
+            r = await client.send(await pinned_request(client, "GET", url, headers=headers), stream=True)
             if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                 await r.aclose()
                 url = urljoin(url, r.headers["location"])
@@ -4638,7 +4739,7 @@ async def clientlog(request: Request):
              "detail": str(b.get("detail", ""))[:400], "device": str(b.get("device", ""))[:80], "profile": me["name"] if me else None,
              "ua": request.headers.get("user-agent", "")[:160]}
     CLIENT_LOG.append(entry)
-    log.warning("kino app %s page=%s device=%s %s", entry["kind"], entry["page"], entry["device"], entry["detail"])
+    log.warning("kino app %s page=%s device=%s %s", logsafe(entry["kind"]), logsafe(entry["page"]), logsafe(entry["device"]), logsafe(entry["detail"]))
     return {"ok": True}
 
 
@@ -5691,17 +5792,18 @@ async def check_channel(c):
     hdr = json.loads(c["headers"]) if c["headers"] else {}
     local = bool(db().q("SELECT local FROM iptv_lists WHERE id = ?", (c["list_id"],))[0]["local"]) if c["list_id"] else False
     try:
-        if not local:
-            await check_host(urlparse(c["url"]).hostname)
-        async with httpx.AsyncClient(timeout=8, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 Kino", **hdr}) as cl:
-            async with cl.stream("GET", c["url"]) as r:
-                head = b""
-                async for chunk in r.aiter_bytes():
-                    head += chunk
-                    if len(head) > 2048:
-                        break
-                ct = r.headers.get("content-type", "").lower()
-                ok = r.status_code == 200 and (b"#EXTM3U" in head[:200] or "mpegurl" in ct or "video" in ct or "mp2t" in ct or "octet" in ct)
+        cl, r, _ = await asyncio.wait_for(live_open(c["url"], hdr, local), 12)
+        try:
+            head = b""
+            async for chunk in r.aiter_bytes():
+                head += chunk
+                if len(head) > 2048:
+                    break
+            ct = r.headers.get("content-type", "").lower()
+            ok = r.status_code == 200 and (b"#EXTM3U" in head[:200] or "mpegurl" in ct or "video" in ct or "mp2t" in ct or "octet" in ct)
+        finally:
+            await r.aclose()
+            await cl.aclose()
     except Exception:
         ok = False
     db().q("UPDATE channels SET ok = ?, checked = ? WHERE id = ?", (1 if ok else 0, time.time(), c["id"]))
@@ -5935,10 +6037,13 @@ async def live_source(cid):
 
 def lp_url(url, headers, local):
     tok = hashlib.sha1(f"{url}|{json.dumps(headers, sort_keys=True)}".encode()).hexdigest()[:24]
-    if len(LP) > 60000:
-        cut = time.time() - 6 * 3600
+    if len(LP) > 20000:
+        cut = time.time() - 3600
         for k in [k for k, v in LP.items() if v[3] < cut]:
             LP.pop(k, None)
+        # Still too many (a feed with endless unique urls), the oldest go first. Dicts keep the order things went in
+        while len(LP) > 15000:
+            LP.pop(next(iter(LP)), None)
     LP[tok] = (url, headers, local, time.time())
     return f"/api/lp/{tok}"
 
@@ -5964,9 +6069,7 @@ async def live_open(url, headers, local):
             u = urlparse(url)
             if u.scheme not in ("http", "https"):
                 raise HTTPException(400, "That channel's link isn't http")
-            if not local:
-                await check_host(u.hostname)
-            r = await client.send(client.build_request("GET", url), stream=True)
+            r = await client.send(await pinned_request(client, "GET", url, local=local), stream=True)
             if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                 await r.aclose()
                 url = urljoin(url, r.headers["location"])
@@ -5976,6 +6079,15 @@ async def live_open(url, headers, local):
     except BaseException:
         await client.aclose()
         raise
+
+
+def lp_type(ct):
+    """Content types the live proxy hands on. Anything else (html, js, svg) would run on Kinos own origin, so its just bytes"""
+    base = ct.split(";")[0].strip().lower()
+    ok = base.startswith(("video/", "audio/", "image/jpeg", "image/png", "image/webp", "image/gif")) or base in (
+        "application/vnd.apple.mpegurl", "application/x-mpegurl", "audio/mpegurl", "application/octet-stream",
+        "application/mp4", "application/dash+xml", "text/vtt")
+    return ct if ok else "application/octet-stream"
 
 
 @app.get("/api/live/{cid}/index.m3u8")
@@ -6026,7 +6138,7 @@ async def live_ffmpeg(url, headers, request, p):
     vcodec = None
     try:
         pr = await asyncio.wait_for(asyncio.create_subprocess_exec("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name",
-                                                                   "-of", "csv=p=0", *(["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())] if headers else []), url,
+                                                                   "-of", "csv=p=0", *FF_NET, *(["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())] if headers else []), url,
                                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL), 3)
         out_, _ = await asyncio.wait_for(pr.communicate(), 10)
         vcodec = out_.decode().strip().split("\n")[0] or None
@@ -6041,7 +6153,7 @@ async def live_ffmpeg(url, headers, request, p):
         args += ["-readrate", "1"]  # real time, a source that sends faster than live (a recording) would run away from the player
     if headers:
         args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-    args += ["-i", url, "-map", "0:v:0?", "-map", "0:a:0?", *vargs, "-c:a", "aac", "-ac", "2", "-b:a", "160k", "-sn", "-dn",
+    args += [*FF_NET, "-i", url, "-map", "0:v:0?", "-map", "0:a:0?", *vargs, "-c:a", "aac", "-ac", "2", "-b:a", "160k", "-sn", "-dn",
              "-f", "hls", "-hls_time", "2", "-hls_list_size", "12", "-hls_flags", "delete_segments+independent_segments+omit_endlist",
              "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", str(out / "seg%05d.m4s"), str(out / "index.m3u8")]
     errlog = open(out / "ffmpeg.log", "wb")
@@ -6079,7 +6191,7 @@ async def live_proxy(tok: str, request: Request, p=Depends(current_profile)):
             await client.aclose()
         if body.lstrip()[:7] == b"#EXTM3U":
             return Response(rewrite_m3u8(body.decode("utf-8", errors="ignore"), final, headers, local), media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
-        return Response(body, media_type=ct or "application/octet-stream")
+        return Response(body, media_type=lp_type(ct))
     out = {k: r.headers[k] for k in ("content-length", "content-range", "accept-ranges") if k in r.headers}
     out["Cache-Control"] = "no-store"
 
@@ -6090,7 +6202,7 @@ async def live_proxy(tok: str, request: Request, p=Depends(current_profile)):
         finally:
             await r.aclose()
             await client.aclose()
-    return StreamingResponse(body(), status_code=r.status_code, headers=out, media_type=ct or "video/mp2t")
+    return StreamingResponse(body(), status_code=r.status_code, headers=out, media_type=lp_type(ct) if ct else "video/mp2t")
 
 
 LIVE_THUMB_GATE = asyncio.Semaphore(3)
@@ -6114,7 +6226,7 @@ async def live_thumb(cid: str, p=Depends(current_profile)):
             args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-rw_timeout", "8000000"]
             if headers:
                 args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-            args += ["-i", url, "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "6", str(f) + ".tmp.jpg"]
+            args += [*FF_NET, "-i", url, "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "6", str(f) + ".tmp.jpg"]
             try:
                 proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
                 await asyncio.wait_for(proc.wait(), 15)
@@ -6159,12 +6271,16 @@ def rec_out(r):
 async def rec_start(r):
     try:
         url, headers, local = await live_source(r["cid"])
+        if urlparse(url).scheme not in ("http", "https"):
+            raise HTTPException(400, "That channel's link isn't http")
+        if not local:
+            await check_host(urlparse(url).hostname)
     except Exception as e:
         db().q("UPDATE recordings SET state = 'failed', error = ? WHERE id = ?", (str(getattr(e, "detail", None) or e)[:200], r["id"]))
         return
     safe = re.sub(r"[^\w .()'-]", "", f"{r['channel']} - {r['title']}").strip()[:90] or f"Recording {r['id']}"
     when = datetime.datetime.fromtimestamp(r["start"]).strftime("%Y-%m-%d %H.%M")
-    folder = REC_DIR / re.sub(r"[^\w .()'-]", "", r["channel"]).strip()[:60]
+    folder = REC_DIR / (re.sub(r"[^\w .()'-]", "", r["channel"]).strip().lstrip(". ")[:60] or "Channel")
     try:
         folder.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -6175,7 +6291,7 @@ async def rec_start(r):
     args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-fflags", "+genpts+discardcorrupt", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
     if headers:
         args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-    args += ["-i", url, "-t", str(secs), "-map", "0:v:0?", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1000",
+    args += [*FF_NET, "-i", url, "-t", str(secs), "-map", "0:v:0?", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1000",
              "-f", "mp4", "-movflags", "+frag_keyframe+empty_moov+default_base_moof", str(path)]
     errlog = open(HLS_DIR / f"rec{r['id']}.log", "wb") if HLS_DIR.exists() else asyncio.subprocess.DEVNULL
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=errlog)
@@ -6212,12 +6328,17 @@ async def rec_worker():
         try:
             now = time.time()
             for r in db().q("SELECT * FROM recordings WHERE state = 'scheduled' AND start <= ? ORDER BY start", (now + 15,)):
-                if r["stop"] <= now:
-                    db().q("UPDATE recordings SET state = 'failed', error = 'Missed, Kino was off' WHERE id = ?", (r["id"],))
-                elif len(REC_PROCS) >= REC_MAX:
-                    db().q("UPDATE recordings SET state = 'failed', error = ? WHERE id = ?", (f"Already recording {REC_MAX} things", r["id"]))
-                else:
-                    await rec_start(r)
+                try:
+                    if r["stop"] is None or r["stop"] <= now:
+                        db().q("UPDATE recordings SET state = 'failed', error = 'Missed, Kino was off' WHERE id = ?", (r["id"],))
+                    elif len(REC_PROCS) >= REC_MAX:
+                        db().q("UPDATE recordings SET state = 'failed', error = ? WHERE id = ?", (f"Already recording {REC_MAX} things", r["id"]))
+                    else:
+                        await rec_start(r)
+                except Exception as e:
+                    # One bad row cant be allowed to stop the others from recording
+                    log.info("recording %s: %s", r["id"], e)
+                    db().q("UPDATE recordings SET state = 'failed', error = ? WHERE id = ?", (str(e)[:200], r["id"]))
             for r in db().q("SELECT id, size, path FROM recordings WHERE state = 'recording'"):
                 if r["path"] and Path(r["path"]).exists():
                     db().q("UPDATE recordings SET size = ? WHERE id = ?", (Path(r["path"]).stat().st_size, r["id"]))
@@ -6242,8 +6363,13 @@ async def rec_add(request: Request, p=Depends(current_profile)):
     else:
         raise HTTPException(400, "That can't be recorded")
     now = time.time()
-    start = float(b.get("start") or now)
-    stop = float(b.get("stop") or 0) or start + 60 * float(b.get("minutes") or 60)
+    try:
+        start = float(b.get("start") or now)
+        stop = float(b.get("stop") or 0) or start + 60 * float(b.get("minutes") or 60)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Those times aren't right")
+    if not (math.isfinite(start) and math.isfinite(stop)):
+        raise HTTPException(400, "Those times aren't right")
     if b.get("start"):
         start -= 120  # a couple of minutes either side, guides are often a bit out
         stop += 300

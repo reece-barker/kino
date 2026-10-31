@@ -22,6 +22,23 @@ ProtectHome=yes
 ProtectSystem=full
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
+# A few more locks. Nothing here is used by the app or ffmpeg (no hardware accel, no websockets), the sshfs mount is
+# made by systemd and not by this service so it still works
+ProtectKernelModules=yes
+ProtectClock=yes
+ProtectHostname=yes
+PrivateDevices=yes
+# Netlink stays, the resolver and psutil can use it
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+# Limits. MemoryHigh is only a soft limit, past it the app gets slowed down and not killed, change it to fit the vps.
+# The ffmpeg streams count towards it too so dont set it to low. There is no MemoryMax on purpose, a hard kill in the
+# middle of a big guide parse would be worse
+MemoryHigh=3G
+TasksMax=4096
+LimitNOFILE=65536
 RestrictSUIDSGID=yes
 LockPersonality=yes
 # Cloud metadata address, nothing kino does should ever talk to it, also covers the ffmpegs it starts

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Checks that the dashboard answers every minute and restarts it if it hangs, runs as root from kino-health.timer
+# Restart on failed is no use when the app is alive but stuck, so this looks at the real answer from /healthz
+set -u
+URL="http://127.0.0.1:8282/healthz"
+COUNT=/run/kino-health.count
+LIMIT=3   # Failed checks in a row before the restart, one slow minute shouldnt do it
+
+# If kino is stopped or still starting on purpose (an update, a database restore) leave it alone
+if ! systemctl is-active --quiet kino.service; then
+  rm -f "$COUNT"
+  exit 0
+fi
+
+if curl -fsS -m 8 "$URL" >/dev/null; then
+  rm -f "$COUNT"
+  exit 0
+fi
+
+n=$(cat "$COUNT" 2>/dev/null || echo 0)
+case "$n" in ''|*[!0-9]*) n=0 ;; esac
+n=$((n + 1))
+if [ "$n" -ge "$LIMIT" ]; then
+  echo "kino-health: no answer from $URL $n times in a row, restarting kino"
+  rm -f "$COUNT"
+  systemctl restart kino.service
+else
+  echo "kino-health: no answer from $URL ($n of $LIMIT)"
+  echo "$n" > "$COUNT"
+fi
+exit 0

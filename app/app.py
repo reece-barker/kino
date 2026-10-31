@@ -6481,18 +6481,18 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
         where.append("c.country = ?"); args.append(country)
     if q:
         where.append("c.name LIKE ?"); args.append(f"%{q.strip()[:40]}%")
-    w = " AND ".join(where)
-    rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {w} "
-                  "ORDER BY (lower(c.name) IN (SELECT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL)) DESC, c.rank, c.ok DESC, c.name LIMIT 120 OFFSET ?", [*args, p["id"], max(0, skip)])
-    guide = now_next({r["tvg"] for r in rows if r["tvg"]})
     favs = fav_names(p["id"])
-    if fav:
-        # The same channel can be in a playlist more than once (a backup link), the favourites show it once, the best one
-        seen, uniq = set(), []
-        for r in rows:
-            if r["name"].lower() not in seen:
-                seen.add(r["name"].lower()); uniq.append(r)
-        rows = uniq
+    # With no filter and some favourites, the page shows them in their own row on top, so the list below leaves them out (they were there twice)
+    if favs and not (fav or group or country or q):
+        where.append("lower(c.name) NOT IN (SELECT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL)"); args.append(p["id"])
+    w = " AND ".join(where)
+    # The same channel can be in a playlist more than once (a backup link, or the same one in two lists), a channel shows once, the copy that
+    # works (or is first in the playlist) is the one that is used
+    rows = db().q(f"WITH r AS (SELECT c.*, ROW_NUMBER() OVER (PARTITION BY lower(c.name) ORDER BY (c.ok = 1) DESC, c.rank, c.id) AS rn, "
+                  "(lower(c.name) IN (SELECT name FROM live_fav WHERE profile_id = ? AND name IS NOT NULL)) AS isfav "
+                  f"FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {w}) "
+                  "SELECT * FROM r WHERE rn = 1 ORDER BY isfav DESC, rank, ok DESC, name LIMIT 120 OFFSET ?", [p["id"], *args, max(0, skip)])
+    guide = now_next({r["tvg"] for r in rows if r["tvg"]})
     out = {"channels": [{**chan_out(r, guide), "fav": r["name"].lower() in favs} for r in rows], "next": skip + len(rows) if len(rows) == 120 else None}
     if skip == 0:
         out["fav_count"] = len(favs)
@@ -6504,7 +6504,7 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
         lead = [c for c in ("uk", "us", "fr", "de") if c in cs]
         out["countries"] = lead + [c for c in cs if c not in lead]
         out["all_countries"] = not cw
-        out["total"] = db().q(f"SELECT COUNT(*) n {base}", bargs)[0]["n"]
+        out["total"] = db().q(f"SELECT COUNT(DISTINCT lower(c.name)) n {base}", bargs)[0]["n"]
         out["has_guide"] = bool(db().q("SELECT 1 FROM epg WHERE stop > ? LIMIT 1", (time.time(),)))
         out["embeds"] = [] if p.get("kids") else [{"id": r["id"], "name": r["name"]} for r in db().q("SELECT id, name FROM embed_sources WHERE enabled = 1 ORDER BY id")]
         out["addon_rows"] = [] if p.get("kids") else [{"id": f"{a['id']}|{c['id']}", "title": f"{c.get('name') or c.get('id')}", "source": a["m"].get("name")} for a, c, _ in live_catalogs()]
@@ -6546,7 +6546,8 @@ async def live_guide(start: float = 0, hours: float = 3, group: str = "", countr
         where.append("c.grp = ?"); args.append(group)
     if country:
         where.append("c.country = ?"); args.append(country)
-    rows = db().q(f"SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {' AND '.join(where)} ORDER BY c.rank, c.name LIMIT 60 OFFSET ?", [*args, max(0, skip)])
+    rows = db().q(f"WITH r AS (SELECT c.*, ROW_NUMBER() OVER (PARTITION BY lower(c.name) ORDER BY (c.ok = 1) DESC, c.rank, c.id) AS rn "
+                  f"FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE {' AND '.join(where)}) SELECT * FROM r WHERE rn = 1 ORDER BY rank, name LIMIT 60 OFFSET ?", [*args, max(0, skip)])
     favs = fav_names(p["id"])
     out = []
     for r in rows:

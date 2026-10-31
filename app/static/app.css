@@ -1882,3 +1882,6 @@ body.tv .tr-box { width: min(90vw, calc(80vh * 16 / 9)); }
 /* TV: the selected card keeps its white ring while it plays */
 body.tv .tile.tile-open:focus-visible .art { box-shadow: 0 0 0 3px #fff, 0 26px 60px rgba(0, 0, 0, 0.75); outline: none; }
 body.tv .tile.tile-open { z-index: 6; }
+
+/* A TV has no mute buttons on trailers, the sound is always on */
+body.tv #heroMute, body.tv #trSnd, body.tv .tile-snd { display: none !important; }

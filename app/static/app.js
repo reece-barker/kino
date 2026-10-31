@@ -1000,7 +1000,7 @@
   // Sound on by default: a trailer starts muted (a browser always lets that autoplay) and the sound is switched on as soon as it is playing, when the
   // page has been clicked or tapped before (browsers only allow sound after that). If it isn't allowed it just stays muted and the sound button shows it
   const soundAllowed = () => (navigator.userActivation ? navigator.userActivation.hasBeenActive : true);
-  const wantSound = () => !(ME.profile && ME.profile.prefs && ME.profile.prefs.preview_sound === false);
+  const wantSound = () => TV || !(ME.profile && ME.profile.prefs && ME.profile.prefs.preview_sound === false);
   // YouTube draws its title, a More videos strip and buttons over the first few seconds of any video, controls off or not, so the video stays
   // invisible until those are gone (a loop restart is hidden the same way). It loops by hand cause the loop param adds previous and next buttons
   const YT_CLEAR = 6500, YT_CLEAR_CROP = 5000;  // a card or background crops the video a little, which hides the title strip and bar, so only the centre button needs to be gone
@@ -1009,7 +1009,7 @@
   function mountTrailer(host, yt, o = {}) {
     const f = document.createElement("iframe");
     f.src = ytSrc(yt, { ...o, mute: o.mute || o.sound });
-    let wantSnd = !!o.sound, state = -1, shown = false, clearT = null;
+    let loud = 0, wantSnd = !!o.sound, state = -1, shown = false, clearT = null;
     f.style.opacity = "0";
     f.title = "Trailer";
     f.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture; fullscreen");
@@ -1048,7 +1048,11 @@
         if (st === 1 && !shown && clearT) o.wait && o.wait(o.cover ? YT_CLEAR_CROP : YT_CLEAR);
       }
       if (d.event === "onError") o.onFail && o.onFail(d.info);
-      if (d.event === "infoDelivery" && d.info && typeof d.info.muted === "boolean") o.onMuted && o.onMuted(d.info.muted);
+      if (d.event === "infoDelivery" && d.info && typeof d.info.muted === "boolean") {
+        o.onMuted && o.onMuted(d.info.muted);
+        // A TV has no sound button, a trailer there is never muted: if the player says it is, the sound is switched back on
+        if (TV && shown && d.info.muted && wantSnd && loud++ < 8) { ytCmd(f, "unMute"); ytCmd(f, "setVolume", [100]); }
+      }
     };
     window.addEventListener("message", on);
     window.addEventListener("resize", fit);
@@ -1142,8 +1146,8 @@
       kids.forEach((k, j) => { if (dir > 0 && j > i) k.style.transform = `translateX(${extra}px)`; if (dir < 0 && j < i) k.style.transform = `translateX(${-extra}px)`; });
       const ov = document.createElement("div");
       ov.className = "tile-ov";
-      // A TV has no pointer, so it only shows whether the sound is on (the play/pause key on the remote switches it)
-      ov.innerHTML = TV ? `<span class="tile-snd tile-ind" aria-hidden="true">${ic("vol")}</span>` : `<button type="button" class="tile-snd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`;
+      // A TV has no sound button, its trailers always have the sound on
+      ov.innerHTML = TV ? "" : `<button type="button" class="tile-snd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`;
       art.appendChild(ov);
       const snd = $(".tile-snd", ov);
       show(muted);
@@ -1197,12 +1201,6 @@
     const row = t.parentElement;
     if (Math.abs(scrollY - HV.sy) > 16 || (row && Math.abs(row.scrollLeft - HV.sx) > 40)) closeTile();
   }, { capture: true, passive: true });
-  // The play/pause key on a TV remote turns the sound of the open trailer (the card or the page background) off and on
-  document.addEventListener("keydown", (e) => {
-    if (!TV || TRAILER_VIEW || !(e.key === "MediaPlayPause" || e.keyCode === 179)) return;
-    const f = HV.toggle || HERO.toggle;
-    if (f) { e.preventDefault(); f(); }
-  });
   document.addEventListener("pointerdown", (e) => { if (HV.tile && !(e.target.closest && e.target.closest(".tile-snd"))) closeTile(); }, true);
 
   // The background of a title's page: a trailer loads at once and fades in behind the title once it is clean, muted, with a sound button. It pauses when the page
@@ -1228,7 +1226,7 @@
       if (n !== ROUTE_N || !box.isConnected || !pl.el.hidden || sheetClose || TRAILER_VIEW) return;
       let muted = true;
       const mute = $("#heroMute"), show = (m) => { muted = m; if (mute) { mute.innerHTML = ic(m ? "mute" : "vol"); mute.setAttribute("aria-label", m ? "Sound on" : "Sound off"); mute.title = m ? "Sound on" : "Sound off"; } };
-      HERO.ctl = mountTrailer(box, yt, { sound: wantSound(), loop: true, cover: true, onMuted: show, onPlay: () => { box.classList.add("tr-on"); if (mute) mute.hidden = false; }, onFail: () => { noTrailer(kind, imdb); stopHero(); if (btn) btn.hidden = true; } });
+      HERO.ctl = mountTrailer(box, yt, { sound: wantSound(), loop: true, cover: true, onMuted: show, onPlay: () => { box.classList.add("tr-on"); if (mute && !TV) mute.hidden = false; }, onFail: () => { noTrailer(kind, imdb); stopHero(); if (btn) btn.hidden = true; } });
       if (mute) mute.onclick = () => { HERO.ctl && HERO.ctl.mute(!muted); show(!muted); };
       HERO.toggle = () => { HERO.ctl && HERO.ctl.mute(!muted); show(!muted); };
       if ("IntersectionObserver" in window) {

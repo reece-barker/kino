@@ -1571,6 +1571,7 @@
           <div class="actions">
             ${up ? `<button class="btn primary" id="playMain">${ic("play")} ${esc(playLabel)}</button>` : ""}
             ${resume ? `<button class="btn secondary" id="playStart">Start Over</button>` : ""}
+            ${up && t.imdb ? `<button class="btn secondary" id="srcMain">${ic("link")} Sources</button>` : ""}
             ${listBtn(t.in_list)}
             <button class="round-btn ${t.watched ? "on" : ""}" id="watchedBtn" aria-pressed="${t.watched}" aria-label="${t.watched ? "Mark as unwatched" : "Mark as watched"}" title="${t.watched ? "Watched" : "Mark as Watched"}">${ic(t.watched ? "check" : "eye")}</button>
             <span class="rate-group" role="group" aria-label="Rate this">${rateBtn(-1, "down", "Not for me")}${rateBtn(1, "up", "I like this")}${rateBtn(2, "love", "Love this")}</span>
@@ -1615,6 +1616,7 @@
         const art = f.thumbnail ? `<img loading="lazy" decoding="async" src="${img(f.thumbnail, 0, WW())}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
         return `<div class="ep"><button class="tile landscape ${f.watched ? "is-watched" : ""}" data-playfile="${f.id}" aria-label="Play ${esc(epLabel(f.season, f.episode))} ${esc(f.ep_name || "")}"><div class="art">${art}${p != null ? `<div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div>` : ""}${f.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(f.season, f.episode) || "Extra")}${f.duration ? ` · ${Math.max(1, Math.round(f.duration / 60))} min` : ""}</div>
+            ${t.imdb ? `<button class="ep-mark" data-epsrc="${f.id}" aria-label="Other sources for ${esc(epLabel(f.season, f.episode))}" title="Sources">${ic("link")}</button>` : ""}
             <button class="ep-mark" data-epwatch="${f.id}" data-state="${f.watched ? 1 : 0}" aria-label="${f.watched ? "Mark as unwatched" : "Mark as watched"}" title="${f.watched ? "Watched, click to unmark" : "Mark as watched"}">${ic(f.watched ? "check" : "plus")}</button>
             ${t.is_admin ? `<button class="ep-mark" data-delfile="${f.id}" aria-label="Delete this episode" title="Delete this episode">${ic("trash")}</button>` : ""}</div>
           <div class="cap">${esc(nice(f.ep_name) || f.name)}</div>${f.ep_overview ? `<div class="ov">${esc(f.ep_overview)}</div>` : ""}</div>`;
@@ -1626,6 +1628,7 @@
         const f = t.files.find((x) => x.id === b.dataset.playfile);
         playFile(f.id, { title: t, from: f.progress ? f.progress.pos : 0 });
       }));
+      $$("[data-epsrc]").forEach((b) => (b.onclick = () => openSources(t, t.files.find((x) => x.id === b.dataset.epsrc))));
       $$("[data-epwatch]").forEach((b) => (b.onclick = async () => {
         await api("/api/watched", { file_id: b.dataset.epwatch, watched: b.dataset.state !== "1" });
         route();
@@ -1646,6 +1649,8 @@
     if (pm) pm.onclick = () => playFile(up.id, { title: t, from: resume ? up.progress.pos : 0 });
     const ps = $("#playStart");
     if (ps) ps.onclick = () => playFile(up.id, { title: t, from: 0 });
+    const sm = $("#srcMain");
+    if (sm) sm.onclick = () => openSources(t, up);
     wireListBtn({ title_id: t.id }, t.list_key);
     const kt = $("#kidsT");
     if (kt) kt.onclick = async () => {
@@ -1910,6 +1915,55 @@
       try { await api(`/api/admin/streams/${first.id}/save`, {}); toast("Saving to the Library, you can keep browsing"); watchSave(first.id, !!ep); }
       catch (e) { toast(e.message, 5000); }
     };
+  }
+
+  // Sources for something that is in the Library already. The Storage Box copy is listed first and the sources from addons (and your
+  // TorBox) come after it, so a title in the Library doesnt hide the other ways to watch it. file is the episode (nothing for a film)
+  async function openSources(t, file) {
+    const ep = t.kind === "series" && file ? file : null;
+    const vid = t.kind === "series" ? (ep ? `${t.imdb}:${ep.season}:${ep.episode}` : null) : t.imdb;
+    if (!vid) return;
+    const own = t.files.filter((f) => !ep || (f.season === ep.season && f.episode === ep.episode));
+    const head = `<div class="src-head"><div><h2>Sources</h2><p class="secondary">${esc(t.name)}${ep ? ` · ${esc(epLabel(ep.season, ep.episode))}` : ""}</p></div>
+      <button class="round-btn sm" data-close aria-label="Close">${ic("close")}</button></div>`;
+    const sh = sheet(head + `<div class="src-list" id="srcList"></div>`, { wide: true });
+    const list = $("#srcList", sh.el);
+    let streams = null, err = "";
+    const draw = (loading) => {
+      list.innerHTML = `<h3 class="sr-sub">On the Storage Box</h3>` + (own.map((f, i) => {
+        const p = f.progress && !f.watched && f.progress.dur ? f.progress.pos / f.progress.dur : 0;
+        return `<button class="src ${i === 0 ? "best" : ""}" data-own="${f.id}">
+          <span class="src-q ${/2160|1080|720|4k/i.test(f.name) ? "hd" : ""}">${esc((f.name.match(/\b(2160p|1440p|1080p|720p|576p|480p)\b/i) || (/\b4k\b/i.test(f.name) ? ["4K"] : ["Library"]))[0])}</span>
+          <span class="src-body"><b>${esc(nice(f.name))}</b><span class="src-meta"><span>${bytes(f.size)}</span><span>Storage Box</span></span>
+            ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
+          <span class="src-play">${ic("play")}</span></button>`;
+      }).join("") || `<p class="secondary sr-empty">Not on the Storage Box.</p>`)
+        + `<h3 class="sr-sub">From Addons</h3>` + (streams ? (streams.length ? streams.map((x, i) => {
+        const p = x.progress && !x.progress.watched && x.progress.dur ? x.progress.pos / x.progress.dur : 0;
+        const meta = [x.format, x.bytes ? bytes(x.bytes) : "", x.addon].filter(Boolean);
+        return `<button class="src" data-str="${i}">
+          <span class="src-q ${x.height >= 720 ? "hd" : ""}">${esc(x.quality)}</span>
+          <span class="src-body"><b>${esc(nice(x.label))}</b><span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>
+            ${!x.plays ? `<span class="src-warn">${ic("info")} Might not play in this browser, saving it to the Library always works</span>` : ""}
+            ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
+          <span class="src-play">${ic("play")}</span></button>`;
+      }).join("") : `<p class="secondary sr-empty">${esc(err || "No addon has a source for this.")}</p>`) : `<p class="secondary sr-empty">${loading ? "Looking for sources" : ""}</p>`);
+      $$("[data-own]", list).forEach((b) => (b.onclick = () => { const f = own.find((x) => x.id === b.dataset.own); sh.close(); playFile(f.id, { title: t, from: f.progress && !f.watched ? f.progress.pos : 0 }); }));
+      $$("[data-str]", list).forEach((b) => (b.onclick = () => {
+        const x = streams[Number(b.dataset.str)];
+        sh.close();
+        SOURCES = { list: streams, tried: new Set() };
+        playFile(x.id, { from: x.progress && !x.progress.watched ? x.progress.pos : 0 });
+      }));
+      if (TV) { const f = $("[data-own], [data-str]", list); if (f && !list.contains(document.activeElement)) f.focus({ preventScroll: true }); }
+    };
+    draw(true);
+    const url = `/api/streams/${t.kind}/${encodeURIComponent(vid)}`;
+    try {
+      let r = await api(url + "?quick=1");
+      streams = r.streams; draw(!!r.partial);
+      if (r.partial) { r = await api(url); if (!sh.el.isConnected) return; streams = r.streams; draw(false); }
+    } catch (e) { err = e.message; streams = []; draw(false); }
   }
 
   function watchSave(sid, stay) {

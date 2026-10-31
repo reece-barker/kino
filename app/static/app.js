@@ -954,8 +954,10 @@
     const art = t.poster
       ? `<img loading="lazy" decoding="async" src="${img(t.poster, 0, PW())}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
-    const sub = t.family ? t.family : t.external ? t.releaseInfo || (t.kind === "video" ? "Video" : t.kind === "series" ? "TV Show" : "Movie")
+    const sub0 = t.family ? t.family : t.external ? t.releaseInfo || (t.kind === "video" ? "Video" : t.kind === "series" ? "TV Show" : "Movie")
       : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
+    const rate = !t.family && Number(t.rating) > 0 ? `★ ${Number(t.rating).toFixed(1)}` : "";  // the IMDb score next to the year
+    const sub = [sub0, rate].filter(Boolean).join(" · ");
     const mark = (t.watched ? `<span class="tile-check" title="Watched">${ic("check")}</span>` : "") + (t.family ? `<span class="tile-love ${t.loved ? "loved" : ""}" title="${esc(t.family)}">${ic(t.loved ? "love" : "up")}</span>` : "");
     const href = t.external ? extHref(t) : `#/title/${t.id}`;
     return `<a class="tile poster ${t.external ? "ext" : ""} ${t.watched ? "is-watched" : ""}" href="${href}" ${trailerAttrs(t)} ${t.external && t.poster ? `data-poster="${esc(t.poster)}"` : ""}><div class="art">${art}${mark}</div><div class="cap">${esc(t.name)}</div><div class="sub">${esc(sub)}</div></a>`;
@@ -1001,7 +1003,7 @@
   const wantSound = () => !(ME.profile && ME.profile.prefs && ME.profile.prefs.preview_sound === false);
   // YouTube draws its title, a More videos strip and buttons over the first few seconds of any video, controls off or not, so the video stays
   // invisible until those are gone (a loop restart is hidden the same way). It loops by hand cause the loop param adds previous and next buttons
-  const YT_CLEAR = 4500;
+  const YT_CLEAR = 4500, YT_CLEAR_CROP = 3000;  // a card or background crops the video a little, which hides the title strip and bar, so only the centre button needs to be gone
   // An embedded trailer in host. o: mute, loop, controls, cover (fill the box), contain (fit the whole frame in the box), sound (turn the sound on
   // once it shows), onPlay (it is showing), onFail, onMuted (the player says its sound is on or off)
   function mountTrailer(host, yt, o = {}) {
@@ -1020,7 +1022,7 @@
       if (!o.cover && !o.contain) { f.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0"; f.style.opacity = op; return; }
       const r = host.getBoundingClientRect(), w = r.width, h = r.height;
       const W = o.contain ? Math.min(w, (h * 16) / 9) : Math.max(w, (h * 16) / 9), H = (W * 9) / 16;
-      f.style.cssText = `position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;border:0;transform:translate(-50%,-50%);pointer-events:none;transition:opacity .5s`;
+      f.style.cssText = `position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;border:0;transform:translate(-50%,-50%) scale(${o.cover ? 1.3 : 1});pointer-events:none;transition:opacity .5s`;
       f.style.opacity = op;
     };
     const reveal = () => {
@@ -1029,7 +1031,7 @@
         shown = true; f.style.opacity = "1";
         if (o.sound && !soundDone && soundAllowed()) { soundDone = true; ytCmd(f, "unMute"); ytCmd(f, "setVolume", [100]); }
         o.onPlay && o.onPlay();
-      }, YT_CLEAR);
+      }, o.cover ? YT_CLEAR_CROP : YT_CLEAR);
     };
     fit();
     const on = (e) => {
@@ -1130,7 +1132,7 @@
       kids.forEach((k, j) => { if (dir > 0 && j > i) k.style.transform = `translateX(${extra}px)`; if (dir < 0 && j < i) k.style.transform = `translateX(${-extra}px)`; });
       const ov = document.createElement("div");
       ov.className = "tile-ov";
-      ov.innerHTML = `<b>${esc($(".cap", tile) ? $(".cap", tile).textContent : "")}</b><span>${esc($(".sub", tile) ? $(".sub", tile).textContent : "")}</span>${TV ? "" : `<button type="button" class="tile-snd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`}`;
+      ov.innerHTML = `${TV ? "" : `<button type="button" class="tile-snd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`}`;
       art.appendChild(ov);
       const snd = $(".tile-snd", ov);
       show(muted);

@@ -1854,9 +1854,7 @@ body.tv .page-back { display: none !important; }
 .tile.tile-open .cap, .tile.tile-open .sub { opacity: 0; }
 .tile-trailer { position: absolute; left: 0; top: 0; z-index: 1; overflow: hidden; opacity: 0; transition: opacity 0.6s ease; pointer-events: none; }
 .art.tr-on .tile-trailer { opacity: 1; }
-.tile-ov { position: absolute; z-index: 3; left: 0; right: 0; bottom: 0; padding: 36px 16px 14px; display: flex; flex-direction: column; gap: 2px; background: linear-gradient(to top, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0)); pointer-events: none; }
-.tile-ov b { font-size: 17px; font-weight: 700; color: #fff; padding-right: 48px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile-ov span { font-size: 13px; color: rgba(255, 255, 255, 0.78); }
+.tile-ov { position: absolute; z-index: 3; inset: 0; pointer-events: none; }
 .tile-snd { position: absolute; right: 12px; bottom: 12px; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: rgba(0, 0, 0, 0.6); color: #fff; pointer-events: auto; border: 1px solid rgba(255, 255, 255, 0.4); }
 .tile-snd:hover { background: rgba(255, 255, 255, 0.9); color: #000; }
 /* The Trailer button: the trailer on its own */

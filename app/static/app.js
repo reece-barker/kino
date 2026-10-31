@@ -1540,7 +1540,7 @@
             <button class="round-btn ${t.watched ? "on" : ""}" id="watchedBtn" aria-pressed="${t.watched}" aria-label="${t.watched ? "Mark as unwatched" : "Mark as watched"}" title="${t.watched ? "Watched" : "Mark as Watched"}">${ic(t.watched ? "check" : "eye")}</button>
             <span class="rate-group" role="group" aria-label="Rate this">${rateBtn(-1, "down", "Not for me")}${rateBtn(1, "up", "I like this")}${rateBtn(2, "love", "Love this")}</span>
             ${inCont ? `<button class="round-btn" id="contHide" aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
-            ${t.kind === "movie" && up ? `<button class="round-btn" id="dlMain" aria-label="Download" title="Download">${ic("download")}</button>` : ""}
+            ${t.kind === "movie" && up && !TV && !kidsMode() ? `<button class="round-btn" id="dlMain" aria-label="Download" title="Download">${ic("download")}</button>` : ""}
             ${t.is_admin ? `<div class="menu-wrap"><button class="round-btn" id="adminMore" aria-haspopup="true" aria-label="Admin options" title="Admin options">${ic("more")}</button>
               <div class="menu drop up-left" id="adminMenu" hidden>
                 <button class="mi" id="fixMatch">${ic("wand")} Fix Match</button>
@@ -1647,8 +1647,15 @@
       const setM = (on) => {
         menu.hidden = !on; hero.classList.toggle("menu-open", on); am.setAttribute("aria-expanded", on);
         // With the big banner the button sits near the bottom of a tv screen, so the menu opens upwards when theres no room under it
-        menu.classList.remove("flip");
-        if (on && menu.getBoundingClientRect().bottom > innerHeight - 8) menu.classList.add("flip");
+        menu.classList.remove("flip", "to-left");
+        // Opens to the right of the button, on narrow screens that runs off the edge so it opens leftwards instead
+        if (on && menu.getBoundingClientRect().right > innerWidth - 8) menu.classList.add("to-left");
+        if (on && menu.getBoundingClientRect().bottom > innerHeight - 8) {
+          // Flipping up only helps if theres room above, on a short landscape phone there isnt so it stays below and the page scrolls
+          const r = menu.getBoundingClientRect();
+          if (am.getBoundingClientRect().top - r.height > 8) menu.classList.add("flip");
+          else menu.scrollIntoView({ block: "nearest" });
+        }
         // On a tv the remote goes straight into the menu, wherever it opened
         if (on && TV) setTimeout(() => { const f = $(".mi", menu); if (f) f.focus({ preventScroll: true }); }, 30);
       };
@@ -2045,6 +2052,8 @@
   const hm = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const flag = (c) => ({ uk: "UK", us: "US", fr: "France", de: "Germany", ie: "Ireland", ca: "Canada", au: "Australia", nz: "New Zealand" })[c] || (c ? c.toUpperCase() : "");
   let LIVE_LIST = [];
+  // With a filter or search on the count says how many are showing, the whole library number only means something unfiltered
+  const liveCount = (m) => { const f = LIVE_STATE.fav || LIVE_STATE.group || LIVE_STATE.country || LIVE_STATE.q; return f ? `${m.channels.length}${m.next ? "+" : ""} working` : `${m.total} working`; };
   const chanCard = (c, i) => {
     const pr = c.now ? Math.min(1, Math.max(0, (Date.now() / 1000 - c.now.start) / (c.now.stop - c.now.start))) : null;
     return `<div class="ch-cell"><button class="ch-card" data-ch="${i}" data-cid="${esc(c.id)}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}">
@@ -2079,7 +2088,7 @@
       <form class="search live-search" id="lsForm" role="search">${ic("search")}<input id="lsq" type="search" placeholder="Find a channel" value="${esc(st.q)}" autocomplete="off"></form>
       <div id="favRow"></div>
       <div id="liveRows"></div>
-      <section class="section"><h2 class="section-title">${st.fav ? "Favourites" : st.group || st.country ? esc([flag(st.country), st.group].filter(Boolean).join(" ")) : "Channels"} <span class="from" id="chCount">${r.total ? r.total + " working" : ""}</span></h2>
+      <section class="section"><h2 class="section-title">${st.fav ? "Favourites" : st.group || st.country ? esc([flag(st.country), st.group].filter(Boolean).join(" ")) : "Channels"} <span class="from" id="chCount">${r.total ? liveCount(r) : ""}</span></h2>
         <div class="ch-grid" id="chGrid">${r.channels.map(chanCard).join("")}</div>
         <div class="grid-more" id="chMore" ${r.next ? "" : "hidden"}><span class="spin small"></span></div></section>`}`}
     </main>`;
@@ -2106,7 +2115,7 @@
       grid.innerHTML = m.channels.map(chanCard).join("") || `<p class="secondary">No channels called that.</p>`;
       next = m.next;
       $("#chMore").hidden = !next;
-      $("#chCount").textContent = m.total ? `${m.total} working` : "";
+      $("#chCount").textContent = m.total ? liveCount(m) : "";
       $("#liveRows").hidden = !!st.q;
     };
     $("#lsq").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value.trim(); find(); }, 300); });
@@ -2411,6 +2420,7 @@
     clearInterval(HERO_T);
     pl.el.hidden = false;
     document.body.style.overflow = "hidden";
+    liveChrome();
     pl.info = { recording: true, id: "r" + x.id, name: x.title, prefs: (ME.profile && ME.profile.prefs) || {}, subs: [], audio: [], stream: false, duration: 0 };
     $("#pTitle").textContent = x.title;
     $("#pSub").textContent = x.channel;
@@ -2540,6 +2550,7 @@
   }
   function tune() {
     const ch = LIVE_NOW.list[LIVE_NOW.i];
+    liveChrome();
     pl.info = { live: true, id: ch.id, name: ch.name, prefs: (ME.profile && ME.profile.prefs) || {}, subs: [], audio: [], stream: false, duration: 0 };
     $("#pTitle").textContent = ch.name;
     $("#pSub").textContent = ch.now ? `Live  ·  ${ch.now.title}` : "Live";
@@ -3761,8 +3772,12 @@
     };
   }
 
+  // Live channels and recordings have no subtitle, audio track or speed menus to show, so the buttons stay out of the way
+  function liveChrome() { ["#pSubs", "#pAudio", "#pSpeed"].forEach((b) => ($(b).hidden = true)); hideMenus(); }
+
   function buildMenus() {
     const info = pl.info;
+    $("#pSpeed").hidden = false;
     $("#pAudio").innerHTML = ic("audio");
     $("#pAudio").hidden = !!(info.live || info.recording) && info.audio.length < 2;
     // Audio tracks, then Audio Sync: resync on the spot, or shift the sound earlier or later if a file is out
@@ -4089,9 +4104,12 @@
   const menuBtn = (btn, menu) => ($(btn).onclick = (e) => { e.stopPropagation(); const m = $(menu); const was = m.hidden; hideMenus(); m.hidden = !was; });
   menuBtn("#pAudio", "#mAudio"); menuBtn("#pSubs", "#mSubs"); menuBtn("#pSpeed", "#mSpeed"); menuBtn("#pAdminIntro", "#mIntro");
   $("#pAdminIntro").innerHTML = ic("flag");
+  // A touch while the controls are faded only wakes them, the pause comes from the next tap (wakeUi runs on pointerdown so this has to look first)
+  pl.el.addEventListener("pointerdown", (e) => { pl.wakeTap = e.pointerType === "touch" && pl.el.classList.contains("idle"); }, true);
   pl.el.addEventListener("click", (e) => {
     if (!e.target.closest(".menu-wrap")) hideMenus();
-    if (e.target === v || e.target.id === "playerUi") toggle();
+    const woke = pl.wakeTap; pl.wakeTap = false;
+    if (!woke && (e.target === v || e.target.id === "playerUi")) toggle();
   });
   v.addEventListener("dblclick", () => $("#pFull").click());
 

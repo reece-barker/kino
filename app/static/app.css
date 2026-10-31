@@ -417,7 +417,6 @@ select.plain { background: var(--fill); border: 0; border-radius: 10px; height: 
   .hero { height: 92vh; }
   .now-card { grid-template-columns: 1fr; }
   .now-card .post { width: 96px; }
-  #pVol { display: none; }
   .player-bottom { margin: 0 8px 10px; padding: 12px 14px 10px; }
   .time { width: 52px; }
 }
@@ -673,7 +672,6 @@ select.plain option { background: var(--bg-2); color: var(--label); }
 
 @media (max-width: 760px) {
   .player-bottom { padding: 48px 14px 12px; }
-  .ctl-l #pVol { display: none; }
   .ctl-c { gap: 8px; }
   .player .icon-btn { width: 34px; height: 34px; font-size: 18px; }
   .player .icon-btn.big { width: 40px; height: 40px; font-size: 26px; }
@@ -1743,3 +1741,57 @@ body.tv .who-tile:hover:not(:focus-visible) .av.av-duo .av-half:last-child { box
 /* No double tap zoom anywhere (pinch stays in a browser tab), and as a home screen app no pinch either */
 html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
 html.standalone { touch-action: pan-x pan-y; }
+
+/* ================================================================ ui audit fixes */
+/* History: one long episode name was stretching the grid past the edge of a phone, Play and Remove ended up off screen */
+.hist-list { grid-template-columns: minmax(0, 1fr); }
+.hist { min-width: 0; }
+
+/* Faded controls cant take taps anymore, a tap in the corner used to close the player or open a menu you couldnt see */
+.player.idle .player-ui { pointer-events: none; }
+
+/* The volume slider and fullscreen button follow the kind of input and not the width of the window. Phones and tablets
+   use the volume buttons (iOS ignores the slider anyway) and a tv remote cant drag a slider or go fullscreen */
+@media (hover: none) and (pointer: coarse) { #pVol { display: none; } }
+body.tv #pVol, body.tv #pFull { display: none; }
+
+/* Remote focus ring for the web player, the global one is off on tv */
+body.tv .player :focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+body.tv .player .menu :focus-visible { outline-offset: -3px; }
+body.tv .player .scrub:focus-visible { outline-offset: 6px; }
+
+/* Player menus on phones open from the bottom bar and are as wide as the screen allows, long names wrap instead of
+   pushing the menu off the side */
+.player .menu { max-width: min(360px, calc(100vw - 24px)); }
+.player .menu button { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+@media (max-width: 760px) {
+  .player-bottom { position: relative; }
+  .player .menu-wrap { position: static; }
+  .player .menu, .ctl-r .menu, .ctl-l .menu { left: auto; right: 8px; bottom: 66px; }
+}
+
+/* Back button for every touch screen without a tab bar (iPad, landscape phones), it sits clear of the rail there */
+@media (hover: none) and (pointer: coarse) and (min-width: 761px) { .page-back { display: grid; left: calc(92px + env(safe-area-inset-left)); } }
+body.tv .page-back { display: none !important; }
+
+/* Admin menu on a title page flips to open leftwards when the right side is off screen (app.js picks) */
+.menu.drop.up-left.to-left { left: auto; right: 0; }
+
+/* Toast stays above the phone tab bar and in front of sheets */
+.toast { z-index: 130; bottom: calc(28px + env(safe-area-inset-bottom)); }
+@media (max-width: 760px) { .toast { bottom: calc(86px + env(safe-area-inset-bottom)); } }
+
+/* Sheets use the visible height (iOS 100vh is the tall one with the toolbar hidden) and dont scroll the page behind them */
+.sheet { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overscroll-behavior: contain; }
+
+/* Short landscape phones: the home banner was taller than the screen so Play started below the fold */
+@media (max-height: 500px) and (orientation: landscape) { .hero { min-height: 0; height: 100vh; height: 100dvh; } }
+
+/* Settings rows on phones: the switch or select stays on the right whatever the label length, only the wide controls stack */
+@media (max-width: 760px) {
+  .set-row:not(:has(.actions, .theme-pick, .field, input:not([type="checkbox"]), textarea, .set-profile)) { flex-wrap: nowrap; align-items: center; }
+  .set-row:not(:has(.actions, .theme-pick, .field, input:not([type="checkbox"]), textarea, .set-profile)) > span:first-child { flex: 1 1 0; min-width: 0; }
+  .set-row:not(:has(.actions, .theme-pick, .field, input:not([type="checkbox"]), textarea, .set-profile)) > :not(span:first-child) { flex: none; max-width: 52%; }
+}
+/* Small buttons in a settings row were 13 and 14px, the rest of the app uses 15 */
+.set-row .secondary.btn, .set-profile .secondary.btn, .set-row .btn.secondary, .set-profile .btn.secondary { font-size: 15px; }

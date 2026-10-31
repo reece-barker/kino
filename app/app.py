@@ -23,11 +23,11 @@ import json
 import logging
 import math
 import os
-import signal
 import re
 import random
 import secrets
 import shutil
+import signal
 import socket
 import struct
 import tempfile
@@ -1175,12 +1175,12 @@ STATIC_VERSION = {"v": "1"}
 @asynccontextmanager
 async def lifespan(app):
     db()
-    asyncio.create_task(asyncio.to_thread(warm_meta))
     if not SECRET:
         log.warning("KINO_SECRET is empty, set it in /etc/kino/kino.env")
     shutil.rmtree(HLS_DIR, ignore_errors=True)
     HLS_DIR.mkdir(parents=True, exist_ok=True)
     SUBS_DIR.mkdir(parents=True, exist_ok=True)
+    asyncio.create_task(asyncio.to_thread(warm_meta))  # Fills the meta cache in the background so the first home page isnt slow
     (DATA_DIR / "img").mkdir(parents=True, exist_ok=True)
     FF_INFO["burst"] = await asyncio.to_thread(ffmpeg_supports_burst)
     # Changes whenever a static file changes so browsers and the app install pick up new versions

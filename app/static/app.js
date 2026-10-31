@@ -1003,7 +1003,7 @@
   const wantSound = () => !(ME.profile && ME.profile.prefs && ME.profile.prefs.preview_sound === false);
   // YouTube draws its title, a More videos strip and buttons over the first few seconds of any video, controls off or not, so the video stays
   // invisible until those are gone (a loop restart is hidden the same way). It loops by hand cause the loop param adds previous and next buttons
-  const YT_CLEAR = 4500, YT_CLEAR_CROP = 3000;  // a card or background crops the video a little, which hides the title strip and bar, so only the centre button needs to be gone
+  const YT_CLEAR = 6500, YT_CLEAR_CROP = 5000;  // a card or background crops the video a little, which hides the title strip and bar, so only the centre button needs to be gone
   // An embedded trailer in host. o: mute, loop, controls, cover (fill the box), contain (fit the whole frame in the box), sound (turn the sound on
   // once it shows), onPlay (it is showing), onFail, onMuted (the player says its sound is on or off)
   function mountTrailer(host, yt, o = {}) {
@@ -1045,7 +1045,7 @@
         if (st === 1 && !shown && !clearT) reveal();
         if (st === 0 && o.loop) { shown = false; clearT = null; f.style.opacity = "0"; if (wantSnd) ytCmd(f, "mute"); ytCmd(f, "seekTo", [0, true]); ytCmd(f, "playVideo"); }
         if (shown || st !== 1) o.onState && o.onState(st);
-        if (st === 1 && !shown && clearT) o.wait && o.wait();
+        if (st === 1 && !shown && clearT) o.wait && o.wait(o.cover ? YT_CLEAR_CROP : YT_CLEAR);
       }
       if (d.event === "onError") o.onFail && o.onFail(d.info);
       if (d.event === "infoDelivery" && d.info && typeof d.info.muted === "boolean") o.onMuted && o.onMuted(d.info.muted);
@@ -1071,18 +1071,18 @@
   // The card on a row: after half a second of hovering it grows to a wide card playing the trailer and the rest of the row slides aside
   const HV = { tile: null, timer: null, closeT: null, ctl: null, wait: null, fade: null, cool: 0, settle: null, x: 0, y: 0, sx: 0, sy: 0 };
   function closeTile() {
-    clearTimeout(HV.timer); clearTimeout(HV.closeT); clearTimeout(HV.wait); clearTimeout(HV.fade);
+    clearTimeout(HV.timer); clearTimeout(HV.closeT); clearTimeout(HV.wait); clearTimeout(HV.fade); clearInterval(HV.tick); HV.toggle = null;
     const tile = HV.tile;
     if (HV.ctl) { HV.ctl.stop(); HV.ctl = null; }
     HV.tile = null;
-    if (tile && !tile.classList.contains("tile-open")) $$(".tile-trailer", tile).forEach((x) => x.remove());  // one that never got to show
+    if (tile && !tile.classList.contains("tile-open")) $$(".tile-trailer, .tile-wait", tile).forEach((x) => x.remove());  // one that never got to show
     if (!tile || !tile.classList.contains("tile-open")) return;
     const art = $(".art", tile), row = tile.parentElement;
     tile.classList.remove("tile-open");
     tile.style.width = tile.style.transform = "";
     if (art) {
       art.classList.remove("tr-on");
-      $$(".tile-trailer, .tile-ov", art).forEach((x) => x.remove());
+      $$(".tile-trailer, .tile-ov, .tile-wait", art).forEach((x) => x.remove());
       // The card keeps its height and the picture its own while it shrinks back. Without that the picture went back to its tall shape while
       // still wide for a moment, and the row jumped to almost twice its height
       art.style.height = (tile._h0 || art.getBoundingClientRect().height) + "px";
@@ -1116,10 +1116,20 @@
     host.style.cssText = `width:${ow}px;height:${oh}px`;
     art.appendChild(host);
     let grown = false, muted = true;
+    // While it loads and the start-up overlays run their course a small pill says so, then counts down
+    const pill = document.createElement("div");
+    pill.className = "tile-wait";
+    pill.innerHTML = `<i></i><span>Trailer</span>`;
+    art.appendChild(pill);
+    const countdown = (ms) => {
+      clearInterval(HV.tick);
+      const end = performance.now() + ms, say = () => { const n = Math.max(1, Math.ceil((end - performance.now()) / 1000)); $("span", pill).textContent = `Trailer in ${n}`; };
+      say(); HV.tick = setInterval(say, 250);
+    };
     const grow = () => {
       if (grown || HV.tile !== tile || !tile.isConnected) return;
       grown = true;
-      clearTimeout(HV.wait);
+      clearTimeout(HV.wait); clearInterval(HV.tick); pill.remove();
       const kids = [...row.children], i = kids.indexOf(tile);
       // The row doesn't snap to its cards while one is open (the card is wider than its column, and snapping back moved the row and closed it)
       HV.sx = row.scrollLeft; HV.sy = scrollY; row.style.scrollSnapType = "none";
@@ -1132,16 +1142,18 @@
       kids.forEach((k, j) => { if (dir > 0 && j > i) k.style.transform = `translateX(${extra}px)`; if (dir < 0 && j < i) k.style.transform = `translateX(${-extra}px)`; });
       const ov = document.createElement("div");
       ov.className = "tile-ov";
-      ov.innerHTML = `${TV ? "" : `<button type="button" class="tile-snd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`}`;
+      // A TV has no pointer, so it only shows whether the sound is on (the play/pause key on the remote switches it)
+      ov.innerHTML = TV ? `<span class="tile-snd tile-ind" aria-hidden="true">${ic("vol")}</span>` : `<button type="button" class="tile-snd" aria-label="Sound off" title="Sound off">${ic("vol")}</button>`;
       art.appendChild(ov);
       const snd = $(".tile-snd", ov);
       show(muted);
       if (snd) snd.onclick = (e) => { e.preventDefault(); e.stopPropagation(); HV.ctl && HV.ctl.mute(!muted); show(!muted); };
+      HV.toggle = () => { HV.ctl && HV.ctl.mute(!muted); show(!muted); };
       // The video shows once the card has finished growing
       HV.fade = setTimeout(() => art.classList.add("tr-on"), 420);
     };
     const show = (m) => { muted = m; const snd = $(".tile-snd", art); if (snd) { snd.innerHTML = ic(m ? "mute" : "vol"); snd.title = m ? "Sound on" : "Sound off"; snd.setAttribute("aria-label", snd.title); } };
-    HV.ctl = mountTrailer(host, yt, { sound: wantSound(), loop: true, cover: true, onMuted: show, onPlay: grow, onFail: () => { noTrailer(kind, imdb); closeTile(); } });
+    HV.ctl = mountTrailer(host, yt, { sound: wantSound(), loop: true, cover: true, onMuted: show, onPlay: grow, wait: countdown, onFail: () => { noTrailer(kind, imdb); closeTile(); } });
     // If it never starts (blocked, slow) nothing was changed, so it is just dropped
     HV.wait = setTimeout(() => { if (!grown && HV.tile === tile) closeTile(); }, 14000);
   }
@@ -1185,6 +1197,12 @@
     const row = t.parentElement;
     if (Math.abs(scrollY - HV.sy) > 16 || (row && Math.abs(row.scrollLeft - HV.sx) > 40)) closeTile();
   }, { capture: true, passive: true });
+  // The play/pause key on a TV remote turns the sound of the open trailer (the card or the page background) off and on
+  document.addEventListener("keydown", (e) => {
+    if (!TV || TRAILER_VIEW || !(e.key === "MediaPlayPause" || e.keyCode === 179)) return;
+    const f = HV.toggle || HERO.toggle;
+    if (f) { e.preventDefault(); f(); }
+  });
   document.addEventListener("pointerdown", (e) => { if (HV.tile && !(e.target.closest && e.target.closest(".tile-snd"))) closeTile(); }, true);
 
   // The background of a title's page: a trailer loads at once and fades in behind the title once it is clean, muted, with a sound button. It pauses when the page
@@ -1194,7 +1212,7 @@
     clearTimeout(HERO.timer);
     if (HERO.ctl) HERO.ctl.stop();
     if (HERO.io) HERO.io.disconnect();
-    HERO.ctl = HERO.io = null;
+    HERO.ctl = HERO.io = HERO.toggle = null;
   }
   async function heroTrailer(kind, imdb) {
     stopHero();
@@ -1212,6 +1230,7 @@
       const mute = $("#heroMute"), show = (m) => { muted = m; if (mute) { mute.innerHTML = ic(m ? "mute" : "vol"); mute.setAttribute("aria-label", m ? "Sound on" : "Sound off"); mute.title = m ? "Sound on" : "Sound off"; } };
       HERO.ctl = mountTrailer(box, yt, { sound: wantSound(), loop: true, cover: true, onMuted: show, onPlay: () => { box.classList.add("tr-on"); if (mute) mute.hidden = false; }, onFail: () => { noTrailer(kind, imdb); stopHero(); if (btn) btn.hidden = true; } });
       if (mute) mute.onclick = () => { HERO.ctl && HERO.ctl.mute(!muted); show(!muted); };
+      HERO.toggle = () => { HERO.ctl && HERO.ctl.mute(!muted); show(!muted); };
       if ("IntersectionObserver" in window) {
         HERO.io = new IntersectionObserver(([en]) => { if (!HERO.ctl) return; en.isIntersecting ? HERO.ctl.play() : HERO.ctl.pause(); }, { threshold: 0.25 });
         HERO.io.observe(box);

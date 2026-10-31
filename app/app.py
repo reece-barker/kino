@@ -1099,6 +1099,9 @@ async def guard(request: Request, call_next):
     resp.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"  # Mic is only for voice search
     if path.startswith("/api/") and "cache-control" not in resp.headers:
         resp.headers["Cache-Control"] = "no-store"
+    # Static files revalidate every time (the etag keeps that cheap) so an edited file shows up without waiting on the browser cache
+    if path.startswith("/static/") and "cache-control" not in resp.headers:
+        resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 

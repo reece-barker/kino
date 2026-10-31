@@ -137,6 +137,8 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const app = $("#app");
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // Hashes come from the address bar so they can hold broken percent codes, this never throws
+  const safeDecode = (x) => { try { return decodeURIComponent(x); } catch (_) { return x; } };
   // w asks the server for a smaller copy, full size pictures are only used for the big hero
   const img = (u, trim, w) => (u ? "/api/img?u=" + encodeURIComponent(u) + (trim ? "&trim=1" : "") + (w ? "&w=" + w : "") : "");
   // Tvs get smaller copies again, they hold every picture in memory and run out much sooner than a computer
@@ -200,12 +202,23 @@
     toastT = setTimeout(() => (t.hidden = true), ms);
   }
 
-  async function api(url, body, method) {
+  // Gives up after 20 seconds so a stalled connection cant leave a page on its skeleton for ever, sig is an optional abort from the caller
+  async function api(url, body, method, sig) {
     const opt = { method: method || (body !== undefined ? "POST" : "GET"), headers: { "X-Kino": "1" }, credentials: "same-origin" };
     if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
-    const r = await fetch(url, opt);
-    let j = null;
-    try { j = await r.json(); } catch (_) {}
+    // Starting a stream, asking addons and making a backup can take a while, so those get longer
+    const slow = /^\/api\/(play\/|streams\/|admin\/(backups|stress))/.test(url);
+    const ac = new AbortController(), tm = setTimeout(() => ac.abort(), slow ? 90000 : 20000);
+    if (sig) { if (sig.aborted) ac.abort(); else sig.addEventListener("abort", () => ac.abort(), { once: true }); }
+    opt.signal = ac.signal;
+    let r, j = null;
+    try {
+      r = await fetch(url, opt);
+      try { j = await r.json(); } catch (_) {}
+    } catch (e) {
+      if (e.name === "AbortError" && !(sig && sig.aborted)) { const te = new Error("The server took too long to answer"); te.status = 0; throw te; }
+      throw e;
+    } finally { clearTimeout(tm); }
     if (r.status === 409) { ME.profile = null; location.hash = "#/profiles"; throw new Error("pick profile"); }
     if (r.status === 401 && url.startsWith("/api/admin/") && !url.endsWith("/login")) {
       ME.admin = null;
@@ -215,6 +228,14 @@
     if (r.status === 202) return { ...j, _pending: true };
     return j;
   }
+
+  // Anything that throws without being caught ends up as a short message instead of nothing happening
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e.reason, m = r && r.message;
+    if (!m || m === "pick profile" || (r && r.name === "AbortError")) return;
+    console.warn(r);
+    toast(m.length > 90 ? "Something went wrong" : m, 5000);
+  });
 
   // Broken poster or logo images get swapped for a fallback, done here cause the csp blocks inline onerror
   document.addEventListener("error", (e) => {
@@ -285,7 +306,21 @@
 
   // ---------------------------------------------------------- state
   const ME = { profile: null, admin: null, ip: null };
-  let POLL = null, SYNC = null, HERO_T = null;
+  let POLL = null, SYNC = null, HERO_T = null, SCAN_T = null, FAV_T = null, FAV_PV = null;
+
+  // hls.js is big and only the player needs it, so it gets fetched the first time something plays (once, then its cached)
+  let HLS_P = null;
+  const loadHls = () => {
+    if (window.Hls) return Promise.resolve();
+    if (HLS_P) return HLS_P;
+    return (HLS_P = new Promise((ok, no) => {
+      const sc = document.createElement("script");
+      sc.src = "/static/hls.min.js";
+      sc.onload = () => ok();
+      sc.onerror = () => { HLS_P = null; sc.remove(); no(new Error("Couldn't load the video player")); };
+      document.head.appendChild(sc);
+    }));
+  };
   // Kids profiles never see admin tools, even on a device where the admin is signed in
   const kidsMode = () => !!(ME.profile && ME.profile.kids);
   const isAdmin = () => !!ME.admin && !kidsMode();
@@ -534,7 +569,9 @@
     stopPoll();
     document.body.classList.remove("with-side");
     window.onscroll = null;
+    const n = ROUTE_N;
     const r = await api("/api/profiles");
+    if (n !== ROUTE_N) return;
     ME.admin = r.admin;
     const tile = (p) => `<button class="who-tile ${p.members ? "joint" : ""}" data-pid="${p.id}" aria-label="${manage ? "Edit" : "Watch as"} ${esc(p.name)}">
           <span class="who-av">${pav(p, "lg")}${manage ? `<span class="who-edit">${ic("pencil")}</span>` : ""}${p.kids ? `<span class="who-kids">Kids</span>` : ""}${p.locked && !manage ? `<span class="who-lock">${ic("lock")}</span>` : ""}</span>
@@ -860,7 +897,7 @@
   const extHref = (t) => { EXT_NAME.set(t.ext, t.name); return `#/discover/${t.ext.split("/").map(encodeURIComponent).join("/")}`; };
   function posterTile(t) {
     const art = t.poster
-      ? `<img loading="lazy" src="${img(t.poster, 0, PW())}" alt="${esc(t.name)}" data-fallback="ph">`
+      ? `<img loading="lazy" decoding="async" src="${img(t.poster, 0, PW())}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
     const sub = t.family ? t.family : t.external ? t.releaseInfo || (t.kind === "video" ? "Video" : t.kind === "series" ? "TV Show" : "Movie")
       : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
@@ -870,27 +907,30 @@
   }
   function wideTile(t, opts = {}) {
     const bg = t.background
-      ? `<img loading="lazy" src="${img(t.background, 0, WW())}" alt="${esc(t.name)}" data-fallback="ph">`
+      ? `<img loading="lazy" decoding="async" src="${img(t.background, 0, WW())}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
-    const logo = t.logo && t.background && opts.progress == null ? `<img class="logo-over" loading="lazy" src="${img(t.logo, 1, LITE ? 240 : 480)}" alt="" data-fallback="hide">` : "";
+    const logo = t.logo && t.background && opts.progress == null ? `<img class="logo-over" loading="lazy" decoding="async" src="${img(t.logo, 1, LITE ? 240 : 480)}" alt="" data-fallback="hide">` : "";
     const bar = opts.progress != null && opts.progress > 0 ? `<div class="bar"><i style="width:${Math.min(100, opts.progress * 100)}%"></i></div>` : "";
     const href = opts.href || (t.external ? extHref(t) : `#/title/${t.id}`);
-    const x = opts.hide ? `<button class="tile-x" data-hide="${opts.hide}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
-    return `<a class="tile landscape" href="${href}" ${opts.play ? `data-play="${opts.play}" data-tid="${t.id}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
+    const x = opts.hide ? `<button class="tile-x" data-hide="${esc(opts.hide)}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
+    return `<a class="tile landscape" href="${href}" ${opts.play ? `data-play="${esc(opts.play)}" data-tid="${esc(t.id)}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
       <div class="cap">${esc(t.name)}</div><div class="sub">${esc(opts.sub || t.genres?.slice(0, 2).join(", ") || t.releaseInfo || "")}</div></a>`;
   }
   const metaLine = (t) => [t.kind === "video" ? "" : t.kind === "series" ? "TV Show" : "Movie", t.releaseInfo, t.genres?.slice(0, 2).join(", "), t.runtime, t.rating ? `IMDb ${t.rating}` : ""].filter(Boolean);
 
   // ---------------------------------------------------------- home
   async function pageHome() {
+    const n = ROUTE_N;
     const h = await api("/api/home");
+    if (n !== ROUTE_N) return;
     if (h.empty) {
       app.innerHTML = topbar("home") + `<main class="page"><div class="empty">
         <h2>${h.scanning ? "Scanning your Storage Box" : !h.mounted ? "The Storage Box isn't connected" : "Nothing here yet"}</h2>
         <p>${h.error ? esc(h.error) : h.scanning ? "This takes a moment the first time." : "Videos show up here once the sync has downloaded them."}</p>
         ${isAdmin() ? `<a class="btn secondary small" href="#/sync">Open Sync</a>` : ""}</div></main>`;
       wireTopbar();
-      if (h.scanning) setTimeout(() => location.hash === "#/home" && route(), 4000);
+      clearTimeout(SCAN_T);
+      if (h.scanning) SCAN_T = setTimeout(() => location.hash === "#/home" && route(), 4000);
       return;
     }
     const heroes = h.hero;
@@ -902,8 +942,8 @@
         ${heroes.length > 1 ? `<div class="hero-dots glass" role="tablist">${heroes.map((t, i) => `<button role="tab" aria-selected="${i === 0}" aria-label="Show ${esc(t.name)}" data-dot="${i}"><i></i></button>`).join("")}</div>` : ""}
       </section>
       <main class="page under-hero" style="padding-top:8px">
-        ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${s.more}">See All</a>` : ""}</h2>
-          <div class="row ${s.style === "poster" ? "posters" : "wide"}" ${s.next != null ? `data-shelf="${esc(s.id)}" data-next="${s.next}" data-style="${s.style}"` : ""} ${s.pending ? "data-pending" : ""}>${s.pending ? Array.from({ length: 8 }, () => `<div class="sk ${s.style === "poster" ? "sk-poster" : "sk-wide"}"></div>`).join("") : ""}${s.items.map((t) => s.style === "poster" ? posterTile(t)
+        ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${s.more ? ` <a href="${esc(s.more)}">See All</a>` : ""}</h2>
+          <div class="row ${s.style === "poster" ? "posters" : "wide"}" ${s.next != null ? `data-shelf="${esc(s.id)}" data-next="${esc(s.next)}" data-style="${esc(s.style)}"` : ""} ${s.pending ? "data-pending" : ""}>${s.pending ? Array.from({ length: 8 }, () => `<div class="sk ${s.style === "poster" ? "sk-poster" : "sk-wide"}"></div>`).join("") : ""}${s.items.map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: TV ? null : t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
             : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster", s.more === "#/shows" ? "All TV Shows" : "All Movies") : ""}</div></section>`).join("")}
@@ -985,11 +1025,18 @@
   });
 
   // Hero artwork. Wide art on most screens, the poster on portrait phones so it isn't cropped to a thin strip
+  // The big art gets asked for at about the size of the screen, the server only has a few sizes so this picks one of those
+  // (and full size on a really wide screen)
+  const HW = () => {
+    if (LITE) return 1280;
+    const need = (innerWidth * (devicePixelRatio || 1)) / 1.2;
+    return need <= 640 ? 640 : need <= 960 ? 960 : need <= 1280 ? 1280 : 0;
+  };
   function heroArt(t, lazy) {
     const wide = t.background ? (LITE ? t.background : t.background.replace("/medium/", "/large/")) : null;
     const tall = t.poster || null;
     if (!wide && !tall) return "";
-    return `<picture>${tall && wide ? `<source media="(max-width: 760px) and (orientation: portrait)" srcset="${img(tall, 0, 640)}">` : ""}<img ${lazy ? 'loading="lazy"' : ""} src="${img(wide || tall, 0, LITE ? 1280 : 0)}" data-alt="${esc(t.background || "")}" alt="" data-fallback="hide" ${!wide ? 'class="tall"' : ""}></picture>`;
+    return `<picture>${tall && wide ? `<source media="(max-width: 760px) and (orientation: portrait)" srcset="${img(tall, 0, 640)}">` : ""}<img ${lazy ? 'loading="lazy"' : ""} decoding="async" src="${img(wide || tall, 0, HW())}" data-alt="${esc(t.background || "")}" alt="" data-fallback="hide" ${!wide ? 'class="tall"' : ""}></picture>`;
   }
 
   // One slide of the home hero. The first one is whatever was watched last, with its own continue style
@@ -1009,10 +1056,10 @@
           : `<div class="hero-meta">${metaLine(t).map((m, j) => `<span class="${j ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
           ${t.description ? `<p class="hero-desc">${esc(t.description)}</p>` : ""}`}
         <div class="actions">
-          ${t.cont ? `<button class="btn primary" data-heroresume="${t.file_id}" data-tid="${t.id || ""}" ${tab}>${ic("play")} ${t.next_episode ? "Play" : "Resume"}${t.season != null ? " " + esc(epLabel(t.season, t.episode)) : ""}</button>`
-            : `<button class="btn primary" data-heroplay="${t.id}" ${tab}>${ic("play")} Play</button>`}
+          ${t.cont ? `<button class="btn primary" data-heroresume="${esc(t.file_id)}" data-tid="${esc(t.id || "")}" ${tab}>${ic("play")} ${t.next_episode ? "Play" : "Resume"}${t.season != null ? " " + esc(epLabel(t.season, t.episode)) : ""}</button>`
+            : `<button class="btn primary" data-heroplay="${esc(t.id)}" ${tab}>${ic("play")} Play</button>`}
           <a class="btn secondary glass-btn-lg" href="${link}" ${tab}>More Info</a>
-          ${t.cont && !TV ? `<button class="round-btn" data-hide="${t.file_id}" ${tab} aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
+          ${t.cont && !TV ? `<button class="round-btn" data-hide="${esc(t.file_id)}" ${tab} aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
         </div>
       </div></div>`;
   }
@@ -1021,7 +1068,7 @@
   function freshShelf(s) {
     return `<section class="shelf fresh" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}</h2>
       <div class="row fresh-row">${s.items.map((t) => `<a class="fresh-card" href="#/title/${t.id}" data-play="${t.file_id}" data-tid="${t.id}">
-        <div class="fresh-bg">${t.thumbnail || t.background ? `<img loading="lazy" src="${img(t.thumbnail || t.background, 0, 640)}" alt="" data-fallback="hide">` : ""}</div>
+        <div class="fresh-bg">${t.thumbnail || t.background ? `<img loading="lazy" decoding="async" src="${img(t.thumbnail || t.background, 0, 640)}" alt="" data-fallback="hide">` : ""}</div>
         <div class="fresh-body">
           <span class="fresh-pill">${t.new_count} New Episode${t.new_count === 1 ? "" : "s"}</span>
           ${t.logo ? `<img class="fresh-logo" src="${img(t.logo, 1, LW())}" alt="${esc(t.name)}" data-fallback="text" data-cls="fresh-name">` : `<div class="fresh-name">${esc(t.name)}</div>`}
@@ -1114,8 +1161,10 @@
   }
 
   async function pageBrowse(kind) {
+    const n = ROUTE_N;
     const noun = kind === "movie" ? "movie" : "show";
     const first = await api(`/api/browse?kind=${kind}`);
+    if (n !== ROUTE_N) return;
     const genres = first.genres || [];
     app.innerHTML = topbar(kind === "movie" ? "movies" : "shows") + `<main class="page">
       <h1 class="large-title">${kind === "movie" ? "Movies" : "TV Shows"}</h1>
@@ -1155,7 +1204,7 @@
       busy = true;
       try {
         const r = await api(query() + `&skip=${reset ? 0 : next}`);
-        if (my === seq && $("#grid")) put(r, reset);
+        if (my === seq && n === ROUTE_N && $("#grid")) put(r, reset);
       } catch (_) {}
       busy = false;
     };
@@ -1165,7 +1214,7 @@
       if (!g || !next || busy) return;
       if (g.getBoundingClientRect().bottom < innerHeight * 2.2) load(false);
     };
-    const onScroll = () => { if (!$("#grid")) { removeEventListener("scroll", onScroll); return; } fill(); };
+    const onScroll = () => { if (!$("#grid") || n !== ROUTE_N) { removeEventListener("scroll", onScroll); return; } fill(); };
     addEventListener("scroll", onScroll, { passive: true });
     $("#grid").addEventListener("focusin", fill);
     $$(".chip[data-g]").forEach((c) => (c.onclick = () => {
@@ -1184,7 +1233,9 @@
 
   // ---------------------------------------------------------- my list
   async function pageMyList() {
+    const n = ROUTE_N;
     const r = await api("/api/mylist");
+    if (n !== ROUTE_N) return;
     app.innerHTML = topbar("mylist") + `<main class="page"><h1 class="large-title">My List</h1>
       ${r.items.length ? `<div class="grid">${r.items.map((t) => posterTile(t).replace('<div class="art">', `<div class="art">${t.new_count ? `<span class="new-dot">${t.new_count} New</span>` : ""}`)).join("")}</div>`
         : `<div class="empty"><h2>Nothing in your list yet</h2><p>Use the + button on any film or show to keep it here.</p></div>`}</main>`;
@@ -1201,9 +1252,9 @@
   const SROW_STEP = 14;
   // Channels and live events in search, they play straight away
   let SEARCH_EMBEDS = [];
-  const liveSearchTile = (x) => x.player ? `<a class="tile landscape" href="#/live" data-embs="${SEARCH_EMBEDS.indexOf(x)}"><div class="art">${x.image ? `<img loading="lazy" src="${img(x.image, 0, WW())}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(x.title)}">${esc(x.title)}</div>`}${x.live ? `<span class="tile-live">Live</span>` : ""}</div>
+  const liveSearchTile = (x) => x.player ? `<a class="tile landscape" href="#/live" data-embs="${SEARCH_EMBEDS.indexOf(x)}"><div class="art">${x.image ? `<img loading="lazy" decoding="async" src="${img(x.image, 0, WW())}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(x.title)}">${esc(x.title)}</div>`}${x.live ? `<span class="tile-live">Live</span>` : ""}</div>
       <div class="cap">${esc(x.title)}</div><div class="sub">${esc([x.source, x.category].filter(Boolean).join(" · "))}</div></a>`
-    : x.live_id ? liveTile(x) : `<a class="tile landscape ch-tile" href="#/live" data-live="${esc(x.id)}" data-name="${esc(x.name)}"><div class="art">${x.logo ? `<img loading="lazy" src="${img(x.logo, 1, 240)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(x.name)}">${esc(x.name)}</div>`}<span class="tile-live">Live</span></div>
+    : x.live_id ? liveTile(x) : `<a class="tile landscape ch-tile" href="#/live" data-live="${esc(x.id)}" data-name="${esc(x.name)}"><div class="art">${x.logo ? `<img loading="lazy" decoding="async" src="${img(x.logo, 1, 240)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(x.name)}">${esc(x.name)}</div>`}<span class="tile-live">Live</span></div>
       <div class="cap">${esc(x.name)}</div><div class="sub">${esc(x.now ? x.now.title : [x.group, flag(x.country)].filter(Boolean).join(" · "))}</div></a>`;
   const tileFor = (tile) => (tile === "wide" ? epTile : tile === "person" ? personTile : tile === "video" ? wideTile : tile === "live" ? liveSearchTile : posterTile);
   const searchRow = (id, title, items, tile) => {
@@ -1227,13 +1278,14 @@
       more();
     });
   }
-  const epTile = (e) => `<a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" src="${img(e.thumbnail, 0, WW())}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
+  const epTile = (e) => `<a class="tile landscape" href="#/title/${e.title_id}" data-play="${e.file_id}" data-tid="${e.title_id}"><div class="art">${e.thumbnail ? `<img loading="lazy" decoding="async" src="${img(e.thumbnail, 0, WW())}" alt="${esc(e.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(e.show)}">${esc(e.name)}</div>`}<span class="tile-play">${ic("play")}</span></div>
       <div class="cap">${esc(nice(e.name))}</div><div class="sub">${esc(e.show)} · ${esc(epLabel(e.season, e.episode))}</div></a>`;
-  const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" src="${img(p.poster, 0, PW())}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
+  const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" decoding="async" src="${img(p.poster, 0, PW())}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
       <div class="cap">${esc(p.name)}</div><div class="sub">${esc(p.role)} · ${p.count} title${p.count === 1 ? "" : "s"}</div></a>`;
 
   async function pageSearch() {
-    const start = decodeURIComponent((location.hash.split("?q=")[1] || ""));
+    const n = ROUTE_N;
+    const start = safeDecode(location.hash.split("?q=")[1] || "");
     app.innerHTML = topbar("search") + `<main class="page">
       <form class="search big" id="sForm" role="search" action="#">${ic("search")}<label class="sr" for="sq">Search</label><input id="sq" type="search" enterkeyhint="search" placeholder="Films, shows, actors, directors and more" value="${esc(start)}" autocomplete="off">
         <button class="mic-btn" id="micBtn" type="button" aria-label="Search by Voice" title="Search by Voice" hidden>${ic("mic")}</button></form>
@@ -1242,16 +1294,24 @@
     const input = $("#sq");
     if (!TV) input.focus();
     setupMic(input, () => run());
-    let t, seq = 0;
+    let t, seq = 0, ctl = null;
     const run = async () => {
       const q = input.value.trim();
       history.replaceState(null, "", "#/search" + (q ? "?q=" + encodeURIComponent(q) : ""));
       const box = $("#sres");
-      if (!q) { ++seq; return drawStart(box); }
+      if (!q) { ++seq; if (ctl) ctl.abort(); return drawStart(box); }
       const my = ++seq;
+      if (ctl) ctl.abort();
+      const sc = ctl = new AbortController();
       box.innerHTML = `<div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="row posters">${Array.from({ length: 8 }, () => '<div class="sk sk-poster"></div>').join("")}</div>`;
-      const r = await api("/api/search?q=" + encodeURIComponent(q));
-      if (my !== seq || !$("#sres")) return;
+      let r;
+      try { r = await api("/api/search?q=" + encodeURIComponent(q), undefined, undefined, sc.signal); }
+      catch (e) {
+        if (sc.signal.aborted || my !== seq || n !== ROUTE_N || !$("#sres") || e.message === "pick profile") return;
+        box.innerHTML = `<div class="empty"><h2>Search failed</h2><p>${esc(e.message)}. Check your connection and try again.</p></div>`;
+        return;
+      }
+      if (my !== seq || n !== ROUTE_N || !$("#sres")) return;
       let ext = [], extDone = false, vids = [], vidsDone = !HAS_VIDEO_ADDON;
       const draw = () => {
         const all = r.titles.concat(ext).sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -1303,7 +1363,7 @@
       const href = a.getAttribute("href") || "";
       const m = href.match(/^#\/title\/([^/?]+)/), d = href.match(/^#\/discover\/([^/]+)\/([^/?]+)/);
       const name = (a.querySelector(".cap") || {}).textContent || "";
-      const body = m ? { title_id: m[1] } : d ? { kind: decodeURIComponent(d[1]), id: decodeURIComponent(d[2]), name, poster: a.dataset.poster || null } : null;
+      const body = m ? { title_id: m[1] } : d ? { kind: safeDecode(d[1]), id: safeDecode(d[2]), name, poster: a.dataset.poster || null } : null;
       if (body) api("/api/search/recent", body).catch(() => {});
     });
     run();
@@ -1312,7 +1372,9 @@
 
   // Everything in the library with one actor or director
   async function pagePerson(name) {
+    const n = ROUTE_N;
     const r = await api("/api/person?name=" + encodeURIComponent(name));
+    if (n !== ROUTE_N) return;
     app.innerHTML = topbar("search") + backBtn() + `<main class="page">
       <div class="person-head"><span class="person-big">${ic("person")}</span><div><h1 class="large-title" style="margin:0">${esc(r.name)}</h1>
         <div class="secondary">${r.titles.length} title${r.titles.length === 1 ? "" : "s"} in your library</div></div></div>
@@ -1439,7 +1501,9 @@
 
   // ---------------------------------------------------------- title detail
   async function pageTitle(id) {
+    const n = ROUTE_N;
     const t = await api(`/api/title/${id}`);
+    if (n !== ROUTE_N) return;
     const up = nextUp(t);
     const allBadges = [...new Set(t.files.flatMap((f) => f.badges))];
     const resume = up && up.progress && up.progress.dur && up.progress.pos > 30;
@@ -1502,7 +1566,7 @@
       const eps = t.files.filter((f) => (f.season ?? 0) === season);
       $("#eps").innerHTML = eps.map((f) => {
         const p = f.progress && f.progress.dur ? f.progress.pos / f.progress.dur : null;
-        const art = f.thumbnail ? `<img loading="lazy" src="${img(f.thumbnail, 0, WW())}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
+        const art = f.thumbnail ? `<img loading="lazy" decoding="async" src="${img(f.thumbnail, 0, WW())}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
         return `<div class="ep"><button class="tile landscape ${f.watched ? "is-watched" : ""}" data-playfile="${f.id}" aria-label="Play ${esc(epLabel(f.season, f.episode))} ${esc(f.ep_name || "")}"><div class="art">${art}${p != null ? `<div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div>` : ""}${f.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(f.season, f.episode) || "Extra")}${f.duration ? ` · ${Math.max(1, Math.round(f.duration / 60))} min` : ""}</div>
             <button class="ep-mark" data-epwatch="${f.id}" data-state="${f.watched ? 1 : 0}" aria-label="${f.watched ? "Mark as unwatched" : "Mark as watched"}" title="${f.watched ? "Watched, click to unmark" : "Mark as watched"}">${ic(f.watched ? "check" : "plus")}</button>
@@ -1597,9 +1661,11 @@
 
   // A title from an addon catalog, Kino can show what it is but only plays whats in the library
   async function pageDiscover(kind, id) {
+    const n = ROUTE_N;
     const nm = EXT_NAME.get(`${kind}/${id}`) || "";
     const q = [location.hash.includes("?all=1") ? "stay=1" : "", nm ? "name=" + encodeURIComponent(nm) : ""].filter(Boolean).join("&");
     const t = await api(`/api/external/${encodeURIComponent(kind)}/${encodeURIComponent(id)}${q ? "?" + q : ""}`);
+    if (n !== ROUTE_N) return;
     if (t.library_id) { location.replace(`#/title/${t.library_id}`); return; }
     if (kind !== "movie" && kind !== "series") return pageVideo(kind, id, t);
     const facts = metaLine({ ...t, kind });
@@ -1636,7 +1702,7 @@
     const drawEps = (season) => {
       $("#eps").innerHTML = t.videos.filter((v) => v.season === season).map((v) => {
         const pr = v.progress && v.progress.dur ? v.progress.pos / v.progress.dur : null;
-        const art = v.thumbnail ? `<img loading="lazy" src="${img(v.thumbnail, 0, WW())}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(v.season, v.episode))}</div>`;
+        const art = v.thumbnail ? `<img loading="lazy" decoding="async" src="${img(v.thumbnail, 0, WW())}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(v.season, v.episode))}</div>`;
         return `<div class="ep"><button class="tile landscape ${v.progress && v.progress.watched ? "is-watched" : ""}" data-playep="${esc(v.id)}" aria-label="Play ${esc(epLabel(v.season, v.episode))} ${esc(v.name || "")}"><div class="art">${art}${pr != null ? `<div class="bar"><i style="width:${Math.min(100, pr * 100)}%"></i></div>` : ""}${v.progress && v.progress.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(v.season, v.episode))}</div>
             ${isAdmin() ? `<button class="ep-mark" data-saveep="${esc(v.id)}" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}</div>
@@ -1683,7 +1749,7 @@
     if (!list.length) return;
     $("#eps").innerHTML = list.map((v) => {
       const pr = v.progress && v.progress.dur ? v.progress.pos / v.progress.dur : null;
-      const art = v.thumbnail ? `<img loading="lazy" src="${img(v.thumbnail, 0, WW())}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(v.name || t.name)}">${esc(v.name || "")}</div>`;
+      const art = v.thumbnail ? `<img loading="lazy" decoding="async" src="${img(v.thumbnail, 0, WW())}" alt="${esc(v.name || "")}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(v.name || t.name)}">${esc(v.name || "")}</div>`;
       const day = v.released ? new Date(v.released) : null;
       return `<div class="ep"><button class="tile landscape ${v.progress && v.progress.watched ? "is-watched" : ""}" data-playv="${esc(v.id)}" aria-label="Play ${esc(v.name || "")}"><div class="art">${art}${pr != null ? `<div class="bar"><i style="width:${Math.min(100, pr * 100)}%"></i></div>` : ""}${v.progress && v.progress.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
         <div class="cap">${esc(nice(v.name) || "Video")}</div>${day && !isNaN(day) && day.getFullYear() > 1971 ? `<div class="ov">${esc(day.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }))}</div>` : ""}</div>`;
@@ -1875,8 +1941,10 @@
   // Everything this profile has watched, newest first and grouped by day. Removing something takes away its
   // progress too, like it was never started
   async function pageHistory() {
+    const n = ROUTE_N;
     let items = [], next = null;
     const r = await api("/api/history");
+    if (n !== ROUTE_N) return;
     items = r.items; next = r.next;
     const dayOf = (ts) => {
       const d = new Date(ts * 1000), now = new Date();
@@ -1892,9 +1960,9 @@
       const what = [h.season != null ? epLabel(h.season, h.episode) : h.kind === "series" ? "TV Show" : h.kind === "movie" ? "Movie" : "Video", h.ep_name ? nice(h.ep_name) : ""].filter(Boolean).join(" · ");
       const state = h.watched ? "Watched" : h.dur ? `${clock(Math.max(0, h.dur - h.pos))} left` : "Started";
       return `<div class="hist" data-fid="${esc(h.file_id)}">
-        <a class="hist-art" href="${h.href}" tabindex="-1" aria-hidden="true">${pic ? `<img loading="lazy" src="${img(pic, 0, 480)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(h.name)}">${esc(h.name)}</div>`}
+        <a class="hist-art" href="${esc(h.href)}" tabindex="-1" aria-hidden="true">${pic ? `<img loading="lazy" decoding="async" src="${img(pic, 0, 480)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(h.name)}">${esc(h.name)}</div>`}
           ${pct ? `<div class="bar"><i style="width:${pct * 100}%"></i></div>` : ""}</a>
-        <div class="hist-body"><a class="hist-name" href="${h.href}">${esc(h.name)}</a><div class="secondary">${esc(what)}</div>
+        <div class="hist-body"><a class="hist-name" href="${esc(h.href)}">${esc(h.name)}</a><div class="secondary">${esc(what)}</div>
           <div class="tertiary">${esc(state)} · ${new Date(h.updated * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}</div></div>
         <div class="hist-act">
           <button class="round-btn sm" data-hplay="${esc(h.file_id)}" data-tid="${esc(h.title_id || "")}" data-pos="${h.watched ? 0 : h.pos}" aria-label="Play ${esc(h.name)}" title="${h.watched ? "Play Again" : "Resume"}">${ic("play")}</button>
@@ -1969,7 +2037,7 @@
   const chanCard = (c, i) => {
     const pr = c.now ? Math.min(1, Math.max(0, (Date.now() / 1000 - c.now.start) / (c.now.stop - c.now.start))) : null;
     return `<div class="ch-cell"><button class="ch-card" data-ch="${i}" aria-label="${esc(c.name)}${c.now ? ", " + esc(c.now.title) : ""}">
-      <span class="ch-logo">${c.logo ? `<img loading="lazy" src="${img(c.logo, 1, 240)}" alt="" data-fallback="initials" data-ini="${esc(c.name.slice(0, 2))}">` : `<b class="ch-ph">${esc(c.name.slice(0, 2))}</b>`}</span>
+      <span class="ch-logo">${c.logo ? `<img loading="lazy" decoding="async" src="${img(c.logo, 1, 240)}" alt="" data-fallback="initials" data-ini="${esc(c.name.slice(0, 2))}">` : `<b class="ch-ph">${esc(c.name.slice(0, 2))}</b>`}</span>
       <span class="ch-body"><b class="ch-name">${esc(c.name)}</b>
         <span class="ch-now">${c.now ? esc(c.now.title) : esc([c.group, flag(c.country)].filter(Boolean).join(" · "))}</span>
         ${pr != null ? `<span class="ch-bar"><i style="width:${pr * 100}%"></i></span>` : ""}
@@ -1979,9 +2047,11 @@
   };
 
   async function pageLive(mode) {
+    const n = ROUTE_N;
     const st = LIVE_STATE, guide = mode === "guide";
     const qs = () => [st.fav && "fav=1", st.group && "group=" + encodeURIComponent(st.group), st.country && "country=" + encodeURIComponent(st.country), st.q && "q=" + encodeURIComponent(st.q)].filter(Boolean).join("&");
     const r = await api("/api/live?" + qs());
+    if (n !== ROUTE_N) return;
     const tabs = `<div class="live-tabs" role="tablist"><a class="${!mode ? "on" : ""}" href="#/live" role="tab">${ic("live")} Channels</a><a class="${guide ? "on" : ""}" href="#/live/guide" role="tab">${ic("guide")} TV Guide</a>${!kidsMode() ? `<a class="${mode === "rec" ? "on" : ""}" href="#/live/rec" role="tab">${ic("download")} Recordings</a>` : ""}</div>`;
     if (mode === "rec") {
       app.innerHTML = topbar("live") + `<main class="page live-page"><div class="live-head"><h1 class="large-title">Live TV</h1>${tabs}</div><div id="recList"></div></main>`;
@@ -2008,7 +2078,7 @@
     const lc = $("#lvCountry"), lg = $("#lvGroup");
     if (lc) lc.onchange = () => { st.country = lc.value; route(); };
     if (lg) lg.onchange = () => { st.fav = lg.value === "__fav"; st.group = st.fav ? "" : lg.value; route(); };
-    if (guide) return drawGuide(qs());
+    if (guide) return drawGuide(qs(), n);
     const grid = $("#chGrid");
     if (!grid) return;
     grid.addEventListener("click", (e) => {
@@ -2021,7 +2091,7 @@
     const find = async () => {
       const my = ++qn;
       const m = await api("/api/live?" + qs()).catch(() => null);
-      if (!m || my !== qn || !$("#chGrid")) return;
+      if (!m || my !== qn || n !== ROUTE_N || !$("#chGrid")) return;
       LIVE_LIST = m.channels.slice();
       grid.innerHTML = m.channels.map(chanCard).join("") || `<p class="secondary">No channels called that.</p>`;
       next = m.next;
@@ -2033,10 +2103,13 @@
     $("#lsForm").onsubmit = (e) => { e.preventDefault(); clearTimeout(t); st.q = $("#lsq").value.trim(); find(); };
     // More channels as you scroll down
     const more = async () => {
+      // The page is gone (or redrawn) so this listener has nothing left to do, and must not touch the shared list
+      if (!grid.isConnected || n !== ROUTE_N) { removeEventListener("scroll", more); return; }
       if (!next || busy || !$("#chMore") || $("#chMore").getBoundingClientRect().top > innerHeight * 1.6) return;
       busy = true;
       try {
         const m = await api(`/api/live?${qs()}&skip=${next}`);
+        if (!grid.isConnected || n !== ROUTE_N) { busy = false; return; }
         const from = LIVE_LIST.length;
         LIVE_LIST.push(...m.channels);
         grid.insertAdjacentHTML("beforeend", m.channels.map((c, i) => chanCard(c, from + i)).join(""));
@@ -2060,7 +2133,7 @@
       try {
         const x = await api(`/api/live/embed/${src.id}`);
         if (!x.items.length) { sec.remove(); return; }
-        $(".row", sec).innerHTML = x.items.map((it, i) => `<a class="tile landscape emb-tile" href="#/live" data-emb="${i}"><div class="art">${it.image ? `<img loading="lazy" src="${img(it.image, 0, WW())}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(it.title)}">${esc(it.title)}</div>`}${it.live ? `<span class="tile-live">Live${it.score ? " " + esc(it.score) : ""}</span>` : ""}</div>
+        $(".row", sec).innerHTML = x.items.map((it, i) => `<a class="tile landscape emb-tile" href="#/live" data-emb="${i}"><div class="art">${it.image ? `<img loading="lazy" decoding="async" src="${img(it.image, 0, WW())}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(it.title)}">${esc(it.title)}</div>`}${it.live ? `<span class="tile-live">Live${it.score ? " " + esc(it.score) : ""}</span>` : ""}</div>
           <div class="cap">${esc(it.title)}</div><div class="sub">${esc([it.category, !it.live && it.when].filter(Boolean).join(" · "))}</div></a>`).join("");
         $(".row", sec).addEventListener("click", (e) => { const a = e.target.closest("[data-emb]"); if (!a) return; e.preventDefault(); openEmbed(x.items, Number(a.dataset.emb), src.name); });
       } catch (_) { sec.remove(); }
@@ -2080,7 +2153,7 @@
   }
 
   // An addon's live item (a channel or an event) as a wide card that plays straight away
-  const liveTile = (t) => `<a class="tile landscape" href="#/live" data-live="${esc(t.live_id)}" data-name="${esc(t.name)}"><div class="art">${t.background || t.poster ? `<img loading="lazy" src="${img(t.background || t.poster, 0, WW())}" alt="${esc(t.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`}<span class="tile-live">Live</span></div>
+  const liveTile = (t) => `<a class="tile landscape" href="#/live" data-live="${esc(t.live_id)}" data-name="${esc(t.name)}"><div class="art">${t.background || t.poster ? `<img loading="lazy" decoding="async" src="${img(t.background || t.poster, 0, WW())}" alt="${esc(t.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`}<span class="tile-live">Live</span></div>
       <div class="cap">${esc(t.name)}</div><div class="sub">${esc((t.genres || []).slice(0, 2).join(", ") || "Live")}</div></a>`;
   document.addEventListener("click", (e) => {
     const em = e.target.closest("[data-embs]");
@@ -2091,33 +2164,71 @@
     playLive({ id: a.dataset.live, name: a.dataset.name || "Live" }, null);
   });
 
-  async function drawGuide(qs) {
+  async function drawGuide(qs, n) {
     const box = $("#guide");
     const start = Math.floor(Date.now() / 1000 / 1800) * 1800, hours = TV ? 2 : 3, span = hours * 3600;
-    const r = await api(`/api/live/guide?start=${start}&hours=${hours}&${qs}`);
-    if (!$("#guide")) return;
+    const url = (skip) => `/api/live/guide?start=${start}&hours=${hours}&${qs}${skip ? "&skip=" + skip : ""}`;
+    const r = await api(url(0));
+    if (!$("#guide") || n !== ROUTE_N) return;
     if (!r.channels.length) { box.innerHTML = `<div class="empty"><h2>No guide for these channels</h2><p>The playlist didn't come with a guide, the admin can add an XMLTV guide link in Settings.</p></div>`; return; }
-    LIVE_LIST = r.channels;
+    LIVE_LIST = r.channels.slice();
     const pct = (t) => Math.max(0, Math.min(100, ((t - start) / span) * 100));
     const slots = Array.from({ length: hours * 2 }, (_, i) => start + i * 1800);
-    box.innerHTML = `<div class="g-times"><span></span><div>${slots.map((t) => `<span style="left:${pct(t)}%">${hm(t)}</span>`).join("")}</div></div>
-      ${r.channels.map((c, i) => `<div class="g-row"><button class="g-ch" data-ch="${i}" aria-label="${esc(c.name)}">${c.logo ? `<img loading="lazy" src="${img(c.logo, 1, 160)}" alt="" data-fallback="hide">` : ""}<span>${esc(c.name)}</span></button>
+    const rowHtml = (c, i) => `<div class="g-row"><button class="g-ch" data-ch="${i}" aria-label="${esc(c.name)}">${c.logo ? `<img loading="lazy" decoding="async" src="${img(c.logo, 1, 160)}" alt="" data-fallback="hide">` : ""}<span>${esc(c.name)}</span></button>
         <div class="g-line">${c.progs.map((p) => { const l = pct(p.start), w = pct(p.stop) - l; const on = p.start <= Date.now() / 1000 && p.stop > Date.now() / 1000;
-          return w > 0.5 ? `<button class="g-prog ${on ? "on" : ""}" data-gp="${i}:${c.progs.indexOf(p)}" style="left:${l}%;width:${w}%" title="${esc(p.title)} ${hm(p.start)} to ${hm(p.stop)}"><b>${esc(p.title)}</b><span>${hm(p.start)}${p.sub ? " · " + esc(p.sub) : ""}</span></button>` : ""; }).join("") || `<span class="g-none">No guide</span>`}</div></div>`).join("")}
+          return w > 0.5 ? `<button class="g-prog ${on ? "on" : ""}" data-gp="${i}:${c.progs.indexOf(p)}" style="left:${l}%;width:${w}%" title="${esc(p.title)} ${hm(p.start)} to ${hm(p.stop)}"><b>${esc(p.title)}</b><span>${hm(p.start)}${p.sub ? " · " + esc(p.sub) : ""}</span></button>` : ""; }).join("") || `<span class="g-none">No guide</span>`}</div></div>`;
+    box.innerHTML = `<div class="g-times"><span></span><div>${slots.map((t) => `<span style="left:${pct(t)}%">${hm(t)}</span>`).join("")}</div></div>
+      ${r.channels.map(rowHtml).join("")}
       <div class="g-now" style="left:calc(var(--g-ch) + (100% - var(--g-ch)) * ${pct(Date.now() / 1000) / 100})"></div>`;
     box.addEventListener("click", (e) => {
       const g = e.target.closest("[data-gp]");
       if (g) { const [ci, pi] = g.dataset.gp.split(":").map(Number); return liveOptions(LIVE_LIST[ci], LIVE_LIST[ci].progs[pi], g); }
       const b = e.target.closest("[data-ch]"); if (b) playLive(LIVE_LIST[Number(b.dataset.ch)], LIVE_LIST);
     });
+    // The server sends the guide 60 channels at a time, the rest come in as you scroll down like the Channels page
+    let next = r.next, busy = false;
+    if (!next) return;
+    const sent = document.createElement("div");
+    sent.className = "grid-more"; sent.id = "gMore";
+    sent.innerHTML = `<span class="spin small"></span>`;
+    box.insertAdjacentElement("afterend", sent);
+    const more = async () => {
+      if (!box.isConnected || n !== ROUTE_N) { removeEventListener("scroll", more); return; }
+      if (!next || busy || sent.getBoundingClientRect().top > innerHeight * 1.6) return;
+      busy = true;
+      let ok = false;
+      try {
+        const m = await api(url(next));
+        if (!box.isConnected || n !== ROUTE_N) { busy = false; return; }
+        const from = LIVE_LIST.length;
+        LIVE_LIST.push(...m.channels);
+        $(".g-now", box).insertAdjacentHTML("beforebegin", m.channels.map((c, i) => rowHtml(c, from + i)).join(""));
+        next = m.next;
+        if (!next) sent.hidden = true;
+        ok = true;
+      } catch (_) {}
+      busy = false;
+      // A tall screen may still have the bottom in view after a batch
+      if (ok && next) more();
+    };
+    addEventListener("scroll", more, { passive: true });
+    box.addEventListener("focusin", more);
+    more();
   }
 
   // Favourites at the top as little players: a fresh picture of whats on every minute, and on a computer the live
   // picture itself (muted) while the mouse is over one. Tvs keep to pictures, a video per card is too much for them
+  // The little live picture and the picture refresh both belong to the row that is on screen, a new draw or a new page ends them
+  function stopFavRow() {
+    clearInterval(FAV_T); FAV_T = null;
+    if (FAV_PV) { FAV_PV.h.destroy(); FAV_PV.v.remove(); FAV_PV = null; }
+  }
   async function drawFavRow() {
     const box = $("#favRow");
+    stopFavRow();
+    const n = ROUTE_N;
     const m = await api("/api/live?fav=1").catch(() => null);
-    if (!m || !$("#favRow")) return;
+    if (!m || n !== ROUTE_N || !$("#favRow") || $("#favRow") !== box) return;
     if (!m.channels.length) { box.innerHTML = ""; return; }
     const favs = m.channels;
     const shot = (c) => `/api/live/${c.id}/thumb.jpg?m=${Math.floor(Date.now() / 60000)}`;
@@ -2136,26 +2247,27 @@
       const o = e.target.closest("[data-fopt]"); if (o) return liveOptions(favs[Number(o.dataset.fopt)], null, o);
       const b = e.target.closest("[data-fv]"); if (b) playLive(favs[Number(b.dataset.fv)], favs);
     });
-    const t = setInterval(() => {
-      if (!$("#favRow") || $("#favRow") !== box) return clearInterval(t);
+    FAV_T = setInterval(() => {
+      if (!$("#favRow") || $("#favRow") !== box) return stopFavRow();
       $$(".fav-shot", box).forEach((im, i) => favs[i] && (im.src = shot(favs[i])));
     }, 60000);
-    if (TV || !window.Hls || !Hls.isSupported()) return;
-    let pv = null;
-    const stop = () => { if (pv) { pv.h.destroy(); pv.v.remove(); pv = null; } };
-    row.addEventListener("mouseover", (e) => {
+    if (TV) return;
+    row.addEventListener("mouseover", async (e) => {
       const b = e.target.closest("[data-fv]");
-      if (!b || (pv && pv.b === b)) return;
-      stop();
+      if (!b || (FAV_PV && FAV_PV.b === b)) return;
+      if (FAV_PV) { FAV_PV.h.destroy(); FAV_PV.v.remove(); FAV_PV = null; }
+      try { await loadHls(); } catch (_) { return; }
+      // The mouse may have moved on, or the row been redrawn, while hls.js was arriving
+      if (!Hls.isSupported() || !b.isConnected || !b.matches(":hover") || FAV_PV) return;
       const v = document.createElement("video");
       v.className = "fav-video"; v.muted = true; v.playsInline = true;
       $(".art", b).appendChild(v);
       const h = new Hls({ liveSyncDurationCount: 2, maxBufferLength: 8, backBufferLength: 0, capLevelToPlayerSize: true });
       h.loadSource(`/api/live/${favs[Number(b.dataset.fv)].id}/index.m3u8`); h.attachMedia(v);
       h.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
-      pv = { b, v, h };
+      FAV_PV = { b, v, h };
     });
-    row.addEventListener("mouseleave", stop);
+    row.addEventListener("mouseleave", () => { if (FAV_PV) { FAV_PV.h.destroy(); FAV_PV.v.remove(); FAV_PV = null; } });
   }
 
   // Adds or removes a favourite and updates what's on screen without redrawing the whole page
@@ -2260,7 +2372,7 @@
   async function drawRecordings() {
     const box = $("#recList");
     const r = await api("/api/live/recordings").catch(() => ({ recordings: [] }));
-    if (!$("#recList")) return;
+    if (!$("#recList") || $("#recList") !== box) return;
     const label = { recording: "Recording", scheduled: "Scheduled", done: "", stopped: "Stopped early", failed: "Failed" };
     box.innerHTML = r.recordings.length ? `<div class="list rec-list">${r.recordings.map((x) => `<div class="li rec">
         <span class="grow"><b>${esc(x.title)}</b>${label[x.state] ? ` <span class="badge ${x.state === "recording" ? "rec-on" : x.state === "failed" ? "warn" : ""}">${label[x.state]}</span>` : ""}<br>
@@ -2388,6 +2500,13 @@
     const url = `/api/live/${ch.id}/index.m3u8`;
     pl.mode = "live"; pl.liveStale = false; pl.liveRetries = 0;
     if (isSafari && pl.v.canPlayType("application/vnd.apple.mpegurl")) { pl.v.src = url; pl.v.play().catch(() => {}); return; }
+    // The first channel waits for hls.js to arrive, a newer tune in the meantime wins
+    if (!window.Hls) {
+      const tk = pl.tuneTk = (pl.tuneTk || 0) + 1;
+      loadHls().then(() => { if (pl.tuneTk === tk && !pl.el.hidden && pl.info && pl.info.live) tune(); })
+        .catch((e) => { if (pl.tuneTk === tk) { spinner(false); showMsg("Couldn't start the channel", e.message, `<button class="btn primary small" id="lvAgain">Try Again</button>`); $("#lvAgain").onclick = () => tune(); } });
+      return;
+    }
     // One hls.js for every channel, switching just loads a new playlist into it which is much quicker than starting over
     if (!pl.hls) {
       const h = new Hls({ liveSyncDurationCount: 4, maxBufferLength: 30, backBufferLength: 20, manifestLoadingMaxRetry: 2, levelLoadingMaxRetry: 3, fragLoadingMaxRetry: 3, enableWorker: true });
@@ -2434,7 +2553,9 @@
   const LANG_OPTS = ["English", "German", "French", "Spanish", "Italian", "Dutch", "Polish", "Portuguese", "Russian", "Japanese", "Korean", "Chinese", "Swedish", "Danish", "Norwegian", "Finnish", "Turkish", "Arabic", "Hindi"];
 
   async function pageSettings() {
+    const n = ROUTE_N;
     const me = await api("/api/me");
+    if (n !== ROUTE_N) return;
     ME.profile = me.profile; ME.admin = me.admin; ME.ip = me.ip;
     const p = ME.profile, pr = p.prefs;
     const sel = (id, opts, val) => `<select class="plain" id="${id}">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === val ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
@@ -2806,7 +2927,7 @@
 
     b.innerHTML = `<div class="cards">
       <section class="card now-card span-12">
-        ${c && c.background ? `<div class="bgblur" style="background-image:url('${img(c.background, 0, 640)}')"></div>` : ""}
+        ${c && c.background ? `<div class="bgblur" style="background-image:url(&quot;${esc(img(c.background, 0, 640))}&quot;)"></div>` : ""}
         <div class="post">${post}</div>
         <div style="min-width:0">
           <div class="state-line ${ss.cls}"><span class="dot"></span>${running ? (c ? "Downloading" : "Running") : s.paused ? "Paused" : ss.cls === "error" ? "Needs attention" : "Idle"}</div>
@@ -3079,13 +3200,15 @@
   }
   function startPoll(fn, ms) {
     stopPoll();
+    // Each poll gets its own object, so a loop thats been stopped and restarted while a fetch was in flight dies instead of going on as an orphan
+    const mine = POLL = { t: null };
     const tick = async () => {
       const k = focusKey(document.activeElement);
       try { await fn(); } catch (e) { if (e.message !== "pick profile") console.warn(e); }
+      if (POLL !== mine) return;
       refocus(k);
-      if (POLL) POLL.t = setTimeout(tick, document.hidden ? ms * 5 : ms);
+      mine.t = setTimeout(tick, document.hidden ? ms * 5 : ms);
     };
-    POLL = { t: null };
     tick();
   }
   function stopPoll() { if (POLL) clearTimeout(POLL.t); POLL = null; }
@@ -3335,7 +3458,7 @@
       loadStep("Connecting to the source");
       pl.v.src = info.src;
       const from = opts.from != null ? opts.from : info.resume || 0;
-      pl.v.addEventListener("loadedmetadata", () => { if (from && from < pl.v.duration - 10) pl.v.currentTime = from; }, { once: true });
+      pl.v.addEventListener("loadedmetadata", () => { if (pl.info !== info || my !== PLAY_N) return; if (from && from < pl.v.duration - 10) pl.v.currentTime = from; }, { once: true });
       let retried = false;
       pl.v.addEventListener("error", async function onErr() {
         if (pl.info !== info || my !== PLAY_N) return;
@@ -3351,7 +3474,7 @@
           pl.v.addEventListener("error", onErr, { once: true });
           spinner(true);
           pl.v.src = info.src;
-          pl.v.addEventListener("loadedmetadata", () => { if (at) pl.v.currentTime = at; }, { once: true });
+          pl.v.addEventListener("loadedmetadata", () => { if (pl.info !== info || my !== PLAY_N) return; if (at) pl.v.currentTime = at; }, { once: true });
           pl.v.play().catch(() => {});
           return;
         }
@@ -3361,7 +3484,7 @@
           const at = pl.v.currentTime || (opts.from || 0);
           pl.v.addEventListener("error", onErr, { once: true });
           pl.v.src = info.src;
-          pl.v.addEventListener("loadedmetadata", () => { if (at) pl.v.currentTime = at; }, { once: true });
+          pl.v.addEventListener("loadedmetadata", () => { if (pl.info !== info || my !== PLAY_N) return; if (at) pl.v.currentTime = at; }, { once: true });
           pl.v.play().catch(() => {});
           return;
         }
@@ -3399,7 +3522,7 @@
       loadStep("Direct play");
       loadNote([vcodec && vcodec.toUpperCase(), ...(info.badges || [])].filter(Boolean).join(" · "));
       pl.v.src = `/api/stream/${fid}/direct`;
-      pl.v.addEventListener("loadedmetadata", () => { if (start) pl.v.currentTime = start; }, { once: true });
+      pl.v.addEventListener("loadedmetadata", () => { if (pl.info !== info || my !== PLAY_N) return; if (start) pl.v.currentTime = start; }, { once: true });
       pl.v.play().catch(() => {});
     } else if (!codecOk(vcodec)) {
       loadHide();
@@ -3440,9 +3563,13 @@
 
   async function startHls(t) {
     const my = PLAY_N;
+    // Every call gets its own number, if a newer one starts while this waits for the server this one stands down
+    const mine = pl.hlsSeq = (pl.hlsSeq || 0) + 1;
     if (!LOAD.on) spinner(true);
     $("#pMsg").hidden = true;
     if (pl.hls) { pl.hls.destroy(); pl.hls = null; }
+    // hls.js loads while the server gets the stream going, Safari plays it itself and never needs it
+    const hp = isSafari && pl.v.canPlayType("application/vnd.apple.mpegurl") ? null : loadHls().catch(() => {});
     let r;
     const vc = pl.info.video || {};
     loadStep(vc.codec && !["h264", "hevc", "av1", "vp9"].includes(vc.codec) ? "Converting the video for this screen" : "Starting the stream");
@@ -3451,12 +3578,16 @@
     try {
       r = await api(`/api/play/${pl.info.id}`, { t, audio: pl.audio, hevc: codecOk("hevc"), ad: pl.ad || 0 });
     } catch (e) {
-      if (my !== PLAY_N || !pl.info) return;
+      if (my !== PLAY_N || !pl.info || mine !== pl.hlsSeq) return;
       loadHide();
       showMsg("Playback couldn't start", e.message, pl.info.download ? `<a class="btn secondary small" href="${esc(pl.info.download)}&save=1">${ic("download")} Download instead</a>` : "");
       return;
     }
-    if (pl.el.hidden || my !== PLAY_N) { api(`/api/play/${r.sid}/stop`, {}).catch(() => {}); return; }
+    if (pl.el.hidden || my !== PLAY_N || mine !== pl.hlsSeq) { api(`/api/play/${r.sid}/stop`, {}).catch(() => {}); return; }
+    if (hp) {
+      await hp;
+      if (pl.el.hidden || my !== PLAY_N || mine !== pl.hlsSeq) { api(`/api/play/${r.sid}/stop`, {}).catch(() => {}); return; }
+    }
     pl.mode = "hls"; pl.sid = r.sid; pl.offset = r.offset;
     loadStep("Buffering");
     // Safari plays the stream itself which keeps AirPlay working, everyone else uses hls.js
@@ -3956,6 +4087,7 @@
   // ---------------------------------------------------------- android app and tv remotes
   // The android app adds KinoAndroid to the user agent and gives the page a small bridge. On tvs (KinoTV) the
   // remote's arrows move focus around the page like on apple tv, the browser itself cant do that
+  let NAV_T = 0;
   function nav(e) {
     const dirs = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
     const d = dirs[e.key];
@@ -3968,6 +4100,12 @@
     // remote used to move that instead and the screen just looked wierd), up and down only bring the buttons back
     if (playerOpen && d[0] && pl.info && pl.info.live && pl.el.classList.contains("idle") && !$(".player .menu:not([hidden])")) { e.preventDefault(); e.stopImmediatePropagation(); switchLive(d[0]); return; }
     if (playerOpen && (!cur || !pl.el.contains(cur) || cur === pl.v) && d[0]) return;  // left and right seek
+    // Holding a button on a slow tv sends keys faster than it can work out where focus goes, so the extra ones are dropped
+    if (e.repeat) {
+      const now = performance.now();
+      if (now - NAV_T < 80) { e.preventDefault(); return; }
+      NAV_T = now;
+    }
     // An open dropdown keeps the remote inside it until it's closed, otherwise down could land on the page behind it
     const openMenu = cur && cur.closest && cur.closest(".menu:not([hidden])");
     const scope = sheetClose ? $$(".sheet-wrap").pop() : EMB ? EMB.el : openMenu || (playerOpen ? pl.el : document);
@@ -3978,7 +4116,9 @@
       // The little See All links in row headers get skipped, rows end with a card that does the same and is easy to land on
       if (el.disabled || el.closest("[hidden]") || el.closest('[aria-hidden="true"]') || el.closest(".hero-dots") || el.closest(".section-title")) return false;
       const r = el.getBoundingClientRect();
-      return r.width > 2 && r.height > 2 && getComputedStyle(el).visibility !== "hidden";
+      // Asking the style of every item was slow on tvs, visibility hidden only comes from the fading hero slides (skipped
+      // above) and the live tv timeline, and display none already has no size
+      return r.width > 2 && r.height > 2 && !el.closest(".player.live .tl-row");
     });
     if (!items.length) return;
     e.preventDefault();
@@ -4198,7 +4338,7 @@
   if (LITE) {
     document.addEventListener("scroll", recycleSoon, { capture: true, passive: true });
     document.addEventListener("focusin", recycleSoon);
-    setInterval(recycle, 4000);
+    setInterval(() => { if (document.hidden || !pl.el.hidden) return; recycle(); }, 4000);
   }
 
   // ---------------------------------------------------------- side scrolling rows
@@ -4316,6 +4456,8 @@
   async function route() {
     stopPoll();
     clearInterval(HERO_T);
+    clearTimeout(SCAN_T);
+    stopFavRow();
     closeSheet();
     const [, page, arg] = (location.hash || "#/").split("?")[0].split("/");
     const n = ++ROUTE_N;
@@ -4343,9 +4485,9 @@
       else if (page === "shows") await pageBrowse("series");
       else if (page === "live") await pageLive(arg || "");
       else if (page === "title" && arg) await pageTitle(arg);
-      else if (page === "discover" && arg) await pageDiscover(decodeURIComponent(arg), decodeURIComponent((location.hash.split("?")[0].split("/")[3] || "")));
+      else if (page === "discover" && arg) await pageDiscover(safeDecode(arg), safeDecode(location.hash.split("?")[0].split("/")[3] || ""));
       else if (page === "search") await pageSearch();
-      else if (page === "person" && arg) await pagePerson(decodeURIComponent(arg));
+      else if (page === "person" && arg) await pagePerson(safeDecode(arg));
       else if (page === "mylist") await pageMyList();
       else if (page === "settings") await pageSettings();
       else if (page === "history") await pageHistory();
@@ -4355,6 +4497,9 @@
       if (isAdmin() && page !== "sync" && page !== "home") api("/api/admin/sync").then((s) => { SYNC = s; updateSyncChip(); }).catch(() => {});
       if (n === ROUTE_N) { enhanceRows(app); tvSelects(app); }
       if (changed && n === ROUTE_N) {
+        // Tells screen readers which page opened, the page itself no longer announces everything that changes in it
+        const say = $("#routeSay"), h1 = $(".large-title, .hero-name", app);
+        if (say) say.textContent = page === "home" || !page ? "Home" : h1 ? h1.textContent : "";
         void app.offsetWidth; app.classList.add("enter");
         // Only the first draw of a page animates, pages that refresh themselves every few seconds stay still
         clearTimeout(ENTER_T); ENTER_T = setTimeout(() => app.classList.remove("enter"), 900);
@@ -4370,7 +4515,7 @@
       }
       LAST_PAGE = location.hash.split("?")[0];
     } catch (e) {
-      if (e.message === "pick profile") return;
+      if (e.message === "pick profile" || n !== ROUTE_N) return;
       if (e.status === 403 && /allow list/.test(e.message)) {
         location.href = "/gate";
         return;

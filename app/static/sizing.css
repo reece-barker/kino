@@ -47,7 +47,7 @@ body.tv .g-title, body.tv .g-time, body.tv .g-hour, body.tv .ch-next, body.tv .f
 /* ================================================================ tv: edges */
 body.tv { --gutter: 48px; }
 /* The rail and the sheets keep 5% in from the edges. The rail is a little further in on the left so the page still has room for 5 posters */
-body.tv .side { left: 40px; top: 27px; max-height: calc(100vh - 54px); }
+body.tv .side { left: 40px; max-height: calc(100vh - 54px); }  /* stays centred up and down (app.css top 50% and translate), never closer than 27px to the top or bottom */
 body.tv.with-side { --side: calc(var(--rail) + 40px); --pad-l: calc(var(--side) + 20px); }
 body.tv .sheet-wrap { padding: 27px 48px; }
 body.tv .sheet { max-height: calc(100vh - 54px); }

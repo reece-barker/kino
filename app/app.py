@@ -229,6 +229,8 @@ def migrate():
     for c in ("items", "title_key", "image_key"):
         if c not in ecols:
             d.q(f"ALTER TABLE embed_sources ADD COLUMN {c} TEXT")  # where the list is in the JSON and which fields to use
+    if "src_prio" not in [r["name"] for r in d.q("PRAGMA table_info(addons)")]:
+        d.q("ALTER TABLE addons ADD COLUMN src_prio INTEGER DEFAULT 0")  # 1 = its sources are tried first, 2 next, and so on, 0 = normal
     if "device" not in [r["name"] for r in d.q("PRAGMA table_info(sessions)")]:
         # Admin sign ins are tied to the device they were made on now, old ones without it get signed out
         d.q("ALTER TABLE sessions ADD COLUMN device TEXT")
@@ -3738,7 +3740,7 @@ def addon_base(url):
 
 
 def addon_rows(enabled_only=True):
-    rows = db().q("SELECT id, url, manifest, enabled, hidden FROM addons " + ("WHERE enabled = 1 " if enabled_only else "") + "ORDER BY id")
+    rows = db().q("SELECT id, url, manifest, enabled, hidden, src_prio FROM addons " + ("WHERE enabled = 1 " if enabled_only else "") + "ORDER BY id")
     out = []
     for r in rows:
         try:
@@ -3746,7 +3748,7 @@ def addon_rows(enabled_only=True):
         except ValueError:
             continue
         out.append({"id": r["id"], "url": r["url"], "base": r["url"][: -len("/manifest.json")], "m": m,
-                    "enabled": bool(r["enabled"]), "hidden": json.loads(r["hidden"] or "[]")})
+                    "enabled": bool(r["enabled"]), "hidden": json.loads(r["hidden"] or "[]"), "prio": int(r["src_prio"] or 0)})
     return out
 
 
@@ -3794,7 +3796,7 @@ def manifest_summary(a):
                      "search": any(e.get("name") == "search" for e in c.get("extra") or []) or "search" in (c.get("extraSupported") or []),
                      "home": not needs, "shown": f"{c.get('type')}/{c.get('id')}" not in a["hidden"],
                      "problem": CAT_ERR.get(catalog_url(a, c)) if not needs else None})
-    return {"id": a["id"], "url": a["url"], "enabled": a["enabled"], "name": m.get("name") or m.get("id"),
+    return {"id": a["id"], "url": a["url"], "enabled": a["enabled"], "prio": a.get("prio", 0), "name": m.get("name") or m.get("id"),
             "version": m.get("version"), "description": m.get("description"), "logo": https_url(m.get("logo")),
             "uses": {"catalogs": bool(cats), "meta": "meta" in res, "subtitles": "subtitles" in res,
                      "events": bool(res & {"player", "library"}), "streams": "stream" in res},
@@ -4186,6 +4188,12 @@ async def addons_edit(aid: int, request: Request, admin=Depends(require_admin)):
         raise HTTPException(404, "That addon isn't installed")
     if "enabled" in b:
         db().q("UPDATE addons SET enabled = ? WHERE id = ?", (1 if b["enabled"] else 0, aid))
+    if "prio" in b:
+        try:
+            pr = max(0, min(9, int(b["prio"])))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Priority has to be a number from 0 to 9")
+        db().q("UPDATE addons SET src_prio = ? WHERE id = ?", (pr, aid))
     if "hidden" in b and isinstance(b["hidden"], list):
         db().q("UPDATE addons SET hidden = ? WHERE id = ?", (json.dumps([str(x)[:120] for x in b["hidden"]][:100]), aid))
     if b.get("refresh"):
@@ -4482,7 +4490,17 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         return 0
     for x in out:
         x["health"] = ("good", "untried", "failed")[rank(x)]
-    out.sort(key=lambda x: (not x.get("torbox"), rank(x), not x["plays"], -x["height"], -(x["bytes"] or 0)))
+    # The admin can put an addon first in Settings (Addons, Source Priority). Ones set to First come before everything but
+    # copies that failed before, then the TorBox copies, then addons left on normal
+    prio = {}
+    for a in rows:
+        if a.get("prio"):
+            prio[a["m"].get("name")] = min(prio.get(a["m"].get("name"), 99), a["prio"])
+    def order(x):
+        if x.get("torbox"):
+            return 50
+        return prio.get(x.get("addon"), 100)
+    out.sort(key=lambda x: (rank(x) == 2, order(x), not x.get("torbox"), rank(x), not x["plays"], -x["height"], -(x["bytes"] or 0)))
     if video_type(kind):
         # Youtubio lists every quality twice (its own sponsor cutting player and the plain one), the top few is plenty
         out = out[:12]

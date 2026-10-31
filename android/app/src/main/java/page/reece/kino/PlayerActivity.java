@@ -1232,12 +1232,16 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     private void checkFake(double d) {
         if (fakeAsked || loading || !info.optBoolean("checkFake")) return;
         double len = Math.max(d, info.optDouble("duration", 0));
-        if (len < 27 || len > 33) return;
+        // The 30 second one (green), and the 2 minute one TorBox sends now (black, "Already downloading" and a QR code).
+        // A real film or episode is never that short. The picture cant be looked at here so only the length counts
+        boolean shortClip = len >= 27 && len <= 33, longClip = len >= 100 && len <= 140;
+        if (!shortClip && !longClip) return;
         fakeAsked = true;
+        String how = longClip ? "2 minute" : "30 second";
         boolean more = sourceCanMoveOn();
-        if (more && info.optBoolean("autoNextSource")) { moveOn("That copy was a 30 second placeholder", 0, true); return; }
+        if (more && info.optBoolean("autoNextSource")) { moveOn("That copy was a " + how + " placeholder", 0, true); return; }
         eng.pause();
-        LinearLayout c = dialog("This copy is only 30 seconds long", "It's probably a placeholder, the download didn't really finish on TorBox."
+        LinearLayout c = dialog("This copy is only " + (longClip ? "2 minutes" : "30 seconds") + " long", "It's probably a placeholder, the download didn't really finish on TorBox."
                 + (more ? "" : " There aren't any other sources to try right now."));
         TextView next = pill("Next Source", true), keep = pill(more ? "Keep Watching" : "OK", !more);
         next.setOnClickListener(v -> { closeDialog(); moveOn("Skipped the placeholder", 0, true); });

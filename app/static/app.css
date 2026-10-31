@@ -662,6 +662,11 @@ select.plain option { background: var(--bg-2); color: var(--label); }
 .player-title .secondary { font-size: 13px; }
 .glass-btn.round { width: 38px; height: 38px; font-size: 16px; }
 .player:not(.idle) .subs-layer { bottom: 130px; }
+/* ================================================================ player parity */
+/* The up next card was sitting on top of the subtitles, they lift out of its way while it shows */
+.player:has(.up-next:not([hidden])) .subs-layer { bottom: 250px; }
+@media (max-width: 760px) { .player:has(.up-next:not([hidden])) .subs-layer { bottom: 330px; } }
+
 .skip-intro { bottom: 120px; height: 40px; padding: 0 18px; font-size: 15px; border-radius: 10px; }
 .player.idle .skip-intro { bottom: 40px; }
 
@@ -1743,8 +1748,3 @@ body.tv .who-tile:hover:not(:focus-visible) .av.av-duo .av-half:last-child { box
 /* No double tap zoom anywhere (pinch stays in a browser tab), and as a home screen app no pinch either */
 html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
 html.standalone { touch-action: pan-x pan-y; }
-
-/* ================================================================ player parity */
-/* The up next card was sitting on top of the subtitles, they lift out of its way while it shows */
-.player:has(.up-next:not([hidden])) .subs-layer { bottom: 250px; }
-@media (max-width: 760px) { .player:has(.up-next:not([hidden])) .subs-layer { bottom: 330px; } }

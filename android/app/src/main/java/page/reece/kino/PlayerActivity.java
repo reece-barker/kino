@@ -139,7 +139,9 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
         // Live channels always play in the Kino player (ExoPlayer). The Android one cant do the live stream format and gives
         // "the device's player said no (1/-1004)", and once it had been switched to for a film the choice stuck for everything
-        String pick = live ? "exo" : prefs.getString("engine", "exo");
+        // A TV always uses the Kino player too: the Android one has no converted-stream fallback and sat buffering for ages when the choice
+        // had got stuck on it (the "Try Android Player" button used to save it for every film after)
+        String pick = live || tv ? "exo" : prefs.getString("engine", "exo");
         startEngine(pick.equals("android") ? "android" : "exo", info.optDouble("start", 0));
         h.post(tick);
         h.postDelayed(saver, 10000);
@@ -562,7 +564,15 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         t.setText((i > 0 ? s.substring(0, i) : s) + "  ·  " + note);
     }
 
+    // A film that hasnt started 30 seconds after it was asked for (50 for the converted stream) is treated like an error, so it tries the converted
+    // stream or the next source instead of sitting there and then dropping back to the page
+    private final Runnable startStall = () -> {
+        if (this.leaving || this.errorShown || this.live || !this.loading || this.eng == null) return;
+        onError("it took too long to start", false);
+    };
+
     private void loaded() {
+        h.removeCallbacks(startStall);
         if (!loading) return;
         loading = false;
         loadLayer.animate().alpha(0f).setDuration(450).withEndAction(() -> {
@@ -663,6 +673,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             return;
         }
         step(eng.name().equals("exo") ? "Direct play" : "Direct play with the Android player", what.trim());
+        h.removeCallbacks(startStall); h.postDelayed(startStall, 30000);
         eng.open(base + rel(info.optString("url")), false, (long) (at * 1000), subs);
         if (speed != 1f) eng.speed(speed);
     }
@@ -673,6 +684,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         triedHls = true;
         stopSession();
         step("Kino is converting it for this TV", at > 1 ? "from " + clock(at) : null);
+        h.removeCallbacks(startStall); h.postDelayed(startStall, 50000);
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject().put("t", at).put("audio", info.optInt("audioN", 0)).put("hevc", hasDecoder("video/hevc")).put("ad", audioDelay);
@@ -1111,11 +1123,14 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         bump();
     }
 
-    private void switchEngine(String which) {
+    private void switchEngine(String which) { switchEngine(which, true); }
+
+    // keep: remember the choice for the next film. The error screen's "Try ... Player" is only for this one
+    private void switchEngine(String which, boolean keep) {
         if (which.equals(eng.name())) return;
         if (live && !which.equals("exo")) { toast("Live TV only plays in the Kino player"); return; }
         double at = pos();
-        prefs.edit().putString("engine", which).apply();
+        if (keep && !tv) prefs.edit().putString("engine", which).apply();
         stopSession();
         triedHls = false;
         hlsRetries = 0;
@@ -1330,7 +1345,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         String vlc = vlcPackage();
         TextView ext = pill(vlc != null ? "Open in VLC" : "Another App", false);
         TextView web = pill("Web Player", false);
-        tryOther.setOnClickListener(v -> { closeDialog(); errorShown = false; switchEngine(other); });
+        tryOther.setOnClickListener(v -> { closeDialog(); errorShown = false; switchEngine(other, false); });
         ext.setOnClickListener(v -> { closeDialog(); errorShown = false; openExternal(vlc); });
         web.setOnClickListener(v -> { closeDialog(); done(msg); });
         buttons(c, tryOther, ext, web);

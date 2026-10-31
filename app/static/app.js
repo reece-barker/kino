@@ -980,8 +980,8 @@
     if (h.empty) {
       app.innerHTML = topbar("home") + `<main class="page"><div class="empty">
         <h2>${h.scanning ? "Scanning your Storage Box" : !h.mounted ? "The Storage Box isn't connected" : "Nothing here yet"}</h2>
-        <p>${h.error ? esc(h.error) : h.scanning ? "This takes a moment the first time." : "Videos show up here once the sync has downloaded them."}</p>
-        ${isAdmin() ? `<a class="btn secondary small" href="#/sync">Open Sync</a>` : ""}</div></main>`;
+        <p>${h.error ? esc(h.error) : h.scanning ? "This takes a moment the first time." : isAdmin() ? "Install an addon in Settings to browse and stream, or videos show up here once the sync has downloaded them." : "Nothing has been set up to watch yet, ask the admin."}</p>
+        ${isAdmin() ? `<div class="actions" style="justify-content:center"><a class="btn secondary small" href="#/settings">Open Settings</a><a class="btn secondary small" href="#/sync">Open Sync</a></div>` : ""}</div></main>`;
       wireTopbar();
       clearTimeout(SCAN_T);
       if (h.scanning) SCAN_T = setTimeout(() => location.hash === "#/home" && route(), 4000);

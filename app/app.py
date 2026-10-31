@@ -2525,7 +2525,10 @@ async def home(request: Request, p=Depends(current_profile)):
         sh["items"] = sh["items"][:SHELF_FIRST]
         sh["next"] = len(sh["items"]) if more else None
     HOME_FULL[p["id"]] = (time.time(), full)
-    return {"hero": hero, "shelves": shelves, "empty": not summ, "storage": storage_state() if admin_user(request) else None, "scanning": LIB["scanning"], "error": LIB["error"],
+    # Home is only empty when there is nothing at all: no files on the Storage Box and nothing from the addons either (streaming works without it)
+    if not hero:
+        hero = [s for s in by_score if s.get("background")][:5]
+    return {"hero": hero, "shelves": shelves, "empty": not summ and not hero and not any(sh["items"] or sh.get("pending") for sh in shelves), "storage": storage_state() if admin_user(request) else None, "scanning": LIB["scanning"], "error": LIB["error"],
             "mounted": box_mounted()}
 
 

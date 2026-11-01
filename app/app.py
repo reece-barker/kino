@@ -6036,7 +6036,7 @@ async def clientlog(request: Request):
         b = {}
     me = cookie_profile(request)
     entry = {"at": time.time(), "kind": str(b.get("kind", ""))[:40], "page": str(b.get("page", ""))[:200],
-             "detail": str(b.get("detail", ""))[:400], "device": str(b.get("device", ""))[:80], "profile": me["name"] if me else None,
+             "detail": str(b.get("detail", ""))[:1000], "device": str(b.get("device", ""))[:80], "profile": me["name"] if me else None,
              "ua": request.headers.get("user-agent", "")[:160]}
     CLIENT_LOG.append(entry)
     log.warning("kino app %s page=%s device=%s %s", logsafe(entry["kind"]), logsafe(entry["page"]), logsafe(entry["device"]), logsafe(entry["detail"]))

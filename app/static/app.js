@@ -3191,6 +3191,7 @@
       <section class="card set-card">
         <h2 class="set-title">Android App</h2>
         ${ANDROID ? `<div class="set-row"><span><b>Kino for Android ${esc(window.KinoAndroid.version())}</b><span class="secondary">You're using the app${TV ? " on a TV" : ""}. Get updates from the same link below.</span></span></div>` : ""}
+        ${ANDROID && playerBroken() ? `<div class="set-row"><span><b>Kino Player</b><span class="secondary">The Kino Player crashed on this device, so videos play in the web player for now. Try it again if the app has been updated.</span></span><button class="btn secondary small" id="pTryNative">Try Again</button></div>` : ""}
         ${nativeOk() ? `<div class="set-row"><span><b>Default Player</b><span class="secondary">Kino Player is the app's own, smoothest and the one to use. Android Player is the device's built in one, it can fix broken colours on some TVs but can't play live TV. Web Player is the page's own, the same as on a computer. Live TV always uses the Kino Player (and falls back to the Web Player if that can't open a channel)</span></span>
           <select class="plain" id="pPlayer" aria-label="Default player">${[["exo", "Kino Player"], ["android", "Android Player"], ["web", "Web Player"]].filter(([v]) => !(TV && v === "web")).map(([v, l]) => `<option value="${v}" ${v === defaultPlayer() ? "selected" : ""}>${l}</option>`).join("")}</select></div>` : ""}
         <div class="set-row"><span><b>Phones, Tablets and Android TV</b><span class="secondary">Full screen player, picture in picture, voice search and TV remote support</span></span>
@@ -3253,6 +3254,7 @@
     };
     ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats", "pFake", "pPrev", "pPrevSnd", "pLiveEng", "pLiveAll"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
+    const tn = $("#pTryNative"); if (tn) tn.onclick = () => { try { window.KinoAndroid.resetPlayer(); } catch (_) {} toast("The Kino Player is back on"); route(); };
     const pp = $("#pPlayer"); if (pp) pp.onchange = () => {
       const v = pp.value;
       try { localStorage.setItem(NATIVE_KEY, v === "web" ? "0" : "1"); } catch (_) {}
@@ -4111,7 +4113,9 @@
   // In the app videos go to exoplayer, the tv's hardware decoder plays them directly. The web player is still there as
   // a setting on this device, and as the backup if the app player cant play something
   const NATIVE_KEY = "kino-native";
-  const nativeOk = () => ANDROID && typeof window.KinoAndroid.playNative === "function";
+  // The app's own player, unless it crashed on this device (the app notes that, and videos use the web player until it is turned back on in Settings)
+  const playerBroken = () => { try { return typeof window.KinoAndroid.playerBroken === "function" && window.KinoAndroid.playerBroken(); } catch (_) { return false; } };
+  const nativeOk = () => ANDROID && typeof window.KinoAndroid.playNative === "function" && !playerBroken();
   // A TV always plays in the app's own player: the web player (the page's own <video>) can show one frozen picture with sound on some TVs. Everywhere
   // else the choice in Settings counts
   const useNative = () => { if (!nativeOk()) return false; if (TV) return true; try { return localStorage.getItem(NATIVE_KEY) !== "0"; } catch (_) { return true; } };
@@ -4199,6 +4203,15 @@
       try {
         const r = window.KinoAndroid.takeResult && window.KinoAndroid.takeResult();
         if (r) { RELOADED = true; window.kinoNativeDone(JSON.parse(r)); }
+      } catch (_) {}
+      try {
+        // The app itself crashed last time (not just the page): tell the server what it was, it shows under Server, App Problems
+        const jc = window.KinoAndroid.javaCrash && window.KinoAndroid.javaCrash();
+        if (jc) {
+          const j = JSON.parse(jc);
+          fetch("/api/clientlog", { method: "POST", headers: { "X-Kino": "1", "Content-Type": "application/json" }, credentials: "same-origin",
+            body: JSON.stringify({ kind: "app crashed", page: "", device: j.device, detail: `Android ${j.android} (${j.sdk}): ${j.stack}` }) }).catch(() => {});
+        }
       } catch (_) {}
       try {
         const c = window.KinoAndroid.lastCrash && window.KinoAndroid.lastCrash();

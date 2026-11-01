@@ -6789,8 +6789,8 @@ async def refresh_pluto(row):
     lid = row["id"]
     try:
         sess = await pluto_session("", force=True)
-        if sess["country"] != "GB":
-            raise HTTPException(400, f"Pluto TV UK only plays from a UK address, this server looks like it is in {sess['country'] or 'another country'}")
+        #if sess["country"] != "GB":
+        #    raise HTTPException(400, f"Pluto TV UK only plays from a UK address, this server looks like it is in {sess['country'] or 'another country'}")
         data = (await pluto_get(sess, "/v2/guide/channels", limit=1000, sort="number:asc")).get("data") or []
         cats = (await pluto_get(sess, "/v2/guide/categories")).get("data") or []
         cat_of = {cid: c.get("name") for c in cats for cid in c.get("channelIDs") or []}

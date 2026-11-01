@@ -159,7 +159,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     private TextView text(float sp, int color, boolean bold) {
         TextView t = new TextView(this);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        // Read from the sofa: nothing on a TV is under 16sp
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, tv ? Math.max(16f, sp) : sp);
         t.setTextColor(color);
         t.setTypeface(Typeface.create("sans-serif", bold ? Typeface.BOLD : Typeface.NORMAL));
         if (!bold) t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
@@ -349,10 +350,10 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
         LinearLayout tlRow = new LinearLayout(this);
         tlRow.setGravity(Gravity.CENTER_VERTICAL);
-        tNow = text(13, 0xB8FFFFFF, false);
-        tNow.setMinWidth(dp(52));
-        tLeft = text(13, 0xB8FFFFFF, false);
-        tLeft.setMinWidth(dp(52));
+        tNow = text(tv ? 19 : 13, 0xB8FFFFFF, false);
+        tNow.setMinWidth(dp(tv ? 76 : 52));
+        tLeft = text(tv ? 19 : 13, 0xB8FFFFFF, false);
+        tLeft.setMinWidth(dp(tv ? 76 : 52));
         tLeft.setGravity(Gravity.END);
         line = new Timeline(this);
         line.setCallback(new Timeline.Callback() {

@@ -9,8 +9,8 @@ android {
         applicationId "page.reece.kino"
         minSdk 24
         targetSdk 35
-        versionCode 33
-        versionName "4.2"
+        versionCode 34
+        versionName "4.3"
         // The address the app opens, change it here if kino ever moves
         buildConfigField "String", "KINO_URL", "\"https://kino.reece.page/\""
     }

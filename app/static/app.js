@@ -3446,9 +3446,11 @@
             <span class="addon-desc secondary">${esc(l.url.startsWith("pluto://") ? "Free channels from Pluto TV, with its own guide" : l.url)}${l.epg ? `<br>Guide: ${esc(l.epg)}` : ""}</span></span>
           <input type="checkbox" class="switch" data-lon="${l.id}" ${l.enabled ? "checked" : ""} aria-label="Turn ${esc(l.name)} on or off"></div>
         ${l.error ? `<div class="note warn-text">${esc(l.error)}</div>` : ""}
+        ${r.relay && !l.url.startsWith("pluto://") ? `<label class="set-row" style="padding:6px 0"><span><b>Play through the UK server</b><span class="secondary">For channels that only play from the UK</span></span><input type="checkbox" class="switch" data-lrel="${l.id}" ${l.relay ? "checked" : ""}></label>` : ""}
         <div class="addon-foot"><span class="secondary">${l.refreshed ? "Updated " + ago(l.refreshed) : "Loading…"}</span>
           <div class="actions end"><button class="btn secondary small" data-lref="${l.id}">${ic("refresh")} Refresh</button><button class="btn danger small" data-lrm="${l.id}">${ic("trash")} Remove</button></div></div>
       </div>`).join("") || `<div class="secondary" style="padding:8px 0">No playlists yet.</div>`}</div>
+      ${r.relay ? `<div class="set-row" style="padding:6px 0"><span><b>UK Server</b><span class="secondary" id="relayState">Set up. Check what country Pluto sees through it</span></span><button class="btn secondary small" type="button" id="relayCheck">Check</button></div>` : ""}
       ${r.lists.some((l) => l.url.startsWith("pluto://")) ? "" : `<div class="addon"><div class="addon-top"><span class="addon-logo">${ic("live")}</span><span class="grow"><b>Pluto TV (UK)</b><span class="addon-desc secondary">About 180 free channels with a guide: films, crime, reality, kids and more. Free and ad supported. Only works if this server is in the UK.</span></span><button class="btn primary small" type="button" id="lvPluto">${ic("plus")} Add</button></div></div>`}
       <form class="live-form" id="liveForm">
         <input id="lvName" placeholder="Name, like UK Freeview" autocomplete="off">
@@ -3511,6 +3513,16 @@
         drawLiveAdmin();
       } catch (er) { $("#lvErr").textContent = er.message; go.disabled = false; go.innerHTML = `${ic("plus")} Add Playlist`; }
     };
+    const rc = $("#relayCheck", box);
+    if (rc) rc.onclick = async () => {
+      rc.disabled = true; $("#relayState", box).textContent = "Checking…";
+      try {
+        const x = await api("/api/admin/live/relay");
+        $("#relayState", box).textContent = x.error ? x.error : `Through the UK server Pluto sees ${x.relay}${x.relay === "GB" ? ", that's right" : ", it needs to be GB"}. This server on its own: ${x.direct || "unknown"}`;
+      } catch (er) { $("#relayState", box).textContent = er.message; }
+      rc.disabled = false;
+    };
+    $$("[data-lrel]", box).forEach((c) => (c.onchange = async () => { await api(`/api/admin/live/${c.dataset.lrel}`, { relay: c.checked }, "PUT").catch((er) => toast(er.message, 5000)); drawLiveAdmin(); }));
     const pl = $("#lvPluto", box);
     if (pl) pl.onclick = async () => {
       pl.disabled = true; pl.textContent = "Adding…";

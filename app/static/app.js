@@ -4929,6 +4929,9 @@
   // The android app adds KinoAndroid to the user agent and gives the page a small bridge. On tvs (KinoTV) the
   // remote's arrows move focus around the page like on apple tv, the browser itself cant do that
   let NAV_T = 0;
+  // The last thing that had focus in each row of pills, so coming back to the row lands on it instead of whichever pill is nearest sideways
+  const LAST_IN = new WeakMap();
+  document.addEventListener("focusin", (e) => { const g = e.target.closest && e.target.closest(".chips"); if (g) LAST_IN.set(g, e.target); });
   function nav(e) {
     const dirs = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
     const d = dirs[e.key];
@@ -4944,7 +4947,9 @@
     // Holding a button on a slow tv sends keys faster than it can work out where focus goes, so the extra ones are dropped
     if (e.repeat) {
       const now = performance.now();
-      if (now - NAV_T < 80) { e.preventDefault(); return; }
+      // A held key that queued up behind slow work (the keys are old by the time they get here) is dropped, or the selection kept running on after
+      // the button was let go
+      if (now - e.timeStamp > 150 || now - NAV_T < 80) { e.preventDefault(); return; }
       NAV_T = now;
     }
     // An open dropdown keeps the remote inside it until it's closed, otherwise down could land on the page behind it
@@ -4996,7 +5001,7 @@
     const side = $("#side"), inSide = !!(side && side.contains(cur));
     const sideRight = side && !playerOpen && !sheetClose ? side.getBoundingClientRect().right : -1;
     // Right at the end of a row stays put instead of jumping up into whatever row is above
-    const curRow = d[0] > 0 && cur.closest && cur.closest(".row, .episodes, .chips");
+    const curRow = d[0] > 0 && cur.closest && cur.closest(".row, .episodes, .chips, .toolbar");
     // Two steps like a tv's own focus engine: first the nearest line of things in that direction, then on that line the
     // one closest to where you are. Measured edge to edge, so a tall card further away never beats a button right next to you
     // Sideways along a row of cards only ever lands on another card, the little buttons under episodes (mark as
@@ -5057,6 +5062,11 @@
         if (pool.length) ranked = pool.concat(ranked.filter((x) => !pool.includes(x)));
       }
     }
+    // Up or down into a row of pills goes back to the pill that was last on, not the one nearest across
+    if (d[1] && ranked.length) {
+      const g = ranked[0].closest && ranked[0].closest(".chips"), mem = g && LAST_IN.get(g);
+      if (g && mem && !g.contains(cur) && mem.isConnected && items.includes(mem)) ranked.unshift(mem);
+    }
     let best = null;
     for (const el of ranked) { el.focus({ preventScroll: true }); if (document.activeElement === el) { best = el; break; } }
     // Going into the sidebar lands on the page you're on, not whichever item happened to be level with you
@@ -5069,7 +5079,8 @@
       // view instead of the button being put in the middle of the screen
       const top = !playerOpen && !sheetClose && best.closest(".detail-hero, .hero");
       if (top && d[1]) window.scrollTo({ top: 0, behavior: reduceMotion() ? "auto" : "smooth" });
-      else best.scrollIntoView({ block: d[1] ? "center" : "nearest", inline: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
+      // Sideways moves jump (a smooth scroll per press piled up while a button was held and kept going after it was let go), up and down glide
+      else best.scrollIntoView({ block: d[1] ? "center" : "nearest", inline: "nearest", behavior: reduceMotion() || d[0] || e.repeat ? "auto" : "smooth" });
     }
   }
   if (TV) {

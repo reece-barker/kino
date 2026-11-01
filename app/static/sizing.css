@@ -75,3 +75,8 @@ body.tv .row { scroll-padding-inline-end: max(var(--gutter), 5vw); }
 .search .search-go { min-height: 0 !important; height: calc(100% - 10px); padding: 0 16px; font-size: 15px; margin-right: -6px; }
 body.tv .search .search-go { font-size: 16px; padding: 0 18px; }
 body.tv .toolbar .search { height: 44px; }
+
+/* The trailer on its own, on a TV: the close button keeps inside the overscan (it hugged the corner), and the box has no rounded, clipped corners
+   (a video behind a clipped, rounded box can come up black on some TVs) */
+body.tv .trailer-view .tr-x { top: 27px; left: 48px; }
+body.tv .tr-box { border-radius: 0; overflow: visible; box-shadow: none; }

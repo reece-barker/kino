@@ -71,5 +71,7 @@ body.tv .chips { scroll-padding-inline: max(var(--gutter), 5vw); }
 .row { scroll-padding-inline-end: var(--gutter); }
 body.tv .row { scroll-padding-inline-end: max(var(--gutter), 5vw); }
 
-/* The filter box next to the Search button is as tall as the button */
-.toolbar .search { min-height: 44px; }
+/* The Search button sits inside the search box like a pill, a bit shorter than the box, instead of being a full size button next to it */
+.search .search-go { min-height: 0 !important; height: calc(100% - 10px); padding: 0 16px; font-size: 15px; margin-right: -6px; }
+body.tv .search .search-go { font-size: 16px; padding: 0 18px; }
+body.tv .toolbar .search { height: 44px; }

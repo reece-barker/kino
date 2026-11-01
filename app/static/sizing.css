@@ -81,6 +81,28 @@ body.tv .toolbar .search { height: 44px; }
 body.tv .trailer-view .tr-x { top: 27px; left: 48px; }
 body.tv .tr-box { border-radius: 0; overflow: visible; box-shadow: none; }
 
-/* A remote moves a row card by card itself, so a TV's rows don't snap: the snapping pulled the row back after every move and the card you were on ended up
-   22 px from the edge of the screen (inside what a TV crops). Without it the end gutter above is kept */
-body.tv .row { scroll-snap-type: none; }
+/* ---- TV audit fixes ---- */
+/* The sidebar when it is open: the item the remote is on is the brightest thing (white), the page you are on is a calmer bar, not the other way round */
+body.tv .side:is(.open, .pinned) .side-pill { background: var(--hover); box-shadow: none; }
+body.tv .side:is(.open, .pinned) .side-item[aria-current="page"] { color: var(--label); }
+body.tv .side:is(.open, .pinned) .side-item[aria-current="page"] .side-ic { background: var(--side-on-bg); color: var(--side-on-fg); }
+body.tv .side:is(.open, .pinned) .side-item:focus-visible { background: #fff; color: #000; box-shadow: 0 0 0 3px #fff; transform: none; }
+body.tv .side:is(.open, .pinned) .side-item:focus-visible .side-ic { background: rgba(0, 0, 0, 0.1); color: #000; }
+/* Its last items (Settings group open) stay inside the overscan, the rail scrolls instead of running to the edge */
+body.tv .side { overflow-y: auto; scrollbar-width: none; }
+body.tv .side::-webkit-scrollbar { display: none; }
+
+/* Text on a TV is 16px at the least (it is read from the sofa) */
+body.tv .ep .num, body.tv .ep .ov, body.tv .section-title .from, body.tv .tile-live, body.tv .theme-pick button, body.tv .badge, body.tv .card h3,
+body.tv .state-line, body.tv .facts p, body.tv .hero-meta, body.tv #count { font-size: 16px; }
+body.tv .theme-pick button { padding: 10px 6px; }
+
+/* Things that take the remote are 44px tall at the least */
+body.tv .live-tabs a, body.tv .ch-opt, body.tv .cast a, body.tv .hist-name, body.tv .round-btn.sm, body.tv .plain-link { min-height: 44px; }
+body.tv .ch-opt, body.tv .round-btn.sm { min-width: 44px; }
+body.tv .live-tabs a, body.tv .cast a, body.tv .hist-name { display: inline-flex; align-items: center; }
+body.tv #count, body.tv .toolbar .secondary { font-size: 16px !important; }
+body.tv .theme-pick button span, body.tv .mono, body.tv b.mono { font-size: 16px; }
+/* The admin pages (Server, Sync): their small captions and values */
+body.tv .card .secondary, body.tv .card label, body.tv .card span, body.tv .card .state-line, body.tv .set-hint { font-size: 16px; }
+body.tv .card .big, body.tv .card .num { font-size: inherit; }

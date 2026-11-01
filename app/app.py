@@ -2473,7 +2473,7 @@ async def home(request: Request, p=Depends(current_profile)):
             rows += 1
             shelves.append({"id": "int-" + norm(i["name"]).replace(" ", "-"), "title": f"Because You Like {i['name']}", "style": "poster", "items": items})
     fam = family_liked(p, summ)
-    if len(fam) >= 2:
+    if fam:
         shelves.append({"id": "family", "title": "Loved by the Family", "style": "poster", "items": fam})
     shelves.append({"id": "recent", "title": "Recently Added", "style": "wide", "items": recent})
 
@@ -2798,22 +2798,34 @@ async def browse(kind: str, skip: int = 0, genres: str = "", decade: int = 0, mi
 
 
 def family_liked(p, summ):
-    """What the other profiles liked or loved, loved ones first and then by how many people liked it"""
+    """What the profiles liked or loved (yours too, as You), loved ones first and then by how many people liked it. Titles from addons count as well as
+    the library's (they are rated as ext:movie/tt1234567 and their details were kept when they were rated)"""
     by_id = {s["id"]: s for s in summ}
+    mine, me = rating_map(p["id"]), set(group_ids(p["id"]))
     votes = {}
-    rows = db().q("SELECT r.title_id, r.value, r.updated, pr.name FROM ratings r JOIN profiles pr ON pr.id = r.profile_id "
-                  f"WHERE r.profile_id NOT IN ({ids_sql(group_ids(p['id']))}) AND r.value > 0 AND pr.pending = 0", group_ids(p["id"]))
+    rows = db().q("SELECT r.title_id, r.value, r.updated, r.profile_id, pr.name FROM ratings r JOIN profiles pr ON pr.id = r.profile_id "
+                  "WHERE r.value > 0 AND pr.pending = 0")
     for r in rows:
-        if r["title_id"] not in by_id or by_id[r["title_id"]]["my_rating"] == -1:
+        tid = r["title_id"]
+        if mine.get(tid) == -1 or (tid not in by_id and not str(tid).startswith("ext:")):
             continue
-        v = votes.setdefault(r["title_id"], {"love": 0, "like": 0, "names": [], "at": 0})
+        v = votes.setdefault(tid, {"love": 0, "like": 0, "names": [], "at": 0})
         v["love" if r["value"] == 2 else "like"] += 1
-        v["names"].append(r["name"])
+        v["names"].append("You" if r["profile_id"] in me else r["name"])
         v["at"] = max(v["at"], r["updated"] or 0)
     out = []
     for tid, v in sorted(votes.items(), key=lambda kv: (kv[1]["love"], kv[1]["love"] + kv[1]["like"], kv[1]["at"]), reverse=True):
-        s = dict(by_id[tid])
-        who = v["names"][:2]
+        if tid in by_id:
+            s = dict(by_id[tid])
+        else:
+            m_ = EXT_RATE_RX.fullmatch(str(tid))
+            meta, _ = cached_meta(f"ext:{m_.group(1)}:{m_.group(2)}") if m_ else (None, 0)
+            if not meta or not meta.get("name"):
+                continue
+            s = ext_preview({**meta, "id": m_.group(2), "type": m_.group(1), "imdbRating": meta.get("rating")}, m_.group(1))
+            if p.get("kids") and not kids_ok(s["genres"], s["imdb"]):
+                continue
+        who = sorted(v["names"], key=lambda n: n != "You")[:2]
         s["family"] = ("Loved by " if v["love"] else "Liked by ") + " and ".join(who) + (f" +{len(v['names']) - 2}" if len(v["names"]) > 2 else "")
         s["loved"] = bool(v["love"])
         out.append(s)
@@ -3447,12 +3459,22 @@ async def library_events(fids, watched):
             await send_event("library", kind, vid.split(":")[0], {"action": "watched" if watched else "unwatched", "videoId": vid})
 
 
+EXT_RATE_RX = re.compile(r"ext:(movie|series)/(tt\d{5,10})")
+
+
 @app.post("/api/rate")
 async def rate(request: Request, p=Depends(current_profile)):
     b = await request.json()
     tid, v = b.get("title_id"), int(b.get("value") or 0)
-    if tid not in LIB["titles"] or v not in (-1, 0, 1, 2):
+    # A title in the library, or one from an addon (kept as ext:movie/tt1234567)
+    ext = EXT_RATE_RX.fullmatch(str(tid))
+    if (tid not in LIB["titles"] and not ext) or v not in (-1, 0, 1, 2):
         raise HTTPException(400, "Unknown title or rating")
+    if ext and v:
+        # Its details are kept, so Home can show it in the family row later
+        m = await meta_lookup(ext.group(1), ext.group(2))
+        if not m or not m.get("name"):
+            raise HTTPException(400, "Couldn't find that title")
     if v == 0:
         db().q("DELETE FROM ratings WHERE profile_id = ? AND title_id = ?", (p["id"], tid))
     else:
@@ -4808,7 +4830,8 @@ async def external_title(kind: str, mid: str, stay: int = 0, name: str = "", p=D
             vid = ep_video_id(mid, v)
             videos.append({**v, "id": vid, "progress": prog.get(vid)})
         videos.sort(key=lambda v: (v["season"], v["episode"] or 0))
-    return {"in_list": in_list(p["id"], mid), "list_key": mid, "videos": videos, "season_list": seasons,**ext_preview({**m, "id": mid, "imdbRating": m.get("rating")}, kind), "poster": m.get("poster") or ext_poster({"id": mid}),
+    return {"in_list": in_list(p["id"], mid), "list_key": mid, "rate_key": f"ext:{kind}/{mid}" if EXT_RATE_RX.fullmatch(f"ext:{kind}/{mid}") else None,
+            "my_rating": rating_map(p["id"]).get(f"ext:{kind}/{mid}", 0), "videos": videos, "season_list": seasons,**ext_preview({**m, "id": mid, "imdbRating": m.get("rating")}, kind), "poster": m.get("poster") or ext_poster({"id": mid}),
             "background": m.get("background"), "logo": m.get("logo"), "runtime": m.get("runtime"), "cast": m.get("cast") or [],
             "director": m.get("director"), "seasons": len(seasons), "episodes": len(m.get("videos") or [])}
 

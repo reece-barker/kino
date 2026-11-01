@@ -1627,6 +1627,7 @@
       load(true);
     }));
     let qt;
+    keyboardOnDemand($("#q"));
     $("#q").addEventListener("input", () => { clearTimeout(qt); qt = setTimeout(() => load(true), 300); });
     // Enter on the keyboard (or OK / play on a TV remote) and the Search button both search straight away and put the keyboard away
     $("#qForm").addEventListener("submit", (e) => {
@@ -1701,6 +1702,7 @@
       <div id="sres"></div></main>`;
     wireTopbar();
     const input = $("#sq");
+    keyboardOnDemand(input);
     if (!TV) input.focus();
     setupMic(input, () => run());
     let t, seq = 0, ctl = null;
@@ -1809,6 +1811,22 @@
   // (chrome, edge, safari) use that, and everything else records a few seconds and the server works out the words.
   // If the built in one fails (brave and opera have it but it never works) it quietly switches to the server
   let VOICE_SERVER = false;
+  // A TV opens its on-screen keyboard the moment a text box gets the selection, and on a page whose first stop is a search box that put the keyboard over
+  // the screen as soon as the page opened (and every time the remote passed over the box). The box is read only until OK is pressed on it (a read only box
+  // gets no keyboard), then it is made editable and selected again, which opens the keyboard. OK on an empty box opens it again after Back, the keyboard's
+  // own search key searches, and the box goes back to read only when it lets go
+  function keyboardOnDemand(input) {
+    if (!TV || !input) return;
+    let opening = false;
+    input.readOnly = true;
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || (!input.readOnly && input.value)) return;
+      e.preventDefault(); e.stopPropagation();
+      opening = true; input.readOnly = false; input.blur(); input.focus(); opening = false;
+    }, true);
+    input.addEventListener("blur", () => { if (!opening) input.readOnly = true; });
+  }
+
   function setupMic(input, onDone) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const btn = $("#micBtn");
@@ -2657,6 +2675,7 @@
       $("#chCount").textContent = m.total ? liveCount(m) : "";
       $("#liveRows").hidden = !!st.q;
     };
+    keyboardOnDemand($("#lsq"));
     $("#lsq").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value.trim(); find(); }, 300); });
     $("#lsForm").onsubmit = (e) => { e.preventDefault(); clearTimeout(t); st.q = $("#lsq").value.trim(); find(); };
     // More channels as you scroll down

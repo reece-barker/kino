@@ -21,6 +21,9 @@ import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
+import androidx.media3.exoplayer.hls.HlsMediaSource;
+import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory;
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.ui.AspectRatioFrameLayout;
@@ -40,6 +43,7 @@ class ExoEngine implements Engine {
     private final Listener l;
     private final float subSize;
     private boolean firstFrame;
+    private final DefaultHttpDataSource.Factory http;
 
     ExoEngine(Context c, Map<String, String> headers, String ua, String audioLang, String subLang, String subSizePref, boolean lowRam, Listener l) {
         this.l = l;
@@ -48,7 +52,7 @@ class ExoEngine implements Engine {
         if (!audioLang.isEmpty()) pb.setPreferredAudioLanguage(audioLang);
         if (!subLang.isEmpty()) pb.setPreferredTextLanguage(subLang).setSelectUndeterminedTextLanguage(false);
         ts.setParameters(pb.build());
-        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory().setUserAgent(ua).setDefaultRequestProperties(headers)
+        http = new DefaultHttpDataSource.Factory().setUserAgent(ua).setDefaultRequestProperties(headers)
                 .setConnectTimeoutMs(20000).setReadTimeoutMs(30000).setAllowCrossProtocolRedirects(false);
         player = new ExoPlayer.Builder(c, new DefaultRenderersFactory(c).setEnableDecoderFallback(true))
                 .setTrackSelector(ts).setMediaSourceFactory(new DefaultMediaSourceFactory(http))
@@ -118,7 +122,11 @@ class ExoEngine implements Engine {
         // which a slow channel cant keep up with, so it kept stopping to load) and never speeds up or slows down to catch the edge
         if (startMs < 0) b.setLiveConfiguration(new MediaItem.LiveConfiguration.Builder().setTargetOffsetMs(12000).setMinOffsetMs(8000)
                 .setMaxOffsetMs(30000).setMinPlaybackSpeed(1.0f).setMaxPlaybackSpeed(1.0f).build());
-        if (startMs < 0) player.setMediaItem(b.build());
+        // Live channels come from IPTV servers that cut the stream anywhere, not at a keyframe. Letting the parser start on any keyframe and find
+        // the frame edges itself gets the picture and sound lined up from the start, instead of drifting or starting black
+        if (startMs < 0) player.setMediaSource(new HlsMediaSource.Factory(http).setAllowChunklessPreparation(true)
+                .setExtractorFactory(new DefaultHlsExtractorFactory(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES | DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS, false))
+                .createMediaSource(b.build()));
         else player.setMediaItem(b.build(), startMs);
         player.prepare();
         player.play();

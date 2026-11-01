@@ -7251,7 +7251,9 @@ async def live_ffmpeg(url, headers, request, p):
         args += ["-readrate", "1"]  # real time, a source that sends faster than live (a recording) would run away from the player
     if headers:
         args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-    args += [*FF_NET, "-i", url, "-map", "0:v:0?", "-map", "0:a:0?", *vargs, "-c:a", "aac", "-ac", "2", "-b:a", "160k", "-sn", "-dn",
+    args += [*FF_NET, "-i", url, "-map", "0:v:0?", "-map", "0:a:0?", *vargs, "-c:a", "aac", "-ac", "2", "-b:a", "160k",
+             # Fills gaps and drops in the channel's sound with silence or trims it, so sound and picture dont drift apart when the source hiccups
+             "-af", "aresample=async=1000:first_pts=0", "-sn", "-dn",
              "-f", "hls", "-hls_time", "2", "-hls_list_size", "12", "-hls_flags", "delete_segments+independent_segments+omit_endlist",
              "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", str(out / "seg%05d.m4s"), str(out / "index.m3u8")]
     errlog = open(out / "ffmpeg.log", "wb")

@@ -78,7 +78,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     // playback state
     private Engine eng;
-    private boolean liveTc;
+    private boolean liveTc, controlsHiding;
     private boolean hls, triedHls, ended, introSkipped, audioPicked, errorShown, leaving, loading = true;
     private double offset;        // where the server's converted stream starts in the film, seconds
     private String sid;           // the server's converting session
@@ -914,7 +914,12 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     }
 
     private void showControls(View focus) {
-        if (controls.getVisibility() != View.VISIBLE) {
+        // Still fading out counts as hidden. hideControls() used to leave the focus on the first button of the row (root.requestFocus() hands it to
+        // the first thing that can take it, the left channel arrow on live), and since that button is in the controls the focus was never moved to Play
+        boolean was = controls.getVisibility() != View.VISIBLE || controlsHiding;
+        controlsHiding = false;
+        if (was) {
+            controls.animate().cancel();
             controls.setVisibility(View.VISIBLE);
             controls.animate().alpha(1f).setDuration(220).start();
             eng.subsRaised(true);
@@ -922,14 +927,15 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         }
         // Controls that come up on their own (a pause, a stall) put the remote on Play, not on whichever button is first in the row
         if (focus == null) focus = bPlay;
-        if (getCurrentFocus() == null || !isInControls(getCurrentFocus())) focus.requestFocus();
+        if (was || getCurrentFocus() == null || !isInControls(getCurrentFocus())) focus.requestFocus();
         bump();
     }
 
     private void hideControls() {
         if (menuWrap.getVisibility() == View.VISIBLE || line.scrubbing() || errorShown) return;
         if (eng != null && !eng.playing()) return;
-        controls.animate().alpha(0f).setDuration(260).withEndAction(() -> controls.setVisibility(View.GONE)).start();
+        controlsHiding = true;
+        controls.animate().alpha(0f).setDuration(260).withEndAction(() -> { controlsHiding = false; controls.setVisibility(View.GONE); }).start();
         eng.subsRaised(false);
         subText.animate().translationY(0).setDuration(260).start();
         if (skip.getVisibility() == View.VISIBLE) skip.requestFocus();

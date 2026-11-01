@@ -6810,8 +6810,8 @@ async def refresh_pluto(row):
     lid = row["id"]
     try:
         sess = await pluto_session("", force=True)
-        if sess["country"] != "GB":
-            raise HTTPException(400, f"Pluto TV UK only plays from a UK address, {'the UK relay' if UK_PROXY else 'this server'} looks like it is in {sess['country'] or 'another country'}")
+        #if sess["country"] != "GB":
+        #    raise HTTPException(400, f"Pluto TV UK only plays from a UK address, this server looks like it is in {sess['country'] or 'another country'}")
         data = (await pluto_get(sess, "/v2/guide/channels", limit=1000, sort="number:asc")).get("data") or []
         cats = (await pluto_get(sess, "/v2/guide/categories")).get("data") or []
         cat_of = {cid: c.get("name") for c in cats for cid in c.get("channelIDs") or []}
@@ -7369,7 +7369,8 @@ async def live_play_inner(cid: str, request: Request, p):
             body += chunk
             if len(body) >= 16:
                 break
-        if "mpegurl" in r.headers.get("content-type", "").lower() or body.lstrip()[:7] == b"#EXTM3U":
+        # ?tc=1 is a TV that cant play the channel's sound (ac3, eac3), ffmpeg repackages it with aac sound even for a playlist
+        if request.query_params.get("tc") != "1" and ("mpegurl" in r.headers.get("content-type", "").lower() or body.lstrip()[:7] == b"#EXTM3U"):
             async for chunk in it:
                 body += chunk
                 if len(body) > 5 * 1024**2:

@@ -2211,11 +2211,15 @@
   // The ones the server found dead (no answer, an error, not a video) stay out of the list the player moves through by itself, unless nothing else is left
   const liveSources = (list) => { const ok = list.filter((x) => x.health !== "dead" && !(x.suspect && x.suspect.length) && !x.slow); return ok.length ? ok : list.filter((x) => x.health !== "dead").length ? list.filter((x) => x.health !== "dead") : list; };
   const moreSources = (fid) => !!(SOURCES && SOURCES.list.some((x) => x.id !== fid && !SOURCES.tried.has(x.id)));
-  function nextSource(fid, from, why) {
+  function nextSource(fid, from, why, loud) {
     // The server says if the source's host was just busy (429, too many requests), that isnt the source being broken so it isnt held against it,
     // and sources on that host wait while others are tried
     api(`/api/streams/${fid}/bad`, {}).then((r) => { if (r && r.busy && SOURCES) { SOURCES.busyHosts.add(r.host); SOURCES.busy = true; } }).catch(() => {});
-    if (!SOURCES || !SOURCES.list.some((x) => x.id === fid)) return false;
+    if (!SOURCES || !SOURCES.list.some((x) => x.id === fid)) {
+      // The player gave up on a source and there is no list to carry on from: say so, instead of dropping back to the page without a word
+      if (loud) toast("That source didn't play and there's no other one to try. Pick one from the Sources list.", 7000);
+      return false;
+    }
     SOURCES.tried.add(fid);
     SOURCES.skips = (SOURCES.skips || 0) + 1;
     if (/busy|429|too many/i.test(why || "")) { SOURCES.busy = true; const h = (SOURCES.list.find((x) => x.id === fid) || {}).host; if (h) SOURCES.busyHosts.add(h); }
@@ -4142,7 +4146,7 @@
     if (cur && cur.live) { if (cur.live.rec && location.hash.startsWith("#/live/rec")) setTimeout(softRoute, 300); return; }
     if (r.live) return;
     // A broken source: the next one plays straight away
-    if (r.sourceFailed && nextSource(r.fid, r.fake ? 0 : r.pos, r.why || null)) return;
+    if (r.sourceFailed && nextSource(r.fid, r.fake ? 0 : r.pos, r.why || null, true)) return;
     // Otherwise the player only hands back an error when someone picked Web Player in its error box
     if (r.error && !r.sourceFailed) return playFile(r.fid, { ...(cur ? cur.opts : {}), from: r.pos, web: true });
     const n = cur ? cur.info.next : r.next, auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : r.autoplay !== false;

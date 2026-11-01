@@ -565,10 +565,20 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         t.setText((i > 0 ? s.substring(0, i) : s) + "  ·  " + note);
     }
 
-    // A film that hasnt started 30 seconds after it was asked for (50 for the converted stream) is treated like an error, so it tries the converted
-    // stream or the next source instead of sitting there and then dropping back to the page
+    // A film that hasnt started 20 seconds after it was asked for (40 for the converted stream) is treated like an error, so it tries the converted
+    // stream or the next source instead of sitting there and then dropping back to the page. But a source that is really sending (slowly) is waited
+    // for, up to a minute and a half in all: only one that has gone quiet counts as stuck, so a slow link isnt thrown out as if it were dead
+    private long stallStart, lastData;
+    private void armStartStall(long ms) {
+        stallStart = System.currentTimeMillis();
+        lastData = 0;
+        h.removeCallbacks(startStall);
+        h.postDelayed(startStall, ms);
+    }
     private final Runnable startStall = () -> {
         if (this.leaving || this.errorShown || this.live || !this.loading || this.eng == null) return;
+        long now = System.currentTimeMillis();
+        if (lastData > 0 && now - lastData < 12000 && now - stallStart < 90000) { h.postDelayed(this.startStall, 8000); return; }
         onError("it took too long to start", false);
     };
 
@@ -686,7 +696,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             return;
         }
         step(eng.name().equals("exo") ? "Direct play" : "Direct play with the Android player", what.trim());
-        h.removeCallbacks(startStall); h.postDelayed(startStall, 30000);
+        armStartStall(20000);
         eng.open(base + rel(info.optString("url")), false, (long) (at * 1000), subs);
         if (speed != 1f) eng.speed(speed);
     }
@@ -697,7 +707,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         triedHls = true;
         stopSession();
         step("Kino is converting it for this TV", at > 1 ? "from " + clock(at) : null);
-        h.removeCallbacks(startStall); h.postDelayed(startStall, 50000);
+        armStartStall(40000);
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject().put("t", at).put("audio", info.optInt("audioN", 0)).put("hevc", hasDecoder("video/hevc")).put("ad", audioDelay);
@@ -871,6 +881,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onBandwidth(long bps) {
+        if (bps > 0) lastData = System.currentTimeMillis();
         if (loading && bps > 0) note(String.format(Locale.ROOT, "%.1f Mbps", bps / 1e6));
     }
 

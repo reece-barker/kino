@@ -52,7 +52,7 @@ public class MainActivity extends Activity {
     private static final int PLAYER_REQUEST = 43;
     private volatile long playerOpened;
     private String parkedUrl;
-    private volatile String pendingResult, lastCrash;
+    private volatile String pendingResult, lastCrash, javaCrash;
     private boolean clearHistoryNext;
     private long playerClosed;
 
@@ -82,6 +82,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        CrashLog.install(this);
+        takeJavaCrash();
         isTv = detectTv();
 
         Window w = getWindow();
@@ -124,6 +126,24 @@ public class MainActivity extends Activity {
         if (parked != null && parked.startsWith(HOME)) web.loadUrl(parked);
         else if (state != null) web.restoreState(state);
         else web.loadUrl(start);
+    }
+
+    // A crash the last run left behind: kept for the page to report, and if it came within 30 seconds of the player opening (or is in the player or
+    // its libraries) the Kino Player is switched off on this device, so the next Play uses the web player instead of closing the app again
+    private void takeJavaCrash() {
+        android.content.SharedPreferences sp = getSharedPreferences("kino", MODE_PRIVATE);
+        String c = sp.getString("javaCrash", null);
+        if (c == null) return;
+        sp.edit().remove("javaCrash").apply();
+        try {
+            JSONObject j = new JSONObject(c);
+            if (System.currentTimeMillis() - j.optLong("t") > 86400000L) return;
+            javaCrash = c;
+            String s = j.optString("stack");
+            long gap = j.optLong("t") - sp.getLong("playerAt", 0);
+            boolean soon = gap >= 0 && gap < 30000;
+            if (soon || s.contains("PlayerActivity") || s.contains("androidx.media3")) sp.edit().putBoolean("playerBroken", true).apply();
+        } catch (Exception ignored) { }
     }
 
     private boolean detectTv() {
@@ -393,11 +413,14 @@ public class MainActivity extends Activity {
 
     private void hideSystemBars() {
         if (Build.VERSION.SDK_INT >= 30) {
-            WindowInsetsController c = getWindow().getInsetsController();
-            if (c != null) {
-                c.hide(WindowInsets.Type.systemBars());
-                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-            }
+            try {
+                getWindow().getDecorView();  // the window's controls only exist once its decor view does (see PlayerActivity.hideBars)
+                WindowInsetsController c = getWindow().getInsetsController();
+                if (c != null) {
+                    c.hide(WindowInsets.Type.systemBars());
+                    c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                }
+            } catch (RuntimeException ignored) { }
         } else {
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
@@ -573,6 +596,8 @@ public class MainActivity extends Activity {
                 if (System.currentTimeMillis() - playerOpened < 2500) return;
                 playerOpened = System.currentTimeMillis();
                 Intent i = new Intent(MainActivity.this, PlayerActivity.class).putExtra(PlayerActivity.EXTRA, json);
+                // When the player was opened, so a crash soon after can be put down to it
+                getSharedPreferences("kino", MODE_PRIVATE).edit().putLong("playerAt", System.currentTimeMillis()).commit();
                 startActivityForResult(i, PLAYER_REQUEST);
                 // On low memory tvs the page behind the player is let go while the video plays, it's the biggest
                 // thing in memory and android kills it (or the player) when both are there. It comes back after
@@ -583,6 +608,24 @@ public class MainActivity extends Activity {
                     }
                 }, 1500);
             });
+        }
+
+        // What crashed the app last time, once (the page tells the server), and whether the player crashed on this device: then videos use the web player
+        @JavascriptInterface
+        public String javaCrash() {
+            String c = javaCrash;
+            javaCrash = null;
+            return c;
+        }
+
+        @JavascriptInterface
+        public boolean playerBroken() {
+            return getSharedPreferences("kino", MODE_PRIVATE).getBoolean("playerBroken", false);
+        }
+
+        @JavascriptInterface
+        public void resetPlayer() {
+            getSharedPreferences("kino", MODE_PRIVATE).edit().putBoolean("playerBroken", false).apply();
         }
 
         @JavascriptInterface

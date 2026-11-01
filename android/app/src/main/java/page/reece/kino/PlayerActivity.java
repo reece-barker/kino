@@ -107,6 +107,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        CrashLog.install(this);
         try {
             info = new JSONObject(getIntent().getStringExtra(EXTRA));
         } catch (Exception e) {

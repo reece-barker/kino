@@ -1562,7 +1562,7 @@
     app.innerHTML = topbar(kind === "movie" ? "movies" : "shows") + `<main class="page">
       <h1 class="large-title">${kind === "movie" ? "Movies" : "TV Shows"}</h1>
       <div class="toolbar">
-        <label class="search">${ic("search")}<span class="sr">Filter</span><input id="q" type="search" placeholder="Filter ${noun}s"></label>
+        <form class="search" id="qForm" action="#" role="search">${ic("search")}<span class="sr">Filter</span><input id="q" type="search" enterkeyhint="search" placeholder="Search ${noun}s"><button class="btn primary small search-go" id="qGo" type="submit">Search</button></form>
         <select class="plain" id="sort" aria-label="Sort"><option value="added">Recently Added</option><option value="name">Name</option><option value="year">Newest</option><option value="old">Oldest</option><option value="rating">Rating</option></select>
         <select class="plain" id="decade" aria-label="Decade"><option value="">Any Year</option>${(first.decades || []).map((d) => `<option value="${d}">${d}s</option>`).join("")}</select>
         <select class="plain" id="minr" aria-label="Rating"><option value="">Any Rating</option><option value="6">6+ on IMDb</option><option value="7">7+ on IMDb</option><option value="8">8+ on IMDb</option></select>
@@ -1620,6 +1620,13 @@
     }));
     let qt;
     $("#q").addEventListener("input", () => { clearTimeout(qt); qt = setTimeout(() => load(true), 300); });
+    // Enter on the keyboard (or OK / play on a TV remote) and the Search button both search straight away and put the keyboard away
+    $("#qForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      clearTimeout(qt);
+      $("#q").blur();
+      load(true).then(() => { if (TV) { const f = $("#grid a.tile"); if (f) f.focus({ preventScroll: true }); } });
+    });
     ["sort", "decade", "minr", "src"].forEach((id) => $("#" + id) && $("#" + id).addEventListener("input", () => load(true)));
     put(first, true);
   }

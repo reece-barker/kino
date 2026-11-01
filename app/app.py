@@ -2126,7 +2126,7 @@ def kids_profile(pid):
 
 def all_summaries(pid):
     wm, rm = watch_map(pid), rating_map(pid)
-    out = [title_summary(t, meta_light(t), wm, rm) for t in LIB["titles"].values()]
+    out = drop_lib_dupes([title_summary(t, meta_light(t), wm, rm) for t in LIB["titles"].values()])
     if kids_profile(pid):
         out = [s for s in out if kids_ok(s["genres"], kid_key(s.get("imdb"), s["id"]))]
     return out, wm, rm
@@ -2240,7 +2240,7 @@ async def continue_hide(request: Request, p=Depends(current_profile)):
 @app.get("/api/library")
 async def library(p=Depends(current_profile)):
     summ, wm, rm = all_summaries(p["id"])
-    pool = addon_pool(p["id"], lib_by_meta_id(summ))
+    pool = addon_pool(p["id"], lib_by_meta_id(summ), summ)
     if p.get("kids"):
         pool = [s for s in pool if kids_ok(s["genres"], s["imdb"])]
     summ = summ + pool
@@ -2432,7 +2432,7 @@ async def home(request: Request, p=Depends(current_profile)):
     hero = (hero_pool or [s for s in recent if s["background"]] or recent)[:5]
 
     # Titles from addons that can actually play something get mixed into the main shelves with the library
-    pool = addon_pool(p["id"], lib_by_meta_id(summ))
+    pool = addon_pool(p["id"], lib_by_meta_id(summ), summ)
     if p.get("kids"):
         pool = [s for s in pool if kids_ok(s["genres"], s["imdb"])]
     for s in pool:
@@ -2618,26 +2618,63 @@ async def shelf_more(id: str, skip: int = 0, p=Depends(current_profile)):
     return {"items": items, "next": skip + take if skip + take < len(full) else None}
 
 
+def dup_name(n):
+    """A title's name for comparing: no (year) at the end, no The or A at the front, no punctuation"""
+    n = re.sub(r"\(\s*(?:19|20)\d\d\s*\)\s*$", "", str(n or "")).strip()
+    return re.sub(r"^(?:the|a|an)\s+", "", norm(n))
+
+
 def dup_key(t):
     """The same film from two addons can come with two different ids (an imdb id from one, another kind of id from the next), so a title also counts
-    as a copy when the name and the year match. Without a year it is only ever matched by its id"""
+    as a copy when the name and the year match. None when the name or the year isn't known"""
     y = str(t.get("releaseInfo") or t.get("year") or "")[:4]
-    n = norm(t.get("name") or "")
+    n = dup_name(t.get("name"))
     return f"{t.get('kind')}|{n}|{y}" if n and y.isdigit() else None
 
 
-def drop_dupes(items, seen=None):
-    """items without the ones that match an earlier one (or one in seen, which is added to)"""
-    seen = seen if seen is not None else set()
-    out = []
-    for t in items:
+class DupSet:
+    """What has been seen already, by name and year. A title with no year counts as a copy of anything with the same name that has one"""
+    def __init__(self, items=()):
+        self.keys, self.names = set(), set()
+        for t in items:
+            self.add(t)
+
+    def add(self, t):
         k = dup_key(t)
-        if k and k in seen:
-            continue
         if k:
-            seen.add(k)
-        out.append(t)
-    return out
+            self.keys.add(k)
+            self.names.add(k.rsplit("|", 1)[0])
+
+    def has(self, t):
+        k = dup_key(t)
+        if k:
+            return k in self.keys
+        n = dup_name(t.get("name"))
+        return bool(n and f"{t.get('kind')}|{n}" in self.names)
+
+    def take(self, t):
+        """True when t is new (and remembers it)"""
+        if self.has(t):
+            return False
+        self.add(t)
+        return True
+
+
+def drop_dupes(items, seen=None):
+    """items without the ones that match an earlier one (or one in seen, a DupSet, which is added to)"""
+    seen = seen if seen is not None else DupSet()
+    return [t for t in items if seen.take(t)]
+
+
+def drop_lib_dupes(out):
+    """Two library titles that turned out to be the same film or show (the same imdb id: a name written two ways, one folder named differently) show
+    once, as the one with the most files (then the most recently watched)"""
+    best = {}
+    for s_ in out:
+        k = (s_.get("kind"), s_.get("imdb")) if s_.get("imdb") else None
+        if k and (k not in best or (s_.get("count") or 0, s_.get("last_activity") or 0) > (best[k].get("count") or 0, best[k].get("last_activity") or 0)):
+            best[k] = s_
+    return [s_ for s_ in out if not s_.get("imdb") or best[(s_.get("kind"), s_["imdb"])] is s_]
 
 
 async def browse_list(p, kind, skip=0, limit=60, genres=(), decade=0, minr=0.0, src="", sort="added", q=""):
@@ -2670,7 +2707,28 @@ async def browse_list(p, kind, skip=0, limit=60, genres=(), decade=0, minr=0.0, 
     lib.sort(key=key)
     ext, done = [], True
     need = skip + limit - len(lib)
-    if src != "lib" and need > 0:
+    if src != "lib" and qn:
+        # Typing in the filter box asks the addons' own search, like the main search does, so titles that aren't in the catalogs' first pages turn up
+        try:
+            hits = await asyncio.wait_for(addon_search(kind, q), 9)
+        except asyncio.TimeoutError:
+            hits = []
+        seen_t = DupSet(s for s in summ if s["kind"] == kind)
+        seen = set(have) | {s.get("imdb") for s in lib} | empty_ids()
+        found = []
+        for a, c, m in hits:
+            if not m.get("id") or m["id"] in seen:
+                continue
+            seen.add(m["id"])
+            t = ext_preview(m, c["type"])
+            if t["kind"] != kind or (p.get("kids") and not kids_ok(t["genres"], t["imdb"])) or not keep(t):
+                continue
+            if seen_t.take(t):
+                found.append(t)
+        # Best match first (the addons list their own results most popular first, that order is kept inside the same score)
+        found.sort(key=(lambda t: -name_score(q, t["name"])) if sort == "added" else key)
+        ext, done = found, True
+    elif src != "lib" and need > 0:
         cats = [(a, c) for a, c in home_catalogs() if c.get("type") == kind or (kind == "series" and c.get("type") == "anime")]
         g0 = genres[0] if genres else None
         if g0:
@@ -2679,7 +2737,7 @@ async def browse_list(p, kind, skip=0, limit=60, genres=(), decade=0, minr=0.0, 
         offs = {i: 0 for i in range(len(cats))}
         live = set(offs)
         seen = set(have) | {s.get("imdb") for s in lib} | empty_ids()
-        seen_t = {k for k in (dup_key(s) for s in summ if s["kind"] == kind) if k}  # also what the library already has, by name and year
+        seen_t = DupSet(s for s in summ if s["kind"] == kind)  # also what the library already has, by name and year
         rounds = 0
         while live and len(ext) < need and rounds < 40:
             rounds += 1
@@ -2703,12 +2761,7 @@ async def browse_list(p, kind, skip=0, limit=60, genres=(), decade=0, minr=0.0, 
                         continue
                     if p.get("kids") and not kids_ok(t["genres"], t["imdb"]):
                         continue
-                    if keep(t, g0):
-                        k = dup_key(t)
-                        if k and k in seen_t:
-                            continue
-                        if k:
-                            seen_t.add(k)
+                    if keep(t, g0) and seen_t.take(t):
                         ext.append(t)
         done = not live
         if sort != "added":
@@ -2767,10 +2820,11 @@ def family_liked(p, summ):
     return out
 
 
-def addon_pool(pid, have):
+def addon_pool(pid, have, lib=()):
     """Catalog titles from addons that have streams, shaped like library titles. added is when Kino first saw them"""
     out, ids = {}, []
     empty = empty_ids()
+    dups = DupSet(lib)
     for a, c in home_catalogs():
         if c.get("type") not in ("movie", "series"):
             continue
@@ -2778,7 +2832,10 @@ def addon_pool(pid, have):
             mid = isinstance(m, dict) and m.get("id")
             if not mid or mid in have or mid in out or mid in empty:
                 continue
-            out[mid] = ext_preview(m, c["type"])
+            t = ext_preview(m, c["type"])
+            if not dups.take(t):
+                continue
+            out[mid] = t
             ids.append((mid, out[mid]["kind"]))
     if not out:
         return []
@@ -3254,7 +3311,7 @@ async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
             hits = await asyncio.wait_for(addon_search(None, q, videos=bool(videos)), timeout=27 if videos else 9)
         except asyncio.TimeoutError:
             hits = []
-        seen, rank, seen_t = {}, {}, {k for k in (dup_key(s) for s in summ) if k}
+        seen, rank, seen_t = {}, {}, DupSet(summ)
         for a, c, m in hits:
             mid = m.get("id")
             if not mid or mid in have or (mid in empty and not video_type(c.get("type"))):
@@ -3274,14 +3331,12 @@ async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
                 seen[mid]["score"] = max(seen[mid]["score"], sc)
                 continue
             # The same film under another id (or one the library has) counts once
-            k = dup_key(item) if not videos else None
-            if k and k in seen_t:
-                other = next((x for x in seen.values() if dup_key(x) == k), None)
+            if not videos and not seen_t.take(item):
+                k = dup_key(item)
+                other = next((x for x in seen.values() if (dup_key(x) == k if k else dup_name(x.get("name")) == dup_name(item.get("name")) and x.get("kind") == item.get("kind"))), None)
                 if other:
                     other["score"] = max(other["score"], sc)
                 continue
-            if k:
-                seen_t.add(k)
             item["score"] = round(sc, 2)
             seen[mid] = item
         external = sorted(seen.values(), key=lambda x: x["score"], reverse=True)
@@ -6161,7 +6216,7 @@ async def search_start(p=Depends(current_profile)):
     summ, wm, _ = all_summaries(p["id"])
     rows = db().q("SELECT * FROM search_recent WHERE profile_id = ? ORDER BY at DESC", (p["id"],))
     recent = resolve_saved(p, rows, summ)
-    pool = addon_pool(p["id"], lib_by_meta_id(summ))
+    pool = addon_pool(p["id"], lib_by_meta_id(summ), summ)
     if p.get("kids"):
         pool = [s for s in pool if kids_ok(s["genres"], s["imdb"])]
     explore = [s for s in summ if s["my_rating"] != -1] + pool

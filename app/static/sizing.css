@@ -61,3 +61,11 @@ body.tv .cast a, body.tv .hero-meta span, body.tv .toolbar .secondary, body.tv .
 body.tv h4, body.tv .detail-body p, body.tv .set-row > span, body.tv .set-row b { font-size: 16px; }
 body.tv .theme-pick button, body.tv .theme-pick span, body.tv .mono { font-size: 14px; }
 body.tv .player.live .player-logo { height: 56px; max-width: 190px; }
+
+/* Moving the selection along a row of pills or cards leaves a gutter at the end instead of putting the last one flush against the edge of the screen
+   (a TV crops the very edge, so the last pill was partly cut off) */
+.chips, .row { scroll-padding-inline: var(--gutter); }
+body.tv .chips, body.tv .row { scroll-padding-inline: max(var(--gutter), 5vw); }
+
+/* The filter box next to the Search button is as tall as the button */
+.toolbar .search { min-height: 44px; }

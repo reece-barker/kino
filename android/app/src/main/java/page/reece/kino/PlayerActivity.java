@@ -78,6 +78,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     // playback state
     private Engine eng;
+    private boolean liveTc;
     private boolean hls, triedHls, ended, introSkipped, audioPicked, errorShown, leaving, loading = true;
     private double offset;        // where the server's converted stream starts in the film, seconds
     private String sid;           // the server's converting session
@@ -822,6 +823,16 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onTracks() {
+        // A channel whose sound this TV cant play (ac3 or eac3 on a lot of sticks) plays the picture with no sound. The server repackages it with
+        // aac sound, once. (A film is converted in a different way, that doesnt work for a channel and used to end in the error box)
+        if (live) {
+            if (eng instanceof ExoEngine && !liveTc && ((ExoEngine) eng).noPlayableAudio()) {
+                liveTc = true;
+                relaunchLoading("Fixing the sound for this channel");
+                retuneLive();
+            }
+            return;
+        }
         boolean canConvert = !info.optBoolean("isStream") || info.optBoolean("torbox");
         if (eng instanceof ExoEngine && !hls && !triedHls && ((ExoEngine) eng).noPlayableAudio() && !canConvert && sourceCanMoveOn()) {
             sourceFailed("no sound this TV can play");
@@ -1245,7 +1256,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     private void retuneLive() {
         h.removeCallbacks(liveStall);
-        eng.open(base + "/api/live/" + fid + "/index.m3u8", true, -1, new ArrayList<>());
+        eng.open(base + "/api/live/" + fid + "/index.m3u8" + (liveTc ? "?tc=1" : ""), true, -1, new ArrayList<>());
     }
 
     private void switchChannel(int d) {
@@ -1254,6 +1265,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         JSONObject ch = liveList.optJSONObject(liveIdx);
         if (ch == null) return;
         fid = ch.optString("id");
+        liveTc = false;
         title.setText(ch.optString("name"));
         plName.setText(ch.optString("name"));
         showLogo(ch.optString("logo"));

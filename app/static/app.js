@@ -955,7 +955,7 @@
       ? `<img loading="lazy" decoding="async" src="${img(t.poster, 0, PW())}" alt="${esc(t.name)}" data-fallback="ph">`
       : `<div class="ph" style="--h:${hue(t.name)}">${esc(t.name)}</div>`;
     const sub0 = t.family ? t.family : t.external ? t.releaseInfo || (t.kind === "video" ? "Video" : t.kind === "series" ? "TV Show" : "Movie")
-      : t.kind === "series" ? `${t.count} episode${t.count === 1 ? "" : "s"}` : t.releaseInfo || "";
+      : t.kind === "series" ? (TV ? `${t.count} ep${t.count === 1 ? "" : "s"}` : `${t.count} episode${t.count === 1 ? "" : "s"}`) : t.releaseInfo || "";
     const rate = !t.family && Number(t.rating) > 0 ? `★ ${Number(t.rating).toFixed(1)}` : "";  // the IMDb score next to the year
     const sub = [sub0, rate].filter(Boolean).join(" · ");
     const mark = (t.watched ? `<span class="tile-check" title="Watched">${ic("check")}</span>` : "") + (t.family ? `<span class="tile-love ${t.loved ? "loved" : ""}" title="${esc(t.family)}">${ic(t.loved ? "love" : "up")}</span>` : "");
@@ -2259,6 +2259,17 @@
     catch (e) { toast(e.message, 5000); }
   }
 
+  // Thumbs for a title from an addon, the same three buttons as a library title has. Rated titles show up in Home's Loved by the Family row
+  const xRateHtml = (t) => (t.rate_key ? `<span class="rate-group" role="group" aria-label="Rate this">${[[-1, "down", "Not for me"], [1, "up", "I like this"], [2, "love", "Love this"]].map(([v, icon, label]) =>
+    `<button class="round-btn ${t.my_rating === v ? "on" : ""}" data-xrate="${v}" aria-pressed="${t.my_rating === v}" aria-label="${label}" title="${label}">${ic(icon)}</button>`).join("")}</span>` : "");
+  const wireXRate = (box, t) => $$("[data-xrate]", box).forEach((b) => (b.onclick = async () => {
+    const v = Number(b.dataset.xrate), nv = t.my_rating === v ? 0 : v;
+    try { await api("/api/rate", { title_id: t.rate_key, value: nv }); } catch (e) { toast(e.message, 4000); return; }
+    t.my_rating = nv;
+    $$("[data-xrate]", box).forEach((x) => { const on = Number(x.dataset.xrate) === nv; x.classList.toggle("on", on); x.setAttribute("aria-pressed", on); });
+    toast(nv === 2 ? "Glad you love it, the family will see it in Loved by the Family" : nv === 1 ? "Thanks, we'll show more like this" : nv === -1 ? "Got it, we'll show less like this" : "Rating removed");
+  }));
+
   // Public domain copies from addons, the server only hands back ones that are actually on archive.org
   async function drawStreams(kind, id, t, ep, got) {
     const box = $("#pdBox");
@@ -2282,8 +2293,8 @@
     const lb = listBtn(t.in_list);
     // Not out yet: whatever is on offer for it is fake, so nothing is shown to play
     if (r.upcoming) {
-      box.innerHTML = `<div class="actions">${lb}</div><div class="not-lib glass" style="margin-top:14px">${ic("info")}<span>Not out yet, comes out on ${esc(dayOf(r.upcoming))}</span></div>`;
-      wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box);
+      box.innerHTML = `<div class="actions">${lb}${xRateHtml(t)}</div><div class="not-lib glass" style="margin-top:14px">${ic("info")}<span>Not out yet, comes out on ${esc(dayOf(r.upcoming))}</span></div>`;
+      wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box); wireXRate(box, t);
       return;
     }
     if (!r.streams.length) {
@@ -2294,8 +2305,8 @@
         else why = r.report.map((x) => x.error ? `${x.addon} ${x.error}.` : !x.found ? `${x.addon} found nothing for this title.`
           : `${x.addon} found ${x.found}, but none could be used${x.other.length ? ` (${x.other.join(", ")})` : ""}.`).join(" ");
       }
-      box.innerHTML = `<div class="actions">${lb}</div>` + none + (why ? `<div class="note pd-note">${ic("info")} ${esc(why)}</div>` : "");
-      wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box);
+      box.innerHTML = `<div class="actions">${lb}${xRateHtml(t)}</div>` + none + (why ? `<div class="note pd-note">${ic("info")} ${esc(why)}</div>` : "");
+      wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box); wireXRate(box, t);
       if (TV && (document.activeElement === document.body || document.activeElement === AUTO_FOCUS)) { const lbb = $("#listBtn"); if (lbb) lbb.focus({ preventScroll: true }); }
       return;
     }
@@ -2307,6 +2318,7 @@
         <button class="btn primary" id="pdPlay">${ic("play")} ${res ? "Resume" : "Play"}${ep ? " " + esc(epLabel(ep.season, ep.episode)) : ""}</button>
         ${r.streams.length > 1 ? `<button class="btn secondary" id="pdMore">${r.streams.length} Sources</button>` : ""}
         ${lb}
+        ${xRateHtml(t)}
         ${isAdmin() && (kind === "movie" || kind === "series") ? `<button class="round-btn" id="pdSave" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}
       </div>
       ${r.too_new ? `<div class="note pd-note">${ic("info")} ${esc(tooNewText(r.too_new, dayOf))}</div>` : r.fresh ? `<div class="note pd-note">${ic("info")} This only just came out. Some sources can be camera recordings or fakes until it is properly released, the better ones are tried first.</div>` : ""}
@@ -2320,7 +2332,7 @@
       if (m) m.textContent = `${r2.streams.length} Sources`; else if (r2.streams.length > 1) drawStreams(kind, id, t, ep, r2);
     };
     if (grabFocus) $("#pdPlay").focus({ preventScroll: true });
-    wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box);
+    wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box); wireXRate(box, t);
     const more = $("#pdMore");
     if (more) more.onclick = () => {
       const sh = sheet(`<div class="src-head"><div><h2>Sources</h2><p class="secondary">${esc(t.name)}${ep ? ` · ${esc(epLabel(ep.season, ep.episode))}` : ""}</p></div>
@@ -4990,7 +5002,11 @@
     const d = dirs[e.key];
     if (!d || e.altKey || e.ctrlKey || e.metaKey) return;
     const cur = document.activeElement;
-    if (cur && cur.matches("input[type=search], input[type=text], input:not([type])") && d[0] && cur.value) return;  // moving the text cursor
+    // Moving the text cursor, until it reaches the end of the text (right) or the start (left): then the remote moves on to the buttons next to the box
+    if (cur && cur.matches("input[type=search], input[type=text], input:not([type])") && d[0] && cur.value) {
+      const at = cur.selectionStart, to = cur.selectionEnd;
+      if (at == null || (d[0] > 0 ? to < cur.value.length : at > 0)) return;
+    }
     if (cur && cur.id === "scrub" && d[0]) return;   // the timeline seeks with left and right
     const playerOpen = !pl.el.hidden;
     // Watching live tv with the buttons hidden: left and right change channel (the focus sits on a hidden button so the
@@ -5219,7 +5235,7 @@
     const offer = () => {
       const can = typeof window.KinoAndroid.installUpdate === "function";
       const s = sheet(`<div class="sheet-icon">${ic("download")}</div><h2>Kino ${esc(r.name)} is Ready</h2>
-        <p class="secondary">${can ? "There's a newer version of the app. It downloads in a few seconds, then Android asks you to install it." : `There's a newer version of the app. Open <b class="mono">${esc(location.host)}/app</b> in the Downloader app to install it, after that updates install from here.`}</p>
+        <p class="secondary">${can ? "There's a newer version of the app. It downloads in a few seconds, then Android asks you to install it. The first time it may ask you to allow Kino to install apps: turn that on, then press Back." : `There's a newer version of the app. Open <b class="mono">${esc(location.host)}/app</b> in the Downloader app to install it, after that updates install from here.`}</p>
         <div class="upd-bar" hidden><i></i></div><div class="form-err" id="updErr" role="alert"></div>
         <div class="actions end"><button class="btn secondary small" data-close id="updLater">Later</button>${can ? `<button class="btn primary small" id="updGo">Update Now</button>` : ""}</div>`);
       $("#updLater", s.el).addEventListener("click", () => { try { localStorage.setItem("kino-update-later", String(r.code)); localStorage.setItem("kino-update-at", String(Date.now())); } catch (_) {} });

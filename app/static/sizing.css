@@ -80,3 +80,7 @@ body.tv .toolbar .search { height: 44px; }
    (a video behind a clipped, rounded box can come up black on some TVs) */
 body.tv .trailer-view .tr-x { top: 27px; left: 48px; }
 body.tv .tr-box { border-radius: 0; overflow: visible; box-shadow: none; }
+
+/* A remote moves a row card by card itself, so a TV's rows don't snap: the snapping pulled the row back after every move and the card you were on ended up
+   22 px from the edge of the screen (inside what a TV crops). Without it the end gutter above is kept */
+body.tv .row { scroll-snap-type: none; }

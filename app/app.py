@@ -2589,7 +2589,7 @@ async def shelf_more(id: str, skip: int = 0, p=Depends(current_profile)):
             return {"items": [], "next": skip, "retry": True}
         summ, _, _ = all_summaries(p["id"])
         have = lib_by_meta_id(summ)
-        items = drop_empty([have.get(m["id"]) or ext_preview(m, c["type"]) for m in metas])
+        items = drop_dupes(drop_empty([have.get(m["id"]) or ext_preview(m, c["type"]) for m in metas]))
         if p.get("kids"):
             items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
         return {"items": items, "next": skip + len(metas) if metas else None}
@@ -2616,6 +2616,28 @@ async def shelf_more(id: str, skip: int = 0, p=Depends(current_profile)):
     full = hit[1].get(id, []) if hit else []
     items = full[skip:skip + take]
     return {"items": items, "next": skip + take if skip + take < len(full) else None}
+
+
+def dup_key(t):
+    """The same film from two addons can come with two different ids (an imdb id from one, another kind of id from the next), so a title also counts
+    as a copy when the name and the year match. Without a year it is only ever matched by its id"""
+    y = str(t.get("releaseInfo") or t.get("year") or "")[:4]
+    n = norm(t.get("name") or "")
+    return f"{t.get('kind')}|{n}|{y}" if n and y.isdigit() else None
+
+
+def drop_dupes(items, seen=None):
+    """items without the ones that match an earlier one (or one in seen, which is added to)"""
+    seen = seen if seen is not None else set()
+    out = []
+    for t in items:
+        k = dup_key(t)
+        if k and k in seen:
+            continue
+        if k:
+            seen.add(k)
+        out.append(t)
+    return out
 
 
 async def browse_list(p, kind, skip=0, limit=60, genres=(), decade=0, minr=0.0, src="", sort="added", q=""):
@@ -2657,6 +2679,7 @@ async def browse_list(p, kind, skip=0, limit=60, genres=(), decade=0, minr=0.0, 
         offs = {i: 0 for i in range(len(cats))}
         live = set(offs)
         seen = set(have) | {s.get("imdb") for s in lib} | empty_ids()
+        seen_t = {k for k in (dup_key(s) for s in summ if s["kind"] == kind) if k}  # also what the library already has, by name and year
         rounds = 0
         while live and len(ext) < need and rounds < 40:
             rounds += 1
@@ -2681,6 +2704,11 @@ async def browse_list(p, kind, skip=0, limit=60, genres=(), decade=0, minr=0.0, 
                     if p.get("kids") and not kids_ok(t["genres"], t["imdb"]):
                         continue
                     if keep(t, g0):
+                        k = dup_key(t)
+                        if k and k in seen_t:
+                            continue
+                        if k:
+                            seen_t.add(k)
                         ext.append(t)
         done = not live
         if sort != "added":
@@ -3042,7 +3070,7 @@ def addon_shelves(summ, kids=False):
             if catalog_url(a, c) not in CAT_ERR or "too long" in CAT_ERR.get(catalog_url(a, c), ""):
                 per_addon.setdefault(a["id"], []).append({**row, "items": [], "pending": True})
             continue
-        items = drop_empty([have.get(m.get("id")) or ext_preview(m, c["type"]) for m in metas[:24] if isinstance(m, dict) and m.get("id")], empty)
+        items = drop_dupes(drop_empty([have.get(m.get("id")) or ext_preview(m, c["type"]) for m in metas[:24] if isinstance(m, dict) and m.get("id")], empty))
         if kids:
             items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
         if len(items) >= 3:
@@ -3226,7 +3254,7 @@ async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
             hits = await asyncio.wait_for(addon_search(None, q, videos=bool(videos)), timeout=27 if videos else 9)
         except asyncio.TimeoutError:
             hits = []
-        seen, rank = {}, {}
+        seen, rank, seen_t = {}, {}, {k for k in (dup_key(s) for s in summ) if k}
         for a, c, m in hits:
             mid = m.get("id")
             if not mid or mid in have or (mid in empty and not video_type(c.get("type"))):
@@ -3245,6 +3273,15 @@ async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
                 # Found by more than one addon, keeps the best score
                 seen[mid]["score"] = max(seen[mid]["score"], sc)
                 continue
+            # The same film under another id (or one the library has) counts once
+            k = dup_key(item) if not videos else None
+            if k and k in seen_t:
+                other = next((x for x in seen.values() if dup_key(x) == k), None)
+                if other:
+                    other["score"] = max(other["score"], sc)
+                continue
+            if k:
+                seen_t.add(k)
             item["score"] = round(sc, 2)
             seen[mid] = item
         external = sorted(seen.values(), key=lambda x: x["score"], reverse=True)

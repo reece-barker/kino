@@ -1681,7 +1681,8 @@
     const start = safeDecode(location.hash.split("?q=")[1] || "");
     app.innerHTML = topbar("search") + `<main class="page">
       <form class="search big" id="sForm" role="search" action="#">${ic("search")}<label class="sr" for="sq">Search</label><input id="sq" type="search" enterkeyhint="search" placeholder="Films, shows, actors, directors and more" value="${esc(start)}" autocomplete="off">
-        <button class="mic-btn" id="micBtn" type="button" aria-label="Search by Voice" title="Search by Voice" hidden>${ic("mic")}</button></form>
+        <button class="mic-btn" id="micBtn" type="button" aria-label="Search by Voice" title="Search by Voice" hidden>${ic("mic")}</button>
+        <button class="btn primary small search-go" id="sGo" type="submit">Search</button></form>
       <div id="sres"></div></main>`;
     wireTopbar();
     const input = $("#sq");

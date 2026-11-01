@@ -4818,6 +4818,36 @@ def stream_row(sid):
     return dict(rows[0])
 
 
+async def soon(aw, secs, default):
+    """The answer of aw if it comes within secs, else default. aw keeps going in the background, so what it learns is remembered for next time"""
+    t = asyncio.ensure_future(aw)
+    t.add_done_callback(lambda f: f.cancelled() or f.exception())
+    done, _ = await asyncio.wait({t}, timeout=secs)
+    return t.result() if done and not t.cancelled() and t.exception() is None else default
+
+
+async def collect_streams(rows, one, quick):
+    """Every addon's answer. The full list waits for all of them. The quick look (Play on the title page) doesn't wait for the slowest: once something
+    has come in (15 sources: a moment, 3 sources: just over a second, anything: four seconds) it goes, and the addons that are still working are
+    reported as slow so the page asks again for the full list"""
+    tasks = [asyncio.ensure_future(one(a)) for a in rows]
+    if not quick:
+        return list(await asyncio.gather(*tasks))
+    start, got, pending = time.time(), [], set(tasks)
+    while pending:
+        elapsed, have = time.time() - start, sum(len(g[1]) for g in got)
+        # How long it is worth waiting for the rest: a lot of sources already in hand (0.3s), a few (1.2s), none yet (4s)
+        limit = 0.3 if have >= 15 else 1.2 if have >= 3 else 4
+        if elapsed >= limit and (have or elapsed >= 4):
+            break
+        done, pending = await asyncio.wait(pending, timeout=max(0.05, limit - elapsed), return_when=asyncio.FIRST_COMPLETED)
+        got += [d.result() for d in done]
+    out = list(got)
+    seen = {g[0]["id"] for g in got}
+    out += [(a, [], "took too long to answer") for a in rows if a["id"] not in seen]
+    return out
+
+
 @app.get("/api/streams/{kind}/{vid:path}")
 async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=Depends(current_profile)):
     if not kind_ok(kind):
@@ -4868,7 +4898,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
     out, dropped, report = [], 0, []
     # Sources are the ones the addons send. TorBox copies are not a source of their own (what TorBox holds comes to the Storage Box through the
     # sync, and then shows as the Library copy)
-    got = [(inline[1], inline[2], None)] if inline else await asyncio.gather(*(one(a) for a in rows))
+    got = [(inline[1], inline[2], None)] if inline else await collect_streams(rows, one, quick)
     for a, streams, err in got:
         rep_ = {"addon": a["m"].get("name"), "found": len(streams), "kept": 0, "other": [], "error": err}
         report.append(rep_)
@@ -4916,7 +4946,10 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         early = {a["m"].get("name") for a in rows if a.get("prio")}
         cand = sorted(out, key=lambda x: (x["addon"] not in early, -(x["seeders"] if x.get("seeders") is not None else -1), -x["height"]))
         todo = [x for x in cand if not probe_cached(x["_url"])][:4]
-        await asyncio.gather(*(probe_source(x["_url"]) for x in todo))
+        # The ones that are asked don't hold the list up: after a second and a half it goes with what it knows, and the asking carries on in the
+        # background so the next look (and the player) has the answers. The quick look doesn't ask at all
+        if todo and not quick:
+            await soon(asyncio.gather(*(probe_source(x["_url"]) for x in todo)), 1.5, None)
         for x in out:
             hit = probe_cached(x["_url"])
             if hit:
@@ -4927,7 +4960,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
     if out and TORBOX_KEY and not inline:
         hs = sorted({x["_hash"] for x in out if x.get("_hash")})
         if hs:
-            cached, prog = await asyncio.gather(tb_cached(hs), tb_progress())
+            cached, prog = await soon(asyncio.gather(tb_cached(hs), tb_progress()), 1.2 if quick else 2.5, ({}, {}))
             for x in out:
                 h = x.get("_hash")
                 if h:

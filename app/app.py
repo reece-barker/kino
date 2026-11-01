@@ -242,6 +242,8 @@ def migrate():
             d.q(f"ALTER TABLE embed_sources ADD COLUMN {c} TEXT")  # where the list is in the JSON and which fields to use
     if "direct" not in [r["name"] for r in d.q("PRAGMA table_info(addons)")]:
         d.q("ALTER TABLE addons ADD COLUMN direct INTEGER DEFAULT 0")  # 1 = viewers' own devices fetch this addon's videos (web player)
+    if "relay" not in [r["name"] for r in d.q("PRAGMA table_info(iptv_lists)")]:
+        d.q("ALTER TABLE iptv_lists ADD COLUMN relay INTEGER DEFAULT 0")  # 1 = its channels play through the UK server (UK_PROXY)
     if "src_prio" not in [r["name"] for r in d.q("PRAGMA table_info(addons)")]:
         d.q("ALTER TABLE addons ADD COLUMN src_prio INTEGER DEFAULT 0")  # 1 = its sources are tried first, 2 next, and so on, 0 = normal
     if "device" not in [r["name"] for r in d.q("PRAGMA table_info(sessions)")]:
@@ -3759,7 +3761,7 @@ def up_stats():
 
 def ac(key="", **kw):
     """An httpx client. With OUTBOUND_IPS it leaves from one of those addresses, picked by key so the same source always uses the same one"""
-    if OUTBOUND_IPS and "transport" not in kw:
+    if OUTBOUND_IPS and "transport" not in kw and not kw.get("proxy"):
         ip = OUTBOUND_IPS[int(hashlib.sha1(str(key).encode()).hexdigest(), 16) % len(OUTBOUND_IPS)]
         kw["transport"] = httpx.AsyncHTTPTransport(local_address=ip)
     return httpx.AsyncClient(**kw)
@@ -3795,6 +3797,11 @@ async def check_host(host):
 
 # Only these protocols for anything ffmpeg gets a url for, so a hostile playlist cant make it read local files or other schemes
 FF_NET = ["-protocol_whitelist", "http,https,tcp,tls,crypto"]
+
+
+def ffnet(proxy=None):
+    """FF_NET, and through the UK server when there is one (ffmpeg needs httpproxy in its list for that)"""
+    return ["-http_proxy", proxy, "-protocol_whitelist", "http,https,tcp,tls,crypto,httpproxy"] if proxy else FF_NET
 
 
 async def pinned_request(client, method, url, headers=None, local=False):
@@ -6722,6 +6729,20 @@ def keep_tvg(c, old, tags):
 
 # ---- Pluto TV (free, ad supported live channels). Its own public apps use the same calls: one start call gives a token and the stream settings,
 # then the channel list, categories and guide are plain json. The UK channels only play from a UK address, so a server elsewhere says so
+# A UK server for what only plays from a UK address (Pluto TV UK, the geo-blocked UK channels): a small proxy there that only this server may use.
+# UK_PROXY=http://user:password@address:3128. Channels of a playlist with the relay switched on, and all of Pluto, go out that way. The password
+# never leaves this server, a channel carries a marker header that is taken off before anything is sent
+UK_PROXY = os.environ.get("UK_PROXY", "").strip()
+RELAY_KEY = "X-Kino-Relay"
+
+
+def relay_split(headers):
+    """(headers without the marker, the proxy to use or None)"""
+    h = dict(headers or {})
+    on = h.pop(RELAY_KEY, None) is not None
+    return h, (UK_PROXY if on and UK_PROXY else None)
+
+
 PLUTO = {"s": {}, "lock": {}}  # key -> (time, session). A session can only watch one channel at a time, opening another one with it ends the first
 PLUTO_UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"}
 
@@ -6753,7 +6774,7 @@ async def pluto_session(key="", force=False):
         q = {"appName": "web", "appVersion": "9.0.0", "deviceVersion": "130.0.0", "deviceModel": "web", "deviceMake": "chrome", "deviceType": "web",
              "clientID": pluto_client_id(), "clientModelNumber": "1.0.0", "serverSideAds": "false"}
         try:
-            async with ac("pluto", timeout=20, headers=PLUTO_UA) as c:
+            async with ac("pluto", timeout=20, headers=PLUTO_UA, proxy=UK_PROXY or None) as c:
                 r = await c.get("https://boot.pluto.tv/v4/start", params=q)
             r.raise_for_status()
             j = r.json()
@@ -6775,7 +6796,7 @@ def pluto_url(sess, chid):
 
 
 async def pluto_get(sess, path, **params):
-    async with ac("pluto", timeout=40, headers={**PLUTO_UA, "Authorization": "Bearer " + sess["token"]}) as c:
+    async with ac("pluto", timeout=40, headers={**PLUTO_UA, "Authorization": "Bearer " + sess["token"]}, proxy=UK_PROXY or None) as c:
         r = await c.get(sess["channels"] + path, params=params)
     r.raise_for_status()
     return r.json()
@@ -6905,7 +6926,10 @@ async def check_channel(c, tries=2):
 
 async def probe_channel(c):
     hdr = json.loads(c["headers"]) if c["headers"] else {}
-    local = bool(db().q("SELECT local FROM iptv_lists WHERE id = ?", (c["list_id"],))[0]["local"]) if c["list_id"] else False
+    lst = db().q("SELECT local, relay FROM iptv_lists WHERE id = ?", (c["list_id"],))[0] if c["list_id"] else None
+    local = bool(lst["local"]) if lst else False
+    if lst and lst["relay"] and UK_PROXY:
+        hdr[RELAY_KEY] = "1"
     try:
         cl, r, _ = await asyncio.wait_for(live_open(c["url"], hdr, local), 12)
         try:
@@ -7147,12 +7171,16 @@ async def live_guide(start: float = 0, hours: float = 3, group: str = "", countr
 async def live_source(cid):
     """Where a channel's video actually is: (url, headers, local)"""
     if cid.startswith("c"):
-        r = db().q("SELECT c.*, l.local FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE c.id = ?", (cid,))
+        r = db().q("SELECT c.*, l.local, l.relay FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE c.id = ?", (cid,))
         if not r:
             raise HTTPException(404, "That channel isn't in your playlists anymore")
+        mark = {RELAY_KEY: "1"} if UK_PROXY else {}
         if str(r[0]["url"]).startswith("pluto://"):
-            return pluto_url(await pluto_session(r[0]["url"][8:]), r[0]["url"][8:]), {}, False
-        return r[0]["url"], json.loads(r[0]["headers"]) if r[0]["headers"] else {}, bool(r[0]["local"])
+            return pluto_url(await pluto_session(r[0]["url"][8:]), r[0]["url"][8:]), mark, False
+        hdr = json.loads(r[0]["headers"]) if r[0]["headers"] else {}
+        if r[0]["relay"] and UK_PROXY:
+            hdr[RELAY_KEY] = "1"
+        return r[0]["url"], hdr, bool(r[0]["local"])
     if cid.startswith("t"):
         hit = LIVE_RESOLVED.get(cid)
         if hit and time.time() - hit[0] < 600:
@@ -7207,13 +7235,21 @@ def rewrite_m3u8(text, base, headers, local):
 
 async def live_open(url, headers, local):
     """Opens the source, following redirects, and says if its an HLS playlist"""
-    client = httpx.AsyncClient(timeout=httpx.Timeout(15, read=30), follow_redirects=False, headers={"User-Agent": "Mozilla/5.0 Kino", **headers})
+    headers, proxy = relay_split(headers)
+    client = httpx.AsyncClient(timeout=httpx.Timeout(15, read=30), follow_redirects=False, headers={"User-Agent": "Mozilla/5.0 Kino", **headers}, proxy=proxy)
     try:
         for _ in range(6):
             u = urlparse(url)
             if u.scheme not in ("http", "https"):
                 raise HTTPException(400, "That channel's link isn't http")
-            r = await client.send(await pinned_request(client, "GET", url, local=local), stream=True)
+            if proxy:
+                # The UK server looks the name up itself, so it is only checked here (the connection can't be pinned to an address through a proxy)
+                if not local and not ADDON_ALLOW_PRIVATE:
+                    await check_host(u.hostname)
+                req = client.build_request("GET", url)
+            else:
+                req = await pinned_request(client, "GET", url, local=local)
+            r = await client.send(req, stream=True)
             if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                 await r.aclose()
                 url = urljoin(url, r.headers["location"])
@@ -7353,6 +7389,7 @@ async def live_play_inner(cid: str, request: Request, p):
 
 
 async def live_ffmpeg(url, headers, request, p):
+    headers, proxy = relay_split(headers)
     owner = f"p{p['id']}"
     device = browser_key(request)
     if device.startswith("|"):
@@ -7367,7 +7404,7 @@ async def live_ffmpeg(url, headers, request, p):
     vcodec = None
     try:
         pr = await asyncio.wait_for(asyncio.create_subprocess_exec("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name",
-                                                                   "-of", "csv=p=0", *FF_NET, *(["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())] if headers else []), url,
+                                                                   "-of", "csv=p=0", *ffnet(proxy), *(["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())] if headers else []), url,
                                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL), 3)
         out_, _ = await asyncio.wait_for(pr.communicate(), 10)
         vcodec = out_.decode().strip().split("\n")[0] or None
@@ -7382,9 +7419,7 @@ async def live_ffmpeg(url, headers, request, p):
         args += ["-readrate", "1"]  # real time, a source that sends faster than live (a recording) would run away from the player
     if headers:
         args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-    args += [*FF_NET, "-i", url, "-map", "0:v:0?", "-map", "0:a:0?", *vargs, "-c:a", "aac", "-ac", "2", "-b:a", "160k",
-             # Fills gaps and drops in the channel's sound with silence or trims it, so sound and picture dont drift apart when the source hiccups
-             "-af", "aresample=async=1000:first_pts=0", "-sn", "-dn",
+    args += [*ffnet(proxy), "-i", url, "-map", "0:v:0?", "-map", "0:a:0?", *vargs, "-c:a", "aac", "-ac", "2", "-b:a", "160k", "-sn", "-dn",
              "-f", "hls", "-hls_time", "2", "-hls_list_size", "12", "-hls_flags", "delete_segments+independent_segments+omit_endlist",
              "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", str(out / "seg%05d.m4s"), str(out / "index.m3u8")]
     errlog = open(out / "ffmpeg.log", "wb")
@@ -7452,12 +7487,13 @@ async def live_thumb(cid: str, p=Depends(current_profile)):
     async with LIVE_THUMB_GATE:
         if not (f.exists() and time.time() - f.stat().st_mtime < 90):
             url, headers, local = await live_source(cid)
+            headers, proxy = relay_split(headers)
             if not local:
                 await check_host(urlparse(url).hostname)
             args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-rw_timeout", "8000000"]
             if headers:
                 args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-            args += [*FF_NET, "-i", url, "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "6", str(f) + ".tmp.jpg"]
+            args += [*ffnet(proxy), "-i", url, "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "6", str(f) + ".tmp.jpg"]
             try:
                 proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
                 await asyncio.wait_for(proc.wait(), 15)
@@ -7508,6 +7544,7 @@ def rec_out(r):
 async def rec_start(r):
     try:
         url, headers, local = await live_source(r["cid"])
+        headers, proxy = relay_split(headers)
         if urlparse(url).scheme not in ("http", "https"):
             raise HTTPException(400, "That channel's link isn't http")
         if not local:
@@ -7528,7 +7565,7 @@ async def rec_start(r):
     args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-fflags", "+genpts+discardcorrupt", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
     if headers:
         args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-    args += [*FF_NET, "-i", url, "-t", str(secs), "-map", "0:v:0?", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1000",
+    args += [*ffnet(proxy), "-i", url, "-t", str(secs), "-map", "0:v:0?", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1000",
              "-f", "mp4", "-movflags", "+frag_keyframe+empty_moov+default_base_moof", str(path)]
     errlog = open(HLS_DIR / f"rec{r['id']}.log", "wb") if HLS_DIR.exists() else asyncio.subprocess.DEVNULL
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=errlog)
@@ -7959,7 +7996,7 @@ async def live_admin(admin=Depends(require_admin)):
     return {"lists": [{**dict(r), "good": (stats.get(r["id"]) or {}).get("good") or 0, "bad": (stats.get(r["id"]) or {}).get("bad") or 0,
                        "guided": (stats.get(r["id"]) or {}).get("guided") or 0} for r in rows],
             "guides": [{"name": f"Free guide: {n}", "url": u} for n, u in (("UK", AUTO_GUIDES["uk"]), ("USA", AUTO_GUIDES["us"]), ("France", AUTO_GUIDES["fr"]), ("Germany", AUTO_GUIDES["de"]), ("Canada", AUTO_GUIDES["ca"]), ("Australia", AUTO_GUIDES["au"]))],
-            "embeds": [dict(r) for r in db().q("SELECT * FROM embed_sources ORDER BY id")],
+            "embeds": [dict(r) for r in db().q("SELECT * FROM embed_sources ORDER BY id")], "relay": bool(UK_PROXY),
             "guide_rows": db().q("SELECT COUNT(*) n FROM epg")[0]["n"], "checking": LIVE["checking"]}
 
 
@@ -8008,7 +8045,31 @@ async def live_admin_edit(lid: int, request: Request, admin=Depends(require_admi
     if "epg" in b:
         epg = str(b.get("epg") or "").strip() or None
         db().q("UPDATE iptv_lists SET epg = ?, refreshed = NULL WHERE id = ?", (epg, lid))
+    if "relay" in b:
+        if b["relay"] and not UK_PROXY:
+            raise HTTPException(400, "The UK server isn't set up on this server yet (UK_PROXY)")
+        db().q("UPDATE iptv_lists SET relay = ? WHERE id = ?", (1 if b["relay"] else 0, lid))
+        db().q("UPDATE channels SET checked = NULL WHERE list_id = ?", (lid,))
     return {"ok": True}
+
+
+@app.get("/api/admin/live/relay")
+async def live_relay_test(admin=Depends(require_admin)):
+    """Asks Pluto which country it sees through the UK server (and from this server), so a wrong setup shows up before anything is added"""
+    out = {"configured": bool(UK_PROXY), "relay": None, "direct": None, "error": None}
+    q = {"appName": "web", "appVersion": "9.0.0", "deviceVersion": "130.0.0", "deviceModel": "web", "deviceMake": "chrome", "deviceType": "web",
+         "clientID": pluto_client_id(), "clientModelNumber": "1.0.0", "serverSideAds": "false"}
+    for key, prox in (("direct", None), ("relay", UK_PROXY or None)):
+        if key == "relay" and not prox:
+            continue
+        try:
+            async with ac("pluto", timeout=15, headers=PLUTO_UA, proxy=prox) as c:
+                r = await c.get("https://boot.pluto.tv/v4/start", params=q)
+            out[key] = str((r.json().get("session") or {}).get("countryCode") or "?")
+        except Exception as e:
+            if key == "relay":
+                out["error"] = "Couldn't connect through the UK server: " + type(e).__name__
+    return out
 
 
 @app.delete("/api/admin/live/{lid}")

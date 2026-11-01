@@ -21,9 +21,6 @@ import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
-import androidx.media3.exoplayer.hls.HlsMediaSource;
-import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory;
-import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.ui.AspectRatioFrameLayout;
@@ -122,12 +119,9 @@ class ExoEngine implements Engine {
         // which a slow channel cant keep up with, so it kept stopping to load) and never speeds up or slows down to catch the edge
         if (startMs < 0) b.setLiveConfiguration(new MediaItem.LiveConfiguration.Builder().setTargetOffsetMs(12000).setMinOffsetMs(8000)
                 .setMaxOffsetMs(30000).setMinPlaybackSpeed(1.0f).setMaxPlaybackSpeed(1.0f).build());
-        // Live channels come from IPTV servers that cut the stream anywhere, not at a keyframe. Letting the parser start on any keyframe and find
-        // the frame edges itself gets the picture and sound lined up from the start, instead of drifting or starting black
-        if (startMs < 0) player.setMediaSource(new HlsMediaSource.Factory(http).setAllowChunklessPreparation(true)
-                .setExtractorFactory(new DefaultHlsExtractorFactory(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES | DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS, false))
-                .createMediaSource(b.build()));
-        else player.setMediaItem(b.build(), startMs);
+        // Plain media item on purpose. A hls source that lets the parser start on any keyframe and hunt for frame edges was tried here (for picture and
+        // sound lining up), but a few minutes into a Pluto channel it flicked between loading and playing a few times a second and the picture froze
+        player.setMediaItem(b.build(), startMs);
         player.prepare();
         player.play();
     }

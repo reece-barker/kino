@@ -3443,12 +3443,13 @@
       <div class="list">${r.lists.map((l) => `<div class="addon ${l.enabled ? "" : "off"}">
         <div class="addon-top"><span class="addon-logo">${ic("live")}</span>
           <span class="grow"><b>${esc(l.name)}</b> <span class="secondary">${l.count} channels${l.good || l.bad ? `, ${l.good} working, ${l.bad} not` : ""}, ${l.guided ? `${l.guided} with a guide` : "no guide yet"}</span>
-            <span class="addon-desc secondary">${esc(l.url)}${l.epg ? `<br>Guide: ${esc(l.epg)}` : ""}</span></span>
+            <span class="addon-desc secondary">${esc(l.url.startsWith("pluto://") ? "Free channels from Pluto TV, with its own guide" : l.url)}${l.epg ? `<br>Guide: ${esc(l.epg)}` : ""}</span></span>
           <input type="checkbox" class="switch" data-lon="${l.id}" ${l.enabled ? "checked" : ""} aria-label="Turn ${esc(l.name)} on or off"></div>
         ${l.error ? `<div class="note warn-text">${esc(l.error)}</div>` : ""}
         <div class="addon-foot"><span class="secondary">${l.refreshed ? "Updated " + ago(l.refreshed) : "Loading…"}</span>
           <div class="actions end"><button class="btn secondary small" data-lref="${l.id}">${ic("refresh")} Refresh</button><button class="btn danger small" data-lrm="${l.id}">${ic("trash")} Remove</button></div></div>
       </div>`).join("") || `<div class="secondary" style="padding:8px 0">No playlists yet.</div>`}</div>
+      ${r.lists.some((l) => l.url.startsWith("pluto://")) ? "" : `<div class="addon"><div class="addon-top"><span class="addon-logo">${ic("live")}</span><span class="grow"><b>Pluto TV (UK)</b><span class="addon-desc secondary">About 180 free channels with a guide: films, crime, reality, kids and more. Free and ad supported. Only works if this server is in the UK.</span></span><button class="btn primary small" type="button" id="lvPluto">${ic("plus")} Add</button></div></div>`}
       <form class="live-form" id="liveForm">
         <input id="lvName" placeholder="Name, like UK Freeview" autocomplete="off">
         <input id="lvUrl" placeholder="Playlist link (.m3u)" required spellcheck="false" autocapitalize="none" inputmode="url">
@@ -3509,6 +3510,16 @@
         ME.features = null; SIDE_KEY = "";
         drawLiveAdmin();
       } catch (er) { $("#lvErr").textContent = er.message; go.disabled = false; go.innerHTML = `${ic("plus")} Add Playlist`; }
+    };
+    const pl = $("#lvPluto", box);
+    if (pl) pl.onclick = async () => {
+      pl.disabled = true; pl.textContent = "Adding…";
+      try {
+        const x = await api("/api/admin/live", { url: "pluto://gb" });
+        toast(x.error ? x.error : `${x.count} Pluto TV channels added, checking which work`, 6000);
+        ME.features = null; SIDE_KEY = "";
+        drawLiveAdmin();
+      } catch (er) { toast(er.message, 6000); pl.disabled = false; pl.innerHTML = `${ic("plus")} Add`; }
     };
     $$("[data-lon]", box).forEach((c) => (c.onchange = async () => { await api(`/api/admin/live/${c.dataset.lon}`, { enabled: c.checked }, "PUT").catch(() => {}); ME.features = null; drawLiveAdmin(); }));
     $$("[data-lref]", box).forEach((b) => (b.onclick = async () => { b.disabled = true; try { await api(`/api/admin/live/${b.dataset.lref}/refresh`, {}); toast("Playlist updated"); } catch (er) { toast(er.message, 5000); } drawLiveAdmin(); }));

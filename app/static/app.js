@@ -4928,7 +4928,7 @@
   // ---------------------------------------------------------- android app and tv remotes
   // The android app adds KinoAndroid to the user agent and gives the page a small bridge. On tvs (KinoTV) the
   // remote's arrows move focus around the page like on apple tv, the browser itself cant do that
-  let NAV_T = 0;
+  let NAV_T = 0, NAV_KEY = "", NAV_HELD = false;
   // The last thing that had focus in each row of pills, so coming back to the row lands on it instead of whichever pill is nearest sideways
   const LAST_IN = new WeakMap();
   document.addEventListener("focusin", (e) => { const g = e.target.closest && e.target.closest(".chips"); if (g) LAST_IN.set(g, e.target); });
@@ -4945,13 +4945,18 @@
     if (playerOpen && d[0] && pl.info && pl.info.live && pl.el.classList.contains("idle") && !$(".player .menu:not([hidden])")) { e.preventDefault(); e.stopImmediatePropagation(); switchLive(d[0]); return; }
     if (playerOpen && (!cur || !pl.el.contains(cur) || cur === pl.v) && d[0]) return;  // left and right seek
     // Holding a button on a slow tv sends keys faster than it can work out where focus goes, so the extra ones are dropped
-    if (e.repeat) {
-      const now = performance.now();
+    // A held button is not always flagged as a repeat: lots of remotes (infrared, bluetooth) send it as a stream of separate presses. So the same
+    // direction again within a third of a second counts as held, whatever the flag says
+    const now = performance.now();
+    const held = e.repeat || (e.key === NAV_KEY && now - NAV_T < 350);
+    NAV_KEY = e.key;
+    if (held) {
       // A held key that queued up behind slow work (the keys are old by the time they get here) is dropped, or the selection kept running on after
-      // the button was let go
+      // the button was let go, and they are never closer than 80 ms
       if (now - e.timeStamp > 150 || now - NAV_T < 80) { e.preventDefault(); return; }
-      NAV_T = now;
     }
+    NAV_T = now;
+    NAV_HELD = held;
     // An open dropdown keeps the remote inside it until it's closed, otherwise down could land on the page behind it
     const openMenu = cur && cur.closest && cur.closest(".menu:not([hidden])");
     const scope = sheetClose ? $$(".sheet-wrap").pop() : EMB ? EMB.el : TRAILER_VIEW ? TRAILER_VIEW.el : openMenu || (playerOpen ? pl.el : document);
@@ -5080,7 +5085,7 @@
       const top = !playerOpen && !sheetClose && best.closest(".detail-hero, .hero");
       if (top && d[1]) window.scrollTo({ top: 0, behavior: reduceMotion() ? "auto" : "smooth" });
       // Sideways moves jump (a smooth scroll per press piled up while a button was held and kept going after it was let go), up and down glide
-      else best.scrollIntoView({ block: d[1] ? "center" : "nearest", inline: "nearest", behavior: reduceMotion() || d[0] || e.repeat ? "auto" : "smooth" });
+      else best.scrollIntoView({ block: d[1] ? "center" : "nearest", inline: "nearest", behavior: reduceMotion() || d[0] || NAV_HELD ? "auto" : "smooth" });
     }
   }
   if (TV) {

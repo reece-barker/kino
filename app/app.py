@@ -2909,6 +2909,22 @@ async def wikidata_uk(kind):
         return []
 
 
+def uk_order(rows, cutoff=""):
+    """Best known first, but newer counts for a lot: the same fame is worth four times as much for something from the last year and a half, three times
+    up to three years, twice up to six, a bit more up to twelve and a little less after that. So popular new titles lead and the classics follow"""
+    today = datetime.date.today()
+    out = []
+    for imdb, links, date in rows:
+        try:
+            age = (today - datetime.date.fromisoformat(date[:10])).days / 365.25
+        except ValueError:
+            age = 30
+        if cutoff and date[:10] > cutoff:
+            continue
+        out.append((links * (4 if age <= 1.5 else 3 if age <= 3 else 2 if age <= 6 else 1.3 if age <= 12 else 0.8), imdb, links, date))
+    return [(imdb, links, date) for _, imdb, links, date in sorted(out, reverse=True)]
+
+
 async def uk_check(kind, c):
     """One candidate (meta or None, imdb, video id to look at): its details if it is good enough and has the sources, else None"""
     meta, imdb, vid = c
@@ -2953,10 +2969,10 @@ async def uk_rows_refresh():
         tv = [(m, m["id"], vid) for _, m, vid in await uk_tv_candidates()]
         seen = {c[1] for c in tv}
         try:
-            tv += [(None, imdb, f"{imdb}:1:1") for imdb, _, d in await wikidata_uk("series") if imdb not in seen and re.fullmatch(r"tt\d{5,10}", imdb)]
+            tv += [(None, imdb, f"{imdb}:1:1") for imdb, _, d in uk_order(await wikidata_uk("series")) if imdb not in seen and re.fullmatch(r"tt\d{5,10}", imdb)]
         except Exception as e:
             log.info("british tv list: %s", e)
-        films = [(None, imdb, imdb) for imdb, _, d in await wikidata_uk("movie") if re.fullmatch(r"tt\d{5,10}", imdb) and d <= cutoff]
+        films = [(None, imdb, imdb) for imdb, _, d in uk_order(await wikidata_uk("movie"), cutoff) if re.fullmatch(r"tt\d{5,10}", imdb)]
         for k, cands in (("series", tv), ("movie", films)):
             UKPOOL[k].update({"c": cands, "pos": 0, "ok": []})
             await uk_fill(k, 24)

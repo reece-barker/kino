@@ -64,8 +64,12 @@ body.tv .player.live .player-logo { height: 56px; max-width: 190px; }
 
 /* Moving the selection along a row of pills or cards leaves a gutter at the end instead of putting the last one flush against the edge of the screen
    (a TV crops the very edge, so the last pill was partly cut off) */
-.chips, .row { scroll-padding-inline: var(--gutter); }
-body.tv .chips, body.tv .row { scroll-padding-inline: max(var(--gutter), 5vw); }
+.chips { scroll-padding-inline: var(--gutter); }
+body.tv .chips { scroll-padding-inline: max(var(--gutter), 5vw); }
+/* Rows of cards snap their first card to the start, so only the end gets the gutter (a padding at the start too moved every row by that much, and its
+   first card ended up under the sidebar) */
+.row { scroll-padding-inline-end: var(--gutter); }
+body.tv .row { scroll-padding-inline-end: max(var(--gutter), 5vw); }
 
 /* The filter box next to the Search button is as tall as the button */
 .toolbar .search { min-height: 44px; }

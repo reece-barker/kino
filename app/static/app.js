@@ -1003,7 +1003,8 @@
   const ytCmd = (f, func, args = []) => { try { f.contentWindow.postMessage(JSON.stringify({ event: "command", func, args }), "*"); } catch (_) {} };
   // Sound on by default: a trailer starts muted (a browser always lets that autoplay) and the sound is switched on as soon as it is playing, when the
   // page has been clicked or tapped before (browsers only allow sound after that). If it isn't allowed it just stays muted and the sound button shows it
-  const soundAllowed = () => (navigator.userActivation ? navigator.userActivation.hasBeenActive : true);
+  // (The Android app's browser allows it without any tap, remote key presses don't count as one, so there the sound was never switched on)
+  const soundAllowed = () => ANDROID || (navigator.userActivation ? navigator.userActivation.hasBeenActive : true);
   const wantSound = () => TV || !(ME.profile && ME.profile.prefs && ME.profile.prefs.preview_sound === false);
   // YouTube draws its title, a More videos strip and buttons over the first few seconds of any video, controls off or not, so the video stays
   // invisible until those are gone (a loop restart is hidden the same way). It loops by hand cause the loop param adds previous and next buttons
@@ -1013,8 +1014,15 @@
   function mountTrailer(host, yt, o = {}) {
     const f = document.createElement("iframe");
     f.src = ytSrc(yt, { ...o, mute: o.mute || o.sound });
-    let loud = 0, wantSnd = !!o.sound, state = -1, shown = false, clearT = null;
-    f.style.opacity = "0";
+    let loud = 0, wantSnd = !!o.sound, state = -1, shown = false, clearT = null, mask = null;
+    // Until the start-up overlays are gone the video is hidden behind a black cover. The video itself never gets an opacity or a transform: on some TVs
+    // a video with either plays its sound and shows nothing but black
+    const hide = (on) => {
+      if (on) { if (!mask) { mask = document.createElement("div"); mask.className = "yt-mask"; host.appendChild(mask); } mask.style.opacity = "1"; return; }
+      if (!mask) return;
+      const m = mask; mask = null;
+      if (TV) m.remove(); else { m.style.opacity = "0"; setTimeout(() => m.remove(), 600); }
+    };
     f.title = "Trailer";
     f.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture; fullscreen");
     f.setAttribute("sandbox", "allow-scripts allow-same-origin allow-presentation");
@@ -1022,17 +1030,16 @@
     f.setAttribute("aria-hidden", o.controls ? "false" : "true");
     if (!o.controls) f.tabIndex = -1;
     const fit = () => {
-      const op = f.style.opacity;
-      if (!o.cover && !o.contain) { f.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0"; f.style.opacity = op; return; }
+      if (!o.cover && !o.contain) { f.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0"; return; }
       const r = host.getBoundingClientRect(), w = r.width, h = r.height;
-      const W = o.contain ? Math.min(w, (h * 16) / 9) : Math.max(w, (h * 16) / 9), H = (W * 9) / 16;
-      f.style.cssText = `position:absolute;left:50%;top:50%;width:${W}px;height:${H}px;border:0;transform:translate(-50%,-50%) scale(${o.cover ? 1.3 : 1});pointer-events:none;transition:opacity .5s`;
-      f.style.opacity = op;
+      const W = o.contain ? Math.min(w, (h * 16) / 9) : Math.max(w, (h * 16) / 9) * 1.3, H = (W * 9) / 16;
+      // Placed with plain left and top (the centre of the box), cover is the same box made 30% bigger so the edges are cropped
+      f.style.cssText = `position:absolute;left:${(w - W) / 2}px;top:${(h - H) / 2}px;width:${W}px;height:${H}px;border:0;pointer-events:none`;
     };
     const reveal = () => {
       clearTimeout(clearT);
       clearT = setTimeout(() => {
-        shown = true; f.style.opacity = "1";
+        shown = true; hide(false);
         if (wantSnd && soundAllowed()) { ytCmd(f, "unMute"); ytCmd(f, "setVolume", [100]); }  // the sound waits for the picture
         o.onPlay && o.onPlay();
       }, o.cover ? YT_CLEAR_CROP : YT_CLEAR);
@@ -1047,7 +1054,7 @@
       if (st !== null && st !== state) {
         state = st;
         if (st === 1 && !shown && !clearT) reveal();
-        if (st === 0 && o.loop) { shown = false; clearT = null; f.style.opacity = "0"; if (wantSnd) ytCmd(f, "mute"); ytCmd(f, "seekTo", [0, true]); ytCmd(f, "playVideo"); }
+        if (st === 0 && o.loop) { shown = false; clearT = null; hide(true); if (wantSnd) ytCmd(f, "mute"); ytCmd(f, "seekTo", [0, true]); ytCmd(f, "playVideo"); }
         if (shown || st !== 1) o.onState && o.onState(st);
         if (st === 1 && !shown && clearT) o.wait && o.wait(o.cover ? YT_CLEAR_CROP : YT_CLEAR);
       }
@@ -1065,9 +1072,10 @@
       setTimeout(() => ytCmd(f, "unloadModule", ["captions"]), 1200);
     });
     host.appendChild(f);
+    hide(true);
     return {
       frame: f, refit: fit,
-      stop() { clearTimeout(clearT); window.removeEventListener("message", on); window.removeEventListener("resize", fit); f.remove(); },
+      stop() { clearTimeout(clearT); if (mask) mask.remove(); window.removeEventListener("message", on); window.removeEventListener("resize", fit); f.remove(); },
       mute(b) { wantSnd = !b; ytCmd(f, b ? "mute" : "unMute"); if (!b) ytCmd(f, "setVolume", [100]); },
       pause() { ytCmd(f, "pauseVideo"); },
       get state() { return state; },
@@ -2264,7 +2272,12 @@
     if (!$("#pdBox") || $("#pdBox") !== box) return;
     if (r.partial) {
       if (!r.streams.length) { try { r = await api(url); } catch (_) {} if (!$("#pdBox") || $("#pdBox") !== box) return; }
-      else api(url).then((r2) => { if ($("#pdBox") === box && r2.streams.length > r.streams.length && !sheetClose) drawStreams(kind, id, t, ep, r2); }).catch(() => {});
+      // The full list comes in behind the first one: the buttons stay as they are and only the count and what they use are updated (a full redraw
+      // made the whole row flash and, on a TV, moved the selection)
+      else api(url).then((r2) => {
+        if ($("#pdBox") !== box || r2.streams.length <= (box._r || r).streams.length) return;
+        if (box._upd) box._upd(r2); else if (!sheetClose) drawStreams(kind, id, t, ep, r2);
+      }).catch(() => {});
     }
     const lb = listBtn(t.in_list);
     // Not out yet: whatever is on offer for it is fake, so nothing is shown to play
@@ -2286,6 +2299,7 @@
       if (TV && (document.activeElement === document.body || document.activeElement === AUTO_FOCUS)) { const lbb = $("#listBtn"); if (lbb) lbb.focus({ preventScroll: true }); }
       return;
     }
+    box._r = r;
     const first = r.streams[0];
     const res = first.progress && !first.progress.watched && first.progress.pos > 30 ? first.progress : null;
     const grabFocus = TV && (document.activeElement === document.body || document.activeElement === AUTO_FOCUS || !document.activeElement);
@@ -2297,15 +2311,21 @@
       </div>
       ${r.too_new ? `<div class="note pd-note">${ic("info")} ${esc(tooNewText(r.too_new, dayOf))}</div>` : r.fresh ? `<div class="note pd-note">${ic("info")} This only just came out. Some sources can be camera recordings or fakes until it is properly released, the better ones are tried first.</div>` : ""}
       ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
-    const play = (s) => { SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
-    $("#pdPlay").onclick = () => play(first);
+    const play = (s) => { SOURCES = { list: liveSources(box._r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
+    $("#pdPlay").onclick = () => play(box._r.streams[0]);
+    // When the rest of the sources arrive: the list the buttons use is swapped, and the Sources button's count changes (or the button is added)
+    box._upd = (r2) => {
+      box._r = r2;
+      const m = $("#pdMore");
+      if (m) m.textContent = `${r2.streams.length} Sources`; else if (r2.streams.length > 1) drawStreams(kind, id, t, ep, r2);
+    };
     if (grabFocus) $("#pdPlay").focus({ preventScroll: true });
     wireListBtn({ kind, id: t.list_key }, t.list_key); addTrailerButton(kind, id, box);
     const more = $("#pdMore");
     if (more) more.onclick = () => {
       const sh = sheet(`<div class="src-head"><div><h2>Sources</h2><p class="secondary">${esc(t.name)}${ep ? ` · ${esc(epLabel(ep.season, ep.episode))}` : ""}</p></div>
           <button class="round-btn sm" data-close aria-label="Close">${ic("close")}</button></div>
-        <div class="src-list">${r.streams.map((s, i) => {
+        <div class="src-list">${box._r.streams.map((s, i) => {
           const p = s.progress && !s.progress.watched && s.progress.dur ? s.progress.pos / s.progress.dur : 0;
           const meta = [s.format, s.bytes ? bytes(s.bytes) : "", s.seeders != null ? `${s.seeders} seeder${s.seeders === 1 ? "" : "s"}` : "", s.peers != null ? `${s.peers} peer${s.peers === 1 ? "" : "s"}` : "", s.addon, s.tier].filter(Boolean);
           return `<button class="src ${i === 0 ? "best" : ""} ${s.health === "dead" ? "dead" : ""}" data-src="${i}">
@@ -2320,12 +2340,12 @@
             ${i === 0 ? `<span class="src-tag">Best</span>` : ""}
             <span class="src-play">${ic("play")}</span></button>`;
         }).join("")}</div>`, { wide: true });
-      $$("[data-src]", sh.el).forEach((b) => (b.onclick = () => { sh.close(); play(r.streams[Number(b.dataset.src)]); }));
+      $$("[data-src]", sh.el).forEach((b) => (b.onclick = () => { sh.close(); play(box._r.streams[Number(b.dataset.src)]); }));
     };
     const save = $("#pdSave");
     if (save) save.onclick = async () => {
       if (!(await confirmSheet(`Save ${t.name}${ep ? " " + epLabel(ep.season, ep.episode) : ""} to the Library?`, "Kino downloads this copy to the Storage Box, so it plays like everything else. Big films can take a while.", "Save to Library", false))) return;
-      try { await api(`/api/admin/streams/${first.id}/save`, {}); toast("Saving to the Library, you can keep browsing"); watchSave(first.id, !!ep); }
+      try { const f1 = box._r.streams[0]; await api(`/api/admin/streams/${f1.id}/save`, {}); toast("Saving to the Library, you can keep browsing"); watchSave(f1.id, !!ep); }
       catch (e) { toast(e.message, 5000); }
     };
   }

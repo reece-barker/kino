@@ -1872,6 +1872,7 @@ body.tv .tr-box { width: min(90vw, calc(80vh * 16 / 9)); }
 /* The trailer viewer: nothing of YouTube's shows. The video is zoomed a little and clicks never reach it, Kino's own controls sit on top:
    close top right, play and pause bottom left, sound bottom right */
 .tr-box iframe { z-index: 0; }
+.yt-mask { position: absolute; inset: 0; z-index: 2; background: #000; pointer-events: none; transition: opacity 0.5s ease; }
 .tr-load { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; background: #000; pointer-events: none; }
 .tr-load[hidden] { display: none; }
 .tr-hit { position: absolute; inset: 0; z-index: 2; background: transparent; cursor: pointer; }

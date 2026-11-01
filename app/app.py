@@ -1255,7 +1255,7 @@ async def lifespan(app):
     shutil.rmtree(HLS_DIR, ignore_errors=True)
     HLS_DIR.mkdir(parents=True, exist_ok=True)
     SUBS_DIR.mkdir(parents=True, exist_ok=True)
-    asyncio.create_task(uk_tv_items())  # The British TV row on Home is made in the background, so the first Home isnt slow
+    asyncio.create_task(uk_rows_refresh())  # The British rows on Home are made in the background, so the first Home isnt slow
     asyncio.create_task(asyncio.to_thread(warm_meta))  # Fills the meta cache in the background so the first home page isnt slow
     (DATA_DIR / "img").mkdir(parents=True, exist_ok=True)
     FF_INFO["burst"] = await asyncio.to_thread(ffmpeg_supports_burst)
@@ -2476,9 +2476,6 @@ async def home(request: Request, p=Depends(current_profile)):
     if len(fam) >= 2:
         shelves.append({"id": "family", "title": "Loved by the Family", "style": "poster", "items": fam})
     shelves.append({"id": "recent", "title": "Recently Added", "style": "wide", "items": recent})
-    uk = await uk_tv_shelf(summ, kids=p.get("kids"))
-    if uk:
-        shelves.append(uk)
 
     # Because you watched, based on the last thing they finished or loved
     anchors = sorted([s for s in summ if (s["watched_count"] or s["my_rating"] > 0) and s["genres"]],
@@ -2501,6 +2498,8 @@ async def home(request: Request, p=Depends(current_profile)):
     if len(rated) >= 3:
         shelves.append({"id": "acclaimed", "title": "Critically Acclaimed", "style": "poster", "items": rated})
 
+    # British TV and films a few rows down, after the library's own rows
+    shelves += await uk_shelves(summ, kids=p.get("kids"))
     shelves += addon_shelves(summ, kids=p.get("kids"))
 
     counts = {}
@@ -2798,71 +2797,163 @@ def shelf_title(c, a, several):
     return f"{n} {word}".strip()
 
 
-# ---- British TV on Home. TVmaze (free, no key) knows what the UK channels and streamers (BBC, ITV, Channel 4, 5, iPlayer, ITVX...) showed lately and
-# gives the IMDb id of each show, so the tiles open the normal title pages. New series (an episode 1 in the last three weeks) come first, then the
-# rest by how well liked it is. A show that is on every day (a soap) goes lower or it would fill the whole row
-UKTV = {"t": 0.0, "items": [], "busy": False}
+# ---- British rows on Home: TV from TVmaze (free, no key), films from Wikidata (free, no key). Both only keep what can actually be played: a title
+# needs at least MIN_SOURCES direct sources from the installed addons, each with enough seeders when the addon says (a source with 0 to 4 seeders is
+# as good as none). That is asked of the addons in the background and kept for a few hours, Home never waits for it.
+UKTV = {"t": 0.0, "items": [], "movies": [], "busy": False}
 UKTV_TYPES = {"Scripted", "Documentary", "Reality", "Game Show", "Talk Show", "Panel Show", "Animation"}
+MIN_SOURCES, MIN_SEEDERS = 3, 5
+UK_FILMS_SPARQL = """SELECT ?imdb (MAX(?sl) AS ?links) (MIN(?d) AS ?date) WHERE {
+  ?film wdt:P31 wd:Q11424; wdt:P495 wd:Q145; wdt:P345 ?imdb; wikibase:sitelinks ?sl; wdt:P577 ?d.
+  FILTER NOT EXISTS { ?film wdt:P495 ?other. FILTER(?other != wd:Q145) }
+  FILTER(?sl > 6 && ?d > "1995-01-01T00:00:00Z"^^xsd:dateTime)
+} GROUP BY ?imdb ORDER BY DESC(?links) LIMIT 160"""
 
 
-async def uk_tv_items():
-    if UKTV["items"] and time.time() - UKTV["t"] < 3 * 3600:
-        return UKTV["items"]
-    if UKTV["busy"]:
-        return UKTV["items"]
-    UKTV["busy"] = True
+async def source_count(kind, vid):
+    """How many sources the addons have for a title right now (direct links, with enough seeders where the addon gives them)"""
+    rows = [a for a in addon_rows() if supports(a["m"], "stream", kind, vid)]
+
+    async def one(a):
+        try:
+            j = await addon_call(a, "stream", kind, vid, ttl=3 * 3600, timeout=15)
+        except Exception:
+            return 0
+        n = 0
+        for st in (j.get("streams") or [])[:40]:
+            if not isinstance(st, dict) or st.get("infoHash") or st.get("ytId") or st.get("externalUrl"):
+                continue
+            url = st.get("url")
+            if not (isinstance(url, str) and url.startswith(("http://", "https://"))):
+                continue
+            seeders = torrent_stats(st)[0]
+            if seeders is None or seeders >= MIN_SEEDERS:
+                n += 1
+        return n
+    return sum(await asyncio.gather(*(one(a) for a in rows))) if rows else 0
+
+
+async def uk_tv_candidates():
+    today = datetime.date.today()
+    days = [(today - datetime.timedelta(days=d)).isoformat() for d in range(0, 21)]
+    res = await asyncio.gather(*(fetch_json(f"https://api.tvmaze.com/schedule?country=GB&date={d}", ttl=3 * 3600, timeout=20) for d in days), return_exceptions=True)
+    shows = {}
+    for r in res:
+        if not isinstance(r, list):
+            continue
+        for ep in r:
+            sh = ep.get("show") or {}
+            if not sh.get("id"):
+                continue
+            e = shows.setdefault(sh["id"], {"s": sh, "n": 0, "new": False, "eps": []})
+            e["n"] += 1
+            if ep.get("number") == 1 and ep.get("type", "regular") == "regular":
+                e["new"] = True
+            if ep.get("season") and ep.get("number") and ep.get("airdate"):
+                e["eps"].append((ep["airdate"], ep["season"], ep["number"]))
+    out = []
+    for e in shows.values():
+        sh = e["s"]
+        imdb = (sh.get("externals") or {}).get("imdb") or ""
+        ch = sh.get("network") or sh.get("webChannel") or {}
+        if (not imdb.startswith("tt") or sh.get("language") != "English" or sh.get("type") not in UKTV_TYPES
+                or ((sh.get("network") or {}).get("country") or (sh.get("webChannel") or {}).get("country") or {}).get("code") != "GB"):
+            continue
+        rating = (sh.get("rating") or {}).get("average") or 0
+        fresh = e["new"] or (sh.get("premiered") or "") >= (today - datetime.timedelta(days=60)).isoformat()  # a new series
+        score = (50 if fresh else 0) + rating * 4 + (sh.get("weight") or 0) / 10 - (40 if e["n"] >= 10 else 0)  # a daily show (a soap) goes lower
+        # The episode to check the sources of: the latest one that has been out a few days (a brand new one can't have many yet)
+        eps = sorted(e["eps"])
+        old = [x for x in eps if x[0] <= (today - datetime.timedelta(days=3)).isoformat()]
+        ep = (old or eps or [(None, 1, 1)])[-1 if old else 0]
+        img = ((sh.get("image") or {}).get("original") or (sh.get("image") or {}).get("medium") or "").replace("http://", "https://", 1)
+        out.append((score, {"id": imdb, "type": "series", "name": sh.get("name"), "poster": img or None, "releaseInfo": (sh.get("premiered") or "")[:4],
+                            "genres": sh.get("genres") or [], "description": re.sub(r"<[^>]+>", "", sh.get("summary") or "")[:400]}, f"{imdb}:{ep[1]}:{ep[2]}"))
+    out.sort(key=lambda x: -x[0])
+    return out[:45]
+
+
+async def uk_movie_candidates():
+    """British films from Wikidata (made only in the UK, best known first). Asked once a week and kept on disk, an old copy is used if it can't be reached"""
+    f = DATA_DIR / "uk-films.json"
+    rows = None
     try:
-        today = datetime.date.today()
-        days = [(today - datetime.timedelta(days=d)).isoformat() for d in range(0, 21)]
-        res = await asyncio.gather(*(fetch_json(f"https://api.tvmaze.com/schedule?country=GB&date={d}", ttl=3 * 3600, timeout=20) for d in days), return_exceptions=True)
-        shows = {}
-        for r in res:
-            if not isinstance(r, list):
-                continue
-            for ep in r:
-                sh = ep.get("show") or {}
-                if not sh.get("id"):
-                    continue
-                e = shows.setdefault(sh["id"], {"s": sh, "n": 0, "new": False})
-                e["n"] += 1
-                if ep.get("number") == 1 and ep.get("type", "regular") == "regular":
-                    e["new"] = True
-        out = []
-        for e in shows.values():
-            sh = e["s"]
-            imdb = (sh.get("externals") or {}).get("imdb") or ""
-            ch = sh.get("network") or sh.get("webChannel") or {}
-            if (not imdb.startswith("tt") or sh.get("language") != "English" or sh.get("type") not in UKTV_TYPES
-                    or ((sh.get("network") or {}).get("country") or (sh.get("webChannel") or {}).get("country") or {}).get("code") != "GB"):
-                continue
-            rating = (sh.get("rating") or {}).get("average") or 0
-            daily = e["n"] >= 10
-            fresh = e["new"] or (sh.get("premiered") or "") >= (datetime.date.today() - datetime.timedelta(days=60)).isoformat()  # a new series
-            score = (50 if fresh else 0) + rating * 4 + (sh.get("weight") or 0) / 10 - (40 if daily else 0)
-            img = ((sh.get("image") or {}).get("original") or (sh.get("image") or {}).get("medium") or "").replace("http://", "https://", 1)
-            out.append((score, {"id": imdb, "type": "series", "name": sh.get("name"), "poster": img or None, "releaseInfo": (sh.get("premiered") or "")[:4],
-                                "genres": sh.get("genres") or [], "description": re.sub(r"<[^>]+>", "", sh.get("summary") or "")[:400], "_net": ch.get("name")}))
-        out.sort(key=lambda x: -x[0])
-        UKTV["items"], UKTV["t"] = [m for _, m in out[:30]], time.time()
+        if f.exists() and time.time() - f.stat().st_mtime < 7 * 86400:
+            rows = json.loads(f.read_text())
+    except (OSError, ValueError):
+        rows = None
+    if rows is None:
+        try:
+            async with ac("wikidata", timeout=60, headers={"User-Agent": "Kino/1.0 (self-hosted media dashboard)", "Accept": "application/sparql-results+json"}) as c:
+                r = await c.get("https://query.wikidata.org/sparql", params={"query": UK_FILMS_SPARQL, "format": "json"})
+            r.raise_for_status()
+            rows = [[x["imdb"]["value"], int(x["links"]["value"]), x["date"]["value"][:10]] for x in r.json()["results"]["bindings"]]
+            await asyncio.to_thread(f.write_text, json.dumps(rows))
+        except Exception as e:
+            log.info("wikidata british films: %s", str(e)[:100])
+            try:
+                rows = json.loads(f.read_text())
+            except (OSError, ValueError):
+                rows = []
+    cutoff = (datetime.date.today() - datetime.timedelta(days=60)).isoformat()
+    # A film in its first weeks only has camera copies
+    return [(links, imdb) for imdb, links, date in rows if re.fullmatch(r"tt\d{5,10}", imdb) and date <= cutoff][:90]
+
+
+async def uk_rows_refresh():
+    if UKTV["busy"]:
+        return
+    UKTV["busy"], UKTV["again"] = True, False
+    try:
+        gate = asyncio.Semaphore(4)
+
+        async def keep_tv(score, m, vid):
+            async with gate:
+                return (m, await source_count("series", vid))
+
+        async def keep_movie(links, imdb):
+            async with gate:
+                meta = await meta_lookup("movie", imdb)
+                try:
+                    rating = float(str(meta.get("imdbRating") or meta.get("rating") or 0))
+                except (ValueError, AttributeError):
+                    rating = 0.0
+                if not meta or not meta.get("name") or rating < 6.0:
+                    return None
+                return ({**meta, "id": imdb, "type": "movie", "imdbRating": rating}, await source_count("movie", imdb))
+        tv = await uk_tv_candidates()
+        got = await asyncio.gather(*(keep_tv(*t) for t in tv), return_exceptions=True)
+        UKTV["items"] = [g[0] for g in got if isinstance(g, tuple) and g[1] >= MIN_SOURCES][:30]
+        try:
+            films = await uk_movie_candidates()
+            got = await asyncio.gather(*(keep_movie(*f) for f in films), return_exceptions=True)
+            UKTV["movies"] = [g[0] for g in got if isinstance(g, tuple) and g[1] >= MIN_SOURCES][:30]
+        except Exception as e:
+            log.info("british films row: %s", e)
+        # Nothing found (no source addon yet, or they were all down) is looked at again in half an hour, not six
+        UKTV["t"] = time.time() if (UKTV["items"] or UKTV["movies"]) else time.time() - 5.5 * 3600
+        log.info("british rows: %d shows, %d films with enough sources", len(UKTV["items"]), len(UKTV["movies"]))
     except Exception as e:
-        log.info("british tv row: %s", e)
+        log.info("british rows: %s", e)
     finally:
         UKTV["busy"] = False
-    return UKTV["items"]
+        if UKTV.get("again"):
+            asyncio.create_task(uk_rows_refresh())
 
 
-async def uk_tv_shelf(summ, kids=False):
-    # Home never waits for TVmaze (21 lookups): the row is made in the background and shows from the next time Home loads
-    if time.time() - UKTV["t"] >= 3 * 3600 and not UKTV["busy"]:
-        asyncio.create_task(uk_tv_items())
-    metas = UKTV["items"]
-    if len(metas) < 6:
-        return None
+async def uk_shelves(summ, kids=False):
+    # Home never waits for these: they are made in the background and show from the next time Home loads
+    if time.time() - UKTV["t"] >= 6 * 3600 and not UKTV["busy"]:
+        asyncio.create_task(uk_rows_refresh())
     have = lib_by_meta_id(summ)
-    items = [have.get(m["id"]) or ext_preview(m, "series") for m in metas]
-    if kids:
-        items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
-    return {"id": "uk-tv", "title": "British TV Right Now", "style": "poster", "source": "TVmaze", "items": items} if len(items) >= 6 else None
+    out = []
+    for sid, title, kind, metas in (("uk-tv", "British TV Right Now", "series", UKTV["items"]), ("uk-films", "British Films", "movie", UKTV["movies"])):
+        items = [have.get(m["id"]) or ext_preview(m, kind) for m in metas]
+        if kids:
+            items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
+        if len(items) >= 6:
+            out.append({"id": sid, "title": title, "style": "poster", "source": "TVmaze" if kind == "series" else "Wikidata", "items": items})
+    return out
 
 
 def addon_shelves(summ, kids=False):
@@ -4430,6 +4521,7 @@ async def addons_add(request: Request, admin=Depends(require_admin)):
            (url, json.dumps(j), 1, "[]", time.time(), time.time()))
     log.info("kino addon installed %s by %s", j.get("id"), admin)
     asyncio.create_task(refresh_catalogs())
+    UKTV["t"], UKTV["again"] = 0.0, True  # a new addon may have sources the British rows were missing, they are looked at again (after the run that is going now)
     return {"ok": True, "name": j.get("name")}
 
 

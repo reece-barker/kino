@@ -1253,6 +1253,7 @@ async def lifespan(app):
     shutil.rmtree(HLS_DIR, ignore_errors=True)
     HLS_DIR.mkdir(parents=True, exist_ok=True)
     SUBS_DIR.mkdir(parents=True, exist_ok=True)
+    asyncio.create_task(uk_tv_items())  # The British TV row on Home is made in the background, so the first Home isnt slow
     asyncio.create_task(asyncio.to_thread(warm_meta))  # Fills the meta cache in the background so the first home page isnt slow
     (DATA_DIR / "img").mkdir(parents=True, exist_ok=True)
     FF_INFO["burst"] = await asyncio.to_thread(ffmpeg_supports_burst)
@@ -2473,6 +2474,9 @@ async def home(request: Request, p=Depends(current_profile)):
     if len(fam) >= 2:
         shelves.append({"id": "family", "title": "Loved by the Family", "style": "poster", "items": fam})
     shelves.append({"id": "recent", "title": "Recently Added", "style": "wide", "items": recent})
+    uk = await uk_tv_shelf(summ, kids=p.get("kids"))
+    if uk:
+        shelves.append(uk)
 
     # Because you watched, based on the last thing they finished or loved
     anchors = sorted([s for s in summ if (s["watched_count"] or s["my_rating"] > 0) and s["genres"]],
@@ -2790,6 +2794,73 @@ def shelf_title(c, a, several):
         return n
     word = {"movie": "Movies", "series": "Shows", "anime": "Anime", "tv": "Channels"}.get(c.get("type"), "")
     return f"{n} {word}".strip()
+
+
+# ---- British TV on Home. TVmaze (free, no key) knows what the UK channels and streamers (BBC, ITV, Channel 4, 5, iPlayer, ITVX...) showed lately and
+# gives the IMDb id of each show, so the tiles open the normal title pages. New series (an episode 1 in the last three weeks) come first, then the
+# rest by how well liked it is. A show that is on every day (a soap) goes lower or it would fill the whole row
+UKTV = {"t": 0.0, "items": [], "busy": False}
+UKTV_TYPES = {"Scripted", "Documentary", "Reality", "Game Show", "Talk Show", "Panel Show", "Animation"}
+
+
+async def uk_tv_items():
+    if UKTV["items"] and time.time() - UKTV["t"] < 3 * 3600:
+        return UKTV["items"]
+    if UKTV["busy"]:
+        return UKTV["items"]
+    UKTV["busy"] = True
+    try:
+        today = datetime.date.today()
+        days = [(today - datetime.timedelta(days=d)).isoformat() for d in range(0, 21)]
+        res = await asyncio.gather(*(fetch_json(f"https://api.tvmaze.com/schedule?country=GB&date={d}", ttl=3 * 3600, timeout=20) for d in days), return_exceptions=True)
+        shows = {}
+        for r in res:
+            if not isinstance(r, list):
+                continue
+            for ep in r:
+                sh = ep.get("show") or {}
+                if not sh.get("id"):
+                    continue
+                e = shows.setdefault(sh["id"], {"s": sh, "n": 0, "new": False})
+                e["n"] += 1
+                if ep.get("number") == 1 and ep.get("type", "regular") == "regular":
+                    e["new"] = True
+        out = []
+        for e in shows.values():
+            sh = e["s"]
+            imdb = (sh.get("externals") or {}).get("imdb") or ""
+            ch = sh.get("network") or sh.get("webChannel") or {}
+            if (not imdb.startswith("tt") or sh.get("language") != "English" or sh.get("type") not in UKTV_TYPES
+                    or ((sh.get("network") or {}).get("country") or (sh.get("webChannel") or {}).get("country") or {}).get("code") != "GB"):
+                continue
+            rating = (sh.get("rating") or {}).get("average") or 0
+            daily = e["n"] >= 10
+            fresh = e["new"] or (sh.get("premiered") or "") >= (datetime.date.today() - datetime.timedelta(days=60)).isoformat()  # a new series
+            score = (50 if fresh else 0) + rating * 4 + (sh.get("weight") or 0) / 10 - (40 if daily else 0)
+            img = ((sh.get("image") or {}).get("original") or (sh.get("image") or {}).get("medium") or "").replace("http://", "https://", 1)
+            out.append((score, {"id": imdb, "type": "series", "name": sh.get("name"), "poster": img or None, "releaseInfo": (sh.get("premiered") or "")[:4],
+                                "genres": sh.get("genres") or [], "description": re.sub(r"<[^>]+>", "", sh.get("summary") or "")[:400], "_net": ch.get("name")}))
+        out.sort(key=lambda x: -x[0])
+        UKTV["items"], UKTV["t"] = [m for _, m in out[:30]], time.time()
+    except Exception as e:
+        log.info("british tv row: %s", e)
+    finally:
+        UKTV["busy"] = False
+    return UKTV["items"]
+
+
+async def uk_tv_shelf(summ, kids=False):
+    # Home never waits for TVmaze (21 lookups): the row is made in the background and shows from the next time Home loads
+    if time.time() - UKTV["t"] >= 3 * 3600 and not UKTV["busy"]:
+        asyncio.create_task(uk_tv_items())
+    metas = UKTV["items"]
+    if len(metas) < 6:
+        return None
+    have = lib_by_meta_id(summ)
+    items = [have.get(m["id"]) or ext_preview(m, "series") for m in metas]
+    if kids:
+        items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
+    return {"id": "uk-tv", "title": "British TV Right Now", "style": "poster", "source": "TVmaze", "items": items} if len(items) >= 6 else None
 
 
 def addon_shelves(summ, kids=False):

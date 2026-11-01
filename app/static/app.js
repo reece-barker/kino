@@ -5159,14 +5159,18 @@
   };
   // ---------------------------------------------------------- app updates
   // When the app opens it checks if the server has a newer version, and offers to install it. Never while watching
+  // It runs when the app opens, when it comes back to the front (a TV keeps the app alive in the background, so opening it again is not a new start),
+  // when the window gets focus again, and every 20 minutes while it is open. Never twice within 15 seconds, and never a second offer on top of one
+  let UPD_WAIT = false, UPD_AT = 0;
   async function checkAppUpdate() {
-    if (!ANDROID) return;
+    if (!ANDROID || UPD_WAIT || $("#updLater") || Date.now() - UPD_AT < 15000) return;
+    UPD_AT = Date.now();
     let r;
-    try { r = await (await fetch("/app/version", { credentials: "same-origin" })).json(); } catch (_) { return; }
+    try { r = await (await fetch("/app/version?t=" + Date.now(), { credentials: "same-origin", cache: "no-store" })).json(); } catch (_) { return; }
     const mine = window.KinoAndroid.versionCode ? window.KinoAndroid.versionCode() : 0;
     if (!r.code || r.code <= mine) return;
     try { if (localStorage.getItem("kino-update-later") === String(r.code) && Date.now() - Number(localStorage.getItem("kino-update-at") || 0) < 86400000) return; } catch (_) {}
-    const wait = () => (!pl.el.hidden || sheetClose ? setTimeout(wait, 5000) : offer());
+    const wait = () => (!pl.el.hidden || sheetClose ? setTimeout(wait, 5000) : (UPD_WAIT = false, offer()));
     const offer = () => {
       const can = typeof window.KinoAndroid.installUpdate === "function";
       const s = sheet(`<div class="sheet-icon">${ic("download")}</div><h2>Kino ${esc(r.name)} is Ready</h2>
@@ -5187,9 +5191,16 @@
       };
       go.onclick = () => { go.disabled = true; go.textContent = "Starting…"; $("#updErr", s.el).textContent = ""; window.KinoAndroid.installUpdate(r.url || "/app"); };
     };
+    UPD_WAIT = true;
     wait();
   }
-  if (ANDROID) setTimeout(checkAppUpdate, 4000);
+  if (ANDROID) {
+    setTimeout(checkAppUpdate, 4000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) setTimeout(checkAppUpdate, 1500); });
+    window.addEventListener("focus", () => setTimeout(checkAppUpdate, 1500));
+    window.addEventListener("pageshow", () => setTimeout(checkAppUpdate, 1500));
+    setInterval(checkAppUpdate, 20 * 60 * 1000);
+  }
 
   window.kinoPip = (on) => document.body.classList.toggle("pip", !!on);
 

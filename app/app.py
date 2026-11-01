@@ -108,7 +108,7 @@ IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.spa
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30
 AVATAR_COUNT = 36  # Has to match the AVATARS list in app.js
-DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False, "previews": True, "preview_sound": True}
+DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False, "live_english": True, "previews": True, "preview_sound": True}
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("kino")
@@ -242,6 +242,8 @@ def migrate():
             d.q(f"ALTER TABLE embed_sources ADD COLUMN {c} TEXT")  # where the list is in the JSON and which fields to use
     if "direct" not in [r["name"] for r in d.q("PRAGMA table_info(addons)")]:
         d.q("ALTER TABLE addons ADD COLUMN direct INTEGER DEFAULT 0")  # 1 = viewers' own devices fetch this addon's videos (web player)
+    if "lang" not in [r["name"] for r in d.q("PRAGMA table_info(channels)")]:
+        d.q("ALTER TABLE channels ADD COLUMN lang TEXT")  # the languages a channel is in, like "eng" or "eng,fra" (iptv-org's database, or a guess from the name)
     if "relay" not in [r["name"] for r in d.q("PRAGMA table_info(iptv_lists)")]:
         d.q("ALTER TABLE iptv_lists ADD COLUMN relay INTEGER DEFAULT 0")  # 1 = its channels play through the UK server (UK_PROXY)
     if "src_prio" not in [r["name"] for r in d.q("PRAGMA table_info(addons)")]:
@@ -1745,7 +1747,7 @@ async def profile_update(request: Request, p=Depends(current_profile)):
             prefs[k] = str(v or "")[:30]
         elif k == "sub_size" and v in ("s", "m", "l"):
             prefs[k] = v
-        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source", "live_all_countries", "previews", "preview_sound"):
+        elif k in ("autoplay", "skip_intro", "share_events", "blur_watched", "load_stats", "auto_next_source", "live_all_countries", "live_english", "previews", "preview_sound"):
             prefs[k] = bool(v)
         elif k == "still_watching":
             # Minutes without touching anything before the player asks if anyones still there, 0 is off
@@ -2901,7 +2903,7 @@ async def search(q: str, p=Depends(current_profile)):
     # Live channels from the playlists whose name matches, english ones first like on the Live TV page
     cw = live_country_where(p)
     chans = db().q("SELECT c.* FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1 AND (c.ok IS NULL OR c.ok = 1) AND c.name LIKE ? "
-                   + ("AND c.grp = 'Kids' " if p.get("kids") else "") + (f"AND {cw} " if cw else "") + "ORDER BY c.rank, c.name LIMIT 30",
+                   + ("AND c.grp = 'Kids' " if p.get("kids") else "") + (f"AND {cw} " if cw else "") + (f"AND {live_lang_where(p)} " if live_lang_where(p) else "") + "ORDER BY c.rank, c.name LIMIT 30",
                    (f"%{q}%", *(LIVE_HOME_COUNTRIES if cw else ())))
     guide = now_next({c["tvg"] for c in chans if c["tvg"]})
     embeds = []
@@ -6559,6 +6561,98 @@ def live_rank(name, country, lang):
     return base * 10 + star
 
 
+# ---- what a channel really is. A playlist saying "UK" doesn't mean the channel is in english (a UK playlist has Polish, Czech and Hindi channels in it),
+# iptv-org keeps a free database of every channel with its country, the languages of each feed, whether it is adult or has closed down. Playlists
+# from iptv-org carry the ids, so they match one to one. Anything else gets a guess from the name (a script that isn't latin, letters that only
+# Polish, Czech or Hungarian use, and so on) and a channel that gives nothing away counts as english
+IPTV_DB = {"d": None, "t": 0.0, "busy": False}
+FOREIGN_LETTERS = re.compile("[ąćęłńśźżřěščžůďťňőűășțğış]", re.I)
+
+
+def guess_lang(name):
+    n = name or ""
+    if any(c.isalpha() and ord(c) > 0x24F for c in n) or FOREIGN_LETTERS.search(n):
+        return "und"
+    return None
+
+
+def build_iptv_db(chs, feeds):
+    langs = {}
+    for f in feeds:
+        langs.setdefault(f["channel"], {})[f["id"]] = (f.get("languages") or [], bool(f.get("is_main")))
+    out = {}
+    for c in chs:
+        fl = langs.get(c["id"]) or {}
+        main = next((v[0] for v in fl.values() if v[1]), None)
+        out[c["id"]] = {"c": (c.get("country") or "").lower(), "n": bool(c.get("is_nsfw")), "x": bool(c.get("closed")), "m": main or [],
+                        "f": {k: v[0] for k, v in fl.items()}}
+    return out
+
+
+async def iptv_db():
+    """iptv-org's channel database (country, language, adult, closed), fetched when needed and kept a week. None if it can't be had"""
+    f = DATA_DIR / "iptv-org-db.json"
+    if IPTV_DB["d"] is not None and time.time() - IPTV_DB["t"] < 86400:
+        return IPTV_DB["d"]
+    if not f.exists() or time.time() - f.stat().st_mtime > 7 * 86400:
+        if IPTV_DB["busy"]:
+            return IPTV_DB["d"]
+        IPTV_DB["busy"] = True
+        try:
+            async with ac("iptvdb", timeout=120, follow_redirects=True) as c:
+                chs = (await c.get("https://iptv-org.github.io/api/channels.json")).json()
+                feeds = (await c.get("https://iptv-org.github.io/api/feeds.json")).json()
+            db_ = await asyncio.to_thread(build_iptv_db, chs, feeds)
+            del chs, feeds
+            await asyncio.to_thread(f.write_text, json.dumps(db_, separators=(",", ":")))
+            IPTV_DB["d"], IPTV_DB["t"] = db_, time.time()
+            return db_
+        except Exception as e:
+            log.info("iptv-org database: %s", e)
+        finally:
+            IPTV_DB["busy"] = False
+    try:
+        IPTV_DB["d"], IPTV_DB["t"] = await asyncio.to_thread(lambda: json.loads(f.read_text())), time.time()
+    except Exception:
+        pass
+    return IPTV_DB["d"]
+
+
+def demote_copies(chans):
+    """BBC One East Midlands, BBC One Wales and the rest are the same channel with a regional start, and the BBC Red Button ones are a stack of
+    extra feeds. They stay in the list, just not at the top where the real channel sits (their popularity is zeroed)"""
+    names = {re.sub(r"\s+(hd|sd|fhd)$", "", c["name"], flags=re.I).lower() for c in chans}
+    for c in chans:
+        base = re.sub(r"\s+(hd|sd|fhd)$", "", c["name"], flags=re.I)
+        if re.search(r"\bred button\b", base, re.I):
+            c["pop"] = 0
+            continue
+        words = base.split()
+        while len(words) > 2 and words[-1].lower().strip("&") in UK_REGIONS:
+            words.pop()
+            if " ".join(words).lower() in names:
+                c["pop"] = 0
+                break
+
+
+def apply_iptv_db(chans, meta):
+    """Language, real country, adult and closed for each channel, from the database where the id matches, from the name where it doesn't"""
+    for c in chans:
+        ch, _, feed = (c.get("tvg") or "").partition("@")
+        info = meta.get(ch) if meta and ch else None
+        if info:
+            L = info["f"].get(feed) or info["m"] or []
+            c["lang"] = ",".join(L[:4]) or None
+            if info["c"]:
+                c["country"] = "uk" if info["c"] == "gb" else info["c"]
+            if info["n"]:
+                c["junk"] = c.get("junk") or "adult"
+            if info["x"]:
+                c["closed"] = True
+        else:
+            c["lang"] = guess_lang(c["name"])
+
+
 def parse_m3u(text, list_id, default_country=""):
     """Channels from an M3U playlist, plus the guide link if the playlist names one"""
     out, cur, hdr, epg = [], None, {}, None
@@ -6827,12 +6921,12 @@ async def refresh_pluto(row):
             cid = "c" + hashlib.sha1(f"{lid}|pluto://{c['id']}|{name}".encode()).hexdigest()[:15]
             o = old.get(cid) or {}
             rows.append((cid, lid, name, logo, grp, "uk", f"pluto~{c['id']}", f"pluto://{c['id']}", None, live_rank(name, "uk", "eng"),
-                         o.get("ok"), o.get("checked"), classify_junk(name, cat_of.get(c["id"]) or grp), popularity(name)))
+                         o.get("ok"), o.get("checked"), classify_junk(name, cat_of.get(c["id"]) or grp), popularity(name), "eng"))
             ids.append(c["id"])
 
         def store():
             db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
-            db_chunks("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            db_chunks("INSERT OR REPLACE INTO channels (id, list_id, name, logo, grp, country, tvg, url, headers, rank, ok, checked, junk, pop, lang) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
         await asyncio.to_thread(store)
         # What's on, the next ten hours, a few channels at a time
         err = None
@@ -6875,6 +6969,10 @@ async def refresh_list(row):
         if m:
             default = "uk" if m.group(1) == "gb" else m.group(1)
         chans, epg = await asyncio.to_thread(parse_m3u, text, lid, default)
+        meta = await iptv_db() if any("." in (c.get("tvg") or "") for c in chans) else None
+        apply_iptv_db(chans, meta)
+        demote_copies(chans)
+        log.info("live tv list %s: language database %s", row["name"], f"{len(meta)} channels, {sum(1 for c in chans if c.get('lang'))} of {len(chans)} with a language" if meta else "not available")
         old = {r["id"]: dict(r) for r in db().q("SELECT id, ok, checked, tvg FROM channels WHERE list_id = ?", (lid,))}
         guide = row["epg"] or epg
         err = None
@@ -6889,11 +6987,12 @@ async def refresh_list(row):
             guides = [(g, None) for g in guides]
         tags = {guide_tag(g) for g, _ in guides}
         rows = [(c["id"], lid, c["name"], c["logo"], c["grp"], c["country"], keep_tvg(c, old, tags), c["url"], c["headers"], c["rank"],
-                 (old.get(c["id"]) or {}).get("ok"), (old.get(c["id"]) or {}).get("checked"), c.get("junk"), c.get("pop")) for c in chans]
+                 0 if c.get("closed") else (old.get(c["id"]) or {}).get("ok"), time.time() if c.get("closed") else (old.get(c["id"]) or {}).get("checked"),
+                 c.get("junk"), c.get("pop"), c.get("lang")) for c in chans]
 
         def store():
             db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
-            db_chunks("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            db_chunks("INSERT OR REPLACE INTO channels (id, list_id, name, logo, grp, country, tvg, url, headers, rank, ok, checked, junk, pop, lang) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
         await asyncio.to_thread(store)
         for g, ctry in guides:
             try:
@@ -6977,6 +7076,12 @@ async def live_worker():
         for row in db().q("SELECT * FROM iptv_lists l WHERE enabled = 1 AND (? OR NOT EXISTS (SELECT 1 FROM channels c JOIN epg e ON e.tvg = c.tvg WHERE c.list_id = l.id))", (0 if flag.exists() else 1,)):
             await refresh_list(row)
         flag.touch()
+        # Channels added before languages were known get them now (read the lists once more)
+        lflag = DATA_DIR / "lang-v1"
+        if not lflag.exists():
+            for row in db().q("SELECT * FROM iptv_lists WHERE enabled = 1"):
+                await refresh_list(row)
+            lflag.touch()
     except Exception as e:
         log.info("live tv guide catch up: %s", e)
     while True:
@@ -7051,6 +7156,13 @@ def live_catalogs():
 LIVE_HOME_COUNTRIES = ("uk", "us", "fr", "de")
 
 
+def live_lang_where(p):
+    """english channels only (a channel with no known language counts), unless the profile turned it off. No placeholders"""
+    if (p.get("prefs") or {}).get("live_english") is False:
+        return ""
+    return "(c.lang IS NULL OR c.lang = '' OR c.lang LIKE '%eng%')"
+
+
 def live_country_where(p):
     """Live TV only lists the UK, US, France and Germany unless the profile turned on Show All Countries in Settings"""
     if (p.get("prefs") or {}).get("live_all_countries"):
@@ -7076,6 +7188,8 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
     cw = live_country_where(p)
     if cw:
         where.append(cw); args.extend(LIVE_HOME_COUNTRIES)
+    if live_lang_where(p):
+        where.append(live_lang_where(p))
     if group:
         where.append("c.grp = ?"); args.append(group)
     if country:
@@ -7104,6 +7218,8 @@ async def live_list(group: str = "", country: str = "", q: str = "", skip: int =
         out["fav_count"] = len(favs)
         out["recordings"] = db().q("SELECT COUNT(*) n FROM recordings WHERE state != 'cancelled'")[0]["n"]
         base = "FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE l.enabled = 1" + ("" if all else " AND (c.ok IS NULL OR c.ok = 1)") + (" AND c.grp = 'Kids'" if p.get("kids") else "") + (f" AND {cw}" if cw else "")
+        if live_lang_where(p):
+            base += " AND " + live_lang_where(p)
         bargs = list(LIVE_HOME_COUNTRIES) if cw else []
         bj, bja = junk_where()
         if bj:
@@ -7153,6 +7269,8 @@ async def live_guide(start: float = 0, hours: float = 3, group: str = "", countr
     cw = live_country_where(p)
     if cw:
         where.append(cw); args.extend(LIVE_HOME_COUNTRIES)
+    if live_lang_where(p):
+        where.append(live_lang_where(p))
     if group:
         where.append("c.grp = ?"); args.append(group)
     if country:

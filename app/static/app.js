@@ -3159,6 +3159,7 @@
         ${toggle("pAuto", pr.autoplay, "Autoplay Next Episode", "Starts the next episode after a short countdown")}
         ${toggle("pSkip", pr.skip_intro, "Skip Intros Automatically", "Only works where Kino knows the intro")}
         <div class="set-row"><span><b>Are You Still Watching?</b><span class="secondary">Pauses and asks after this long with nobody touching anything</span></span>${sel("pStill", [["0", "Never"], ["30", "30 Minutes"], ["60", "1 Hour"], ["90", "1.5 Hours"], ["120", "2 Hours"], ["180", "3 Hours"], ["240", "4 Hours"]], String(pr.still_watching || 0))}</div>
+        ${toggle("pLiveEng", pr.live_english !== false, "English Channels Only", "Hides channels in other languages, like the Polish, Czech or Hindi ones that sit in a UK playlist. Channels with no known language still show")}
         ${toggle("pLiveAll", pr.live_all_countries, "Show All Countries in Live TV", "Live TV only lists the UK, US, France and Germany. Turn this on to see channels from every other country too")}
         ${toggle("pFake", pr.auto_next_source, "Switch Sources Automatically", "When a copy turns out to be a 30 second placeholder (TorBox sends one when a download didn't really finish) or keeps buffering, the next source plays by itself instead of asking")}
         ${toggle("pPrev", pr.previews !== false, "Autoplay Previews", "Plays a trailer when you hover over a film or show, and in the background of its page. Only on computers, and it uses data")}
@@ -3197,14 +3198,14 @@
     wireThemePicker($("#setTheme"));
     drawInterests();
     const saveP = async () => {
-      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked, previews: $("#pPrev").checked, preview_sound: $("#pPrevSnd").checked, auto_next_source: $("#pFake").checked, live_all_countries: $("#pLiveAll").checked };
+      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked, previews: $("#pPrev").checked, preview_sound: $("#pPrevSnd").checked, auto_next_source: $("#pFake").checked, live_all_countries: $("#pLiveAll").checked, live_english: $("#pLiveEng").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
       ME.profile = r.profile;
       applyPrefs();
       $("#prefSaved").textContent = "Saved";
       setTimeout(() => $("#prefSaved") && ($("#prefSaved").textContent = ""), 1800);
     };
-    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats", "pFake", "pPrev", "pPrevSnd"].forEach((id) => $("#" + id).addEventListener("change", saveP));
+    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats", "pFake", "pPrev", "pPrevSnd", "pLiveEng", "pLiveAll"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
     const pp = $("#pPlayer"); if (pp) pp.onchange = () => {
       const v = pp.value;

@@ -1116,7 +1116,9 @@
     const want = Math.round(Math.min((th * 16) / 9, ar.width * 2.3)) - Math.round(ar.width);
     const dir = roomR >= want || roomR >= roomL ? 1 : -1, extra = Math.min(want, Math.floor(dir > 0 ? roomR : roomL));
     if (extra < 30) return;
-    const ow = Math.round(ar.width) + extra, oh = Math.round(Math.min(th, Math.max(ar.height, (ow * 9) / 16)));
+    // The card only grows wider, never taller: with the name and details below it (they stay there) a taller picture made the tile taller than
+    // its row, and the row started to scroll up and down (a wide card, like Recently Added, did it)
+    const ow = Math.round(ar.width) + extra, oh = Math.round(ar.height);
     tile._h0 = Math.round(ar.height);
     // The video goes in first, at the size the card will be and invisible (the card clips it), and the card stays exactly as it is
     const host = document.createElement("div");

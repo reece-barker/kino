@@ -7202,7 +7202,8 @@ async def live_play_inner(cid: str, request: Request, p):
             body += chunk
             if len(body) >= 16:
                 break
-        if "mpegurl" in r.headers.get("content-type", "").lower() or body.lstrip()[:7] == b"#EXTM3U":
+        # ?tc=1 is a TV that cant play the channel's sound (ac3, eac3), ffmpeg repackages it with aac sound even for a playlist
+        if request.query_params.get("tc") != "1" and ("mpegurl" in r.headers.get("content-type", "").lower() or body.lstrip()[:7] == b"#EXTM3U"):
             async for chunk in it:
                 body += chunk
                 if len(body) > 5 * 1024**2:

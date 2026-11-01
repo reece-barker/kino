@@ -3156,7 +3156,7 @@
         <h2 class="set-title">Android App</h2>
         ${ANDROID ? `<div class="set-row"><span><b>Kino for Android ${esc(window.KinoAndroid.version())}</b><span class="secondary">You're using the app${TV ? " on a TV" : ""}. Get updates from the same link below.</span></span></div>` : ""}
         ${nativeOk() ? `<div class="set-row"><span><b>Default Player</b><span class="secondary">Kino Player is the app's own, smoothest and the one to use. Android Player is the device's built in one, it can fix broken colours on some TVs but can't play live TV. Web Player is the page's own, the same as on a computer. Live TV always uses the Kino Player (and falls back to the Web Player if that can't open a channel)</span></span>
-          <select class="plain" id="pPlayer" aria-label="Default player">${[["exo", "Kino Player"], ["android", "Android Player"], ["web", "Web Player"]].map(([v, l]) => `<option value="${v}" ${v === defaultPlayer() ? "selected" : ""}>${l}</option>`).join("")}</select></div>` : ""}
+          <select class="plain" id="pPlayer" aria-label="Default player">${[["exo", "Kino Player"], ["android", "Android Player"], ["web", "Web Player"]].filter(([v]) => !(TV && v === "web")).map(([v, l]) => `<option value="${v}" ${v === defaultPlayer() ? "selected" : ""}>${l}</option>`).join("")}</select></div>` : ""}
         <div class="set-row"><span><b>Phones, Tablets and Android TV</b><span class="secondary">Full screen player, picture in picture, voice search and TV remote support</span></span>
           <a class="btn secondary small" href="/app" download>${ic("download")} Download</a></div>
         <div class="set-row"><span><b>Fire TV</b><span class="secondary">Install the free Downloader app, then type <b class="mono">${esc(location.host)}/app</b> into it</span></span></div>
@@ -4076,7 +4076,9 @@
   // a setting on this device, and as the backup if the app player cant play something
   const NATIVE_KEY = "kino-native";
   const nativeOk = () => ANDROID && typeof window.KinoAndroid.playNative === "function";
-  const useNative = () => { if (!nativeOk()) return false; try { return localStorage.getItem(NATIVE_KEY) !== "0"; } catch (_) { return true; } };
+  // A TV always plays in the app's own player: the web player (the page's own <video>) can show one frozen picture with sound on some TVs. Everywhere
+  // else the choice in Settings counts
+  const useNative = () => { if (!nativeOk()) return false; if (TV) return true; try { return localStorage.getItem(NATIVE_KEY) !== "0"; } catch (_) { return true; } };
   // The player chosen in Settings: the app's own (exo), the device's (android) or the page's (web)
   const defaultPlayer = () => {
     if (!useNative()) return "web";
@@ -4180,6 +4182,7 @@
   let RELOADED = false;  // the app reloaded this page after the player, so theres no back history to go by
   async function playFile(fid, opts = {}) {
     if (!opts.web && useNative()) return nativePlay(fid, opts);
+    pl.opts = opts;
     // Each press gets a number, anything still loading from an earlier press stops when it sees a newer one
     const my = ++PLAY_N;
     stopPreviews(); closeTrailer();
@@ -4794,6 +4797,24 @@
     $("#stKeep").onclick = () => { box.hidden = true; pl.stalls = []; };
     $("#stNext").focus();
   }, 1000);
+  // Sound but no picture: some TVs' web video plays the audio of a film and shows one frozen frame. Six seconds into a film the page looks at how many
+  // pictures were really shown, and if there were none (or next to none) it hands the film over to the app's own player, from the same spot. Not for a
+  // film that was sent to the web player on purpose (the app's player had failed on it), so it can't bounce back and forth
+  v.addEventListener("playing", () => {
+    clearTimeout(pl.picT);
+    if (!nativeOk() || !pl.info || pl.info.live || pl.mode === "live" || (pl.opts && pl.opts.web) || pl.switchedNative === pl.info.id) return;
+    const id = pl.info.id;
+    pl.picT = setTimeout(() => {
+      if (pl.el.hidden || v.paused || !pl.info || pl.info.id !== id) return;
+      const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null, frames = q ? q.totalVideoFrames : -1;
+      if (v.currentTime < 3 || !(v.videoWidth === 0 || frames === 0 || (frames > 0 && frames < 3))) return;
+      pl.switchedNative = id;
+      const at = pos(), o = { ...(pl.opts || {}), from: at, web: false };
+      toast("No picture in the web player, switching to the Kino Player", 5000);
+      closePlayer();
+      nativePlay(id, o);
+    }, 6000);
+  });
   v.addEventListener("playing", () => {
     spinner(false); $("#pMsg").hidden = true; loadHide(); stillReset();
     if (pl.info && (!pl.evStarted || pl.evPaused)) { pl.evStarted = true; pl.evPaused = false; sendEvent("start"); }

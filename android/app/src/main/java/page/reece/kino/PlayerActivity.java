@@ -640,7 +640,19 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         return new ExoEngine(this, headers, ua, info.optString("audioLang"), info.optString("subLang"), info.optString("subSize", "m"), lowRam, this);
     }
 
+    // Sound but no picture: some TVs' decoder takes a video it can't really show (a profile or colour format it claims to know) and plays the sound over
+    // one frozen frame. Seven seconds after it started playing, with no frame ever drawn, the converted stream is tried (or the next source)
+    private boolean gotFrame;
+    private final Runnable noPicture = () -> {
+        if (this.leaving || this.errorShown || this.live || this.loading || gotFrame || this.eng == null || !this.eng.playing() || !(this.eng instanceof ExoEngine)) return;
+        boolean canConvert = !info.optBoolean("isStream") || info.optBoolean("torbox");
+        if (!hls && !triedHls && canConvert) { relaunchLoading("No picture from this file, Kino is converting it"); startHls(pos()); }
+        else if (sourceCanMoveOn()) sourceFailed("no picture");
+    };
+
     private void startEngine(String which, double at) {
+        gotFrame = false;
+        h.removeCallbacks(noPicture);
         if (eng != null) { eng.release(); video.removeAllViews(); }
         eng = makeEngine(which);
         if (live) eng.live(true);
@@ -741,11 +753,14 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     public void onPlaying(boolean p) {
         bPlay.setImageResource(p ? R.drawable.ic_pause : R.drawable.ic_play);
         bPlay.setContentDescription(p ? "Pause" : "Play");
-        if (p) { hlsRetries = 0; loaded(); bump(); h.removeCallbacks(showSpin); if (bufSpin != null) bufSpin.setVisibility(View.GONE); }
+        if (p) {
+            hlsRetries = 0; loaded(); bump(); h.removeCallbacks(showSpin); if (bufSpin != null) bufSpin.setVisibility(View.GONE);
+            if (!gotFrame && !live) { h.removeCallbacks(noPicture); h.postDelayed(noPicture, 7000); }
+        }
         else { save(); showControls(null); }
     }
 
-    @Override public void onFirstFrame() { loaded(); }
+    @Override public void onFirstFrame() { gotFrame = true; h.removeCallbacks(noPicture); loaded(); }
 
     @Override
     public void onEnded() {

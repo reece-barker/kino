@@ -4761,20 +4761,20 @@
   v.addEventListener("waiting", () => { if (!LOAD.on) spinner(true); if (!pl.bufStart) pl.bufStart = Date.now(); });
   v.addEventListener("playing", () => {
     // How long that stall was, the buffering watch below adds them up. Stalls right after a seek dont count
-    if (pl.bufStart && pl.playedAt && Date.now() - (pl.lastSeek || 0) > 10000) pl.stalls.push([Date.now(), Date.now() - pl.bufStart]);
+    if (pl.bufStart && pl.playedAt && Date.now() - (pl.lastSeek || 0) > 10000 && Date.now() - pl.bufStart >= 1200) pl.stalls.push([Date.now(), Date.now() - pl.bufStart]);
     pl.bufStart = 0;
   });
-  // A source that keeps stopping to load: 12 seconds stuck in one go, or 25 seconds over two minutes. Asks to swap
-  // to the next source like the placeholder card does, or just swaps with the setting on
+  // A source that keeps stopping to load: three stops in a minute and a half (each over a second), or 15 seconds of waiting in that time, or 10
+  // seconds stuck in one go. Asks to swap to the next source like the placeholder card does (in the corner), or just swaps with the setting on
   setInterval(() => {
     const info = pl.info;
     if (!info || pl.el.hidden || !info.stream) return;
     const now = Date.now();
     if (!pl.playedAt && pos() > 5 && !pl.v.paused) pl.playedAt = now;
     if (!pl.playedAt || now - pl.stallAskedAt < 180000 || now - (pl.lastSeek || 0) < 10000 || !moreSources(info.id)) return;
-    pl.stalls = pl.stalls.filter((x) => now - x[0] < 120000);
+    pl.stalls = pl.stalls.filter((x) => now - x[0] < 90000);
     const cur = pl.bufStart && !pl.v.paused ? now - pl.bufStart : 0;
-    if (cur < 12000 && pl.stalls.reduce((a, x) => a + x[1], 0) + cur < 25000) return;
+    if (cur < 10000 && pl.stalls.reduce((a, x) => a + x[1], 0) + cur < 15000 && pl.stalls.length + (cur >= 1200 ? 1 : 0) < 3) return;
     pl.stallAskedAt = now;
     const at = pos();
     if (info.prefs && info.prefs.auto_next_source) { nextSource(info.id, at, "That source kept buffering"); return; }

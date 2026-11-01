@@ -732,7 +732,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         if (b && bufStart == 0) bufStart = now;
         else if (!b && bufStart > 0) {
             // Stalls after a seek dont count, jumping somewhere always has to load a bit
-            if (!loading && now - lastSeekAt > 10000) stalls.add(new long[]{now, now - bufStart});
+            if (!loading && now - lastSeekAt > 10000 && now - bufStart >= 1200) stalls.add(new long[]{now, now - bufStart});
             bufStart = 0;
         }
     }
@@ -1294,11 +1294,12 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         if (!loading && p > 5 && playedAt == 0) playedAt = now;
         if (loading || card != null || errorShown || !sourceCanMoveOn() || playedAt == 0) return;
         if (now - stallAskedAt < 180000 || now - lastSeekAt < 10000) return;
-        while (!stalls.isEmpty() && now - stalls.peekFirst()[0] > 120000) stalls.pollFirst();
+        while (!stalls.isEmpty() && now - stalls.peekFirst()[0] > 90000) stalls.pollFirst();
         long total = 0;
         for (long[] x : stalls) total += x[1];
         long cur = bufStart > 0 ? now - bufStart : 0;
-        if (cur < 12000 && total + cur < 25000) return;
+        // Three stops of over a second in a minute and a half, or 15 seconds of waiting in it, or 10 seconds stuck in one go
+        if (cur < 10000 && total + cur < 15000 && stalls.size() + (cur >= 1200 ? 1 : 0) < 3) return;
         stallAskedAt = now;
         if (info.optBoolean("autoNextSource")) { moveOn("That source kept buffering", pos(), false); return; }
         LinearLayout c = dialog("This source keeps buffering", "Another source might play smoother. Kino can switch and carry on from " + clock(pos()) + ".");

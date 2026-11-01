@@ -34,6 +34,7 @@ import struct
 import tempfile
 import base64
 import datetime
+import uuid
 import gzip
 import sqlite3
 import subprocess
@@ -6719,8 +6720,130 @@ def keep_tvg(c, old, tags):
     return prev if prev and "~" in prev and prev.split("~", 1)[0] in tags else c["tvg"]
 
 
+# ---- Pluto TV (free, ad supported live channels). Its own public apps use the same calls: one start call gives a token and the stream settings,
+# then the channel list, categories and guide are plain json. The UK channels only play from a UK address, so a server elsewhere says so
+PLUTO = {"s": {}, "lock": {}}  # key -> (time, session). A session can only watch one channel at a time, opening another one with it ends the first
+PLUTO_UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"}
+
+
+def pluto_client_id():
+    f = DATA_DIR / "pluto-client"
+    try:
+        return f.read_text().strip()
+    except OSError:
+        cid = str(uuid.uuid4())
+        try:
+            f.write_text(cid)
+        except OSError:
+            pass
+        return cid
+
+
+async def pluto_session(key="", force=False):
+    """A Pluto session (a token and the stream settings that go with it). Every channel gets its own, shared by everyone watching it, and
+    kept for two hours. The key "" is for reading the channel list and guide"""
+    hit = PLUTO["s"].get(key)
+    if not force and hit and time.time() - hit[0] < 7200:
+        return hit[1]
+    lock = PLUTO["lock"].setdefault(key, asyncio.Lock())
+    async with lock:
+        hit = PLUTO["s"].get(key)
+        if not force and hit and time.time() - hit[0] < 7200:
+            return hit[1]
+        q = {"appName": "web", "appVersion": "9.0.0", "deviceVersion": "130.0.0", "deviceModel": "web", "deviceMake": "chrome", "deviceType": "web",
+             "clientID": pluto_client_id(), "clientModelNumber": "1.0.0", "serverSideAds": "false"}
+        try:
+            async with ac("pluto", timeout=20, headers=PLUTO_UA) as c:
+                r = await c.get("https://boot.pluto.tv/v4/start", params=q)
+            r.raise_for_status()
+            j = r.json()
+            sv = j["servers"]
+            sess = {"token": j["sessionToken"], "params": j["stitcherParams"], "stitcher": sv["stitcher"], "channels": sv["channels"],
+                    "country": str((j.get("session") or {}).get("countryCode") or "")}
+        except Exception as e:
+            raise HTTPException(502, f"Couldn't reach Pluto TV ({str(e)[:80]})")
+        if len(PLUTO["s"]) > 400:
+            for k in sorted(PLUTO["s"], key=lambda k: PLUTO["s"][k][0])[:100]:
+                PLUTO["s"].pop(k, None)
+                PLUTO["lock"].pop(k, None)
+        PLUTO["s"][key] = (time.time(), sess)
+        return sess
+
+
+def pluto_url(sess, chid):
+    return f"{sess['stitcher']}/v2/stitch/hls/channel/{chid}/master.m3u8?{sess['params']}&jwt={sess['token']}&masterJWTPassthrough=true"
+
+
+async def pluto_get(sess, path, **params):
+    async with ac("pluto", timeout=40, headers={**PLUTO_UA, "Authorization": "Bearer " + sess["token"]}) as c:
+        r = await c.get(sess["channels"] + path, params=params)
+    r.raise_for_status()
+    return r.json()
+
+
+def pluto_time(t):
+    return datetime.datetime.fromisoformat(str(t).replace("Z", "+00:00")).timestamp()
+
+
+async def refresh_pluto(row):
+    lid = row["id"]
+    try:
+        sess = await pluto_session("", force=True)
+        if sess["country"] != "GB":
+            raise HTTPException(400, f"Pluto TV UK only plays from a UK address, this server looks like it is in {sess['country'] or 'another country'}")
+        data = (await pluto_get(sess, "/v2/guide/channels", limit=1000, sort="number:asc")).get("data") or []
+        cats = (await pluto_get(sess, "/v2/guide/categories")).get("data") or []
+        cat_of = {cid: c.get("name") for c in cats for cid in c.get("channelIDs") or []}
+        old = {r["id"]: dict(r) for r in db().q("SELECT id, ok, checked FROM channels WHERE list_id = ?", (lid,))}
+        rows, ids = [], []
+        for c in data:
+            if not c.get("isStitched") or c.get("plutoOfficeOnly") or not c.get("id"):
+                continue
+            name = unesc(c.get("name") or "")[:120] or "Channel"
+            logo = next((i["url"] for t in ("colorLogoPNG", "solidLogoPNG") for i in c.get("images") or [] if i.get("type") == t and i.get("url")), None)
+            logo = logo.replace("http://", "https://", 1) if logo else None
+            grp = live_group(cat_of.get(c["id"]), name)
+            cid = "c" + hashlib.sha1(f"{lid}|pluto://{c['id']}|{name}".encode()).hexdigest()[:15]
+            o = old.get(cid) or {}
+            rows.append((cid, lid, name, logo, grp, "uk", f"pluto~{c['id']}", f"pluto://{c['id']}", None, live_rank(name, "uk", "eng"),
+                         o.get("ok"), o.get("checked"), classify_junk(name, cat_of.get(c["id"]) or grp), popularity(name)))
+            ids.append(c["id"])
+
+        def store():
+            db().q("DELETE FROM channels WHERE list_id = ?", (lid,))
+            db_chunks("INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        await asyncio.to_thread(store)
+        # What's on, the next ten hours, a few channels at a time
+        err = None
+        progs = []
+        start = datetime.datetime.now(datetime.timezone.utc).replace(minute=0, second=0, microsecond=0) - datetime.timedelta(hours=1)
+        for i in range(0, len(ids), 50):
+            try:
+                j = await pluto_get(sess, "/v2/guide/timelines", start=start.strftime("%Y-%m-%dT%H:%M:%S.000Z"), duration=660, channelIds=",".join(ids[i:i + 50]))
+            except Exception as e:
+                err = f"Guide failed: {str(e)[:80]}"
+                continue
+            for ch in j.get("data") or []:
+                for t in ch.get("timelines") or []:
+                    ep = t.get("episode") or {}
+                    try:
+                        progs.append((f"pluto~{ch.get('channelId')}", pluto_time(t["start"]), pluto_time(t["stop"]), unesc(t.get("title") or "")[:200],
+                                      unesc(ep.get("name") or "")[:200] or None, unesc(ep.get("description") or "")[:600] or None))
+                    except Exception:
+                        pass
+        if progs:
+            await asyncio.to_thread(write_epg, sorted({p[0] for p in progs}), progs, [])
+        db().q("UPDATE iptv_lists SET refreshed = ?, count = ?, error = ? WHERE id = ?", (time.time(), len(rows), err, lid))
+        log.info("pluto tv: %d channels, %d programmes", len(rows), len(progs))
+    except Exception as e:
+        db().q("UPDATE iptv_lists SET refreshed = ?, error = ? WHERE id = ?", (time.time(), str(getattr(e, "detail", None) or e)[:200], lid))
+        log.info("pluto tv failed: %s", e)
+
+
 async def refresh_list(row):
     lid = row["id"]
+    if str(row["url"]).startswith("pluto://"):
+        return await refresh_pluto(row)
     try:
         raw, _ = await live_get(row["url"], local=bool(row["local"]))
         text = raw.decode("utf-8", errors="ignore")
@@ -6767,6 +6890,10 @@ async def refresh_list(row):
 async def check_channel(c, tries=2):
     """Opens a channel for a moment (twice if it fails the first time): a playlist or video coming back counts as working"""
     ok = False
+    if str(c["url"]).startswith("pluto://"):
+        # Opening a Pluto channel makes a session for it, 180 of those just to look is too much. They are listed by Pluto, so they count as working
+        db().q("UPDATE channels SET ok = 1, checked = ? WHERE id = ?", (time.time(), c["id"]))
+        return True
     for i in range(tries):
         ok = await probe_channel(c)
         if ok:
@@ -6830,7 +6957,9 @@ async def live_worker():
         log.info("live tv guide catch up: %s", e)
     while True:
         try:
-            for row in db().q("SELECT * FROM iptv_lists WHERE enabled = 1 AND (refreshed IS NULL OR refreshed < ?)", (time.time() - 12 * 3600,)):
+            # Pluto's guide only covers the next hours, so it is read every four hours
+            for row in db().q("SELECT * FROM iptv_lists WHERE enabled = 1 AND (refreshed IS NULL OR refreshed < CASE WHEN url LIKE 'pluto://%' THEN ? ELSE ? END)",
+                              (time.time() - 4 * 3600, time.time() - 12 * 3600)):
                 await refresh_list(row)
             db().q("DELETE FROM epg WHERE stop < ?", (time.time() - 7200,))
             await check_channels()
@@ -7021,6 +7150,8 @@ async def live_source(cid):
         r = db().q("SELECT c.*, l.local FROM channels c JOIN iptv_lists l ON l.id = c.list_id WHERE c.id = ?", (cid,))
         if not r:
             raise HTTPException(404, "That channel isn't in your playlists anymore")
+        if str(r[0]["url"]).startswith("pluto://"):
+            return pluto_url(await pluto_session(r[0]["url"][8:]), r[0]["url"][8:]), {}, False
         return r[0]["url"], json.loads(r[0]["headers"]) if r[0]["headers"] else {}, bool(r[0]["local"])
     if cid.startswith("t"):
         hit = LIVE_RESOLVED.get(cid)
@@ -7834,14 +7965,19 @@ async def live_admin_add(request: Request, admin=Depends(require_admin)):
     b = await request.json()
     url = str(b.get("url") or "").strip()
     epg = str(b.get("epg") or "").strip() or None
-    if not re.match(r"^https?://", url) or (epg and not re.match(r"^https?://", epg)):
+    pluto = url.lower() == "pluto://gb"
+    if not pluto and (not re.match(r"^https?://", url) or (epg and not re.match(r"^https?://", epg))):
         raise HTTPException(400, "Links have to start with http:// or https://")
+    if pluto:
+        url, epg = "pluto://gb", None
+        if db().q("SELECT 1 FROM iptv_lists WHERE url = ?", (url,)):
+            raise HTTPException(400, "Pluto TV is already added")
     host = urlparse(url).hostname or ""
     try:
-        local = bool(b.get("local")) or not ip_is_public(socket.gethostbyname(host))
+        local = False if pluto else bool(b.get("local")) or not ip_is_public(socket.gethostbyname(host))
     except Exception:
         local = bool(b.get("local"))
-    name = str(b.get("name") or "").strip()[:60] or host
+    name = str(b.get("name") or "").strip()[:60] or ("Pluto TV UK" if pluto else host)
     db().q("INSERT INTO iptv_lists (name, url, epg, local, enabled, added) VALUES (?,?,?,?,1,?)", (name, url, epg, 1 if local else 0, time.time()))
     row = db().q("SELECT * FROM iptv_lists ORDER BY id DESC LIMIT 1")[0]
     await refresh_list(row)

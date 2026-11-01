@@ -1562,7 +1562,7 @@
     app.innerHTML = topbar(kind === "movie" ? "movies" : "shows") + `<main class="page">
       <h1 class="large-title">${kind === "movie" ? "Movies" : "TV Shows"}</h1>
       <div class="toolbar">
-        <form class="search" id="qForm" action="#" role="search">${ic("search")}<span class="sr">Filter</span><input id="q" type="search" enterkeyhint="search" placeholder="Search ${noun}s"><button class="btn primary small search-go" id="qGo" type="submit">Search</button></form>
+        <form class="search" id="qForm" action="#" role="search">${ic("search")}<span class="sr">Filter</span><input id="q" type="search" enterkeyhint="search" placeholder="Search ${noun}s" autocomplete="off" autocapitalize="none" spellcheck="false"><button class="btn primary small search-go" id="qGo" type="submit">Search</button></form>
         <select class="plain" id="sort" aria-label="Sort"><option value="added">Recently Added</option><option value="name">Name</option><option value="year">Newest</option><option value="old">Oldest</option><option value="rating">Rating</option></select>
         <select class="plain" id="decade" aria-label="Decade"><option value="">Any Year</option>${(first.decades || []).map((d) => `<option value="${d}">${d}s</option>`).join("")}</select>
         <select class="plain" id="minr" aria-label="Rating"><option value="">Any Rating</option><option value="6">6+ on IMDb</option><option value="7">7+ on IMDb</option><option value="8">8+ on IMDb</option></select>
@@ -1687,7 +1687,7 @@
     const n = ROUTE_N;
     const start = safeDecode(location.hash.split("?q=")[1] || "");
     app.innerHTML = topbar("search") + `<main class="page">
-      <form class="search big" id="sForm" role="search" action="#">${ic("search")}<label class="sr" for="sq">Search</label><input id="sq" type="search" enterkeyhint="search" placeholder="Films, shows, actors, directors and more" value="${esc(start)}" autocomplete="off">
+      <form class="search big" id="sForm" role="search" action="#">${ic("search")}<label class="sr" for="sq">Search</label><input id="sq" type="search" enterkeyhint="search" autocapitalize="none" spellcheck="false" placeholder="Films, shows, actors, directors and more" value="${esc(start)}" autocomplete="off">
         <button class="mic-btn" id="micBtn" type="button" aria-label="Search by Voice" title="Search by Voice" hidden>${ic("mic")}</button>
         <button class="btn primary small search-go" id="sGo" type="submit">Search</button></form>
       <div id="sres"></div></main>`;
@@ -3344,7 +3344,7 @@
       <button class="round-btn sm" data-mmdel="${f.id}" aria-label="Delete ${esc(f.title)}" title="Delete">${ic("trash")}</button></div>`;
     const selSize = () => st.rows.filter((f) => st.sel.has(f.id)).reduce((a, f) => a + f.size, 0);
     function drawFiles() {
-      body.innerHTML = `<div class="ip-form"><input id="mmQ" type="search" placeholder="Search" value="${esc(st.q)}" aria-label="Search downloaded media">
+      body.innerHTML = `<div class="ip-form"><input id="mmQ" type="search" autocomplete="off" placeholder="Search" value="${esc(st.q)}" aria-label="Search downloaded media">
         <select class="plain" id="mmSort" aria-label="Sort by"><option value="size" ${st.sort === "size" ? "selected" : ""}>Biggest First</option><option value="new" ${st.sort === "new" ? "selected" : ""}>Newest First</option><option value="name" ${st.sort === "name" ? "selected" : ""}>Name</option></select></div>
         <div class="mm-list">${st.rows.map(row).join("") || `<p class="secondary sr-empty">${st.q ? "Nothing matches that." : "Nothing on the Storage Box."}</p>`}</div>
         ${st.next != null ? `<div class="actions"><button class="btn secondary small" id="mmMore">Show More</button></div>` : ""}

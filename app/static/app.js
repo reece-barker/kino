@@ -5012,6 +5012,7 @@
     // one closest to where you are. Measured edge to edge, so a tall card further away never beats a button right next to you
     // Sideways along a row of cards only ever lands on another card, the little buttons under episodes (mark as
     // watched) used to catch the remote at the end of a season so it looked like the selection got lost
+    const scrollRow = d[0] < 0 && cur.closest && cur.closest(".row, .episodes, .chips");
     const tileRow = d[0] && cur.classList && cur.classList.contains("tile") && cur.closest(".row, .episodes");
     const rowTiles = tileRow ? items.filter((el) => el !== cur && el.classList.contains("tile") && tileRow.contains(el) && (el.getBoundingClientRect().left - a.left) * d[0] > 0) : [];
     const cands = [];
@@ -5028,7 +5029,9 @@
       // Right stays out of the sidebar's own items, but works inside its profile menu (the Appearance buttons)
       if (d[0] > 0 && inSide && elSide && !openMenu) continue;
       const b = el.getBoundingClientRect();
-      if (!elSide && scope === document && b.left + b.width / 2 < sideRight) continue;
+      // Things tucked behind the sidebar aren't targets, except the cards of the row you are in that have been scrolled out to the left (they are
+      // there, just off screen, and Left has to be able to bring them back)
+      if (!elSide && scope === document && b.left + b.width / 2 < sideRight && !(scrollRow && scrollRow.contains(el))) continue;
       const bx = b.left + b.width / 2, by = b.top + b.height / 2;
       if (d[0] ? (bx - ax) * d[0] <= 4 : (by - ay) * d[1] <= 4) continue;
       // How far away the next line is, and how far along it

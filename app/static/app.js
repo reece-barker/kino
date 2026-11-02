@@ -2745,7 +2745,7 @@
 
   async function drawGuide(qs, n) {
     const box = $("#guide");
-    const start = Math.floor(Date.now() / 1000 / 1800) * 1800, hours = TV ? 2 : 3, span = hours * 3600;
+    const start = Math.floor(Date.now() / 1000 / 1800) * 1800, hours = TV ? 2 : innerWidth <= 700 ? 1 : 3, span = hours * 3600;  // a phone has room for about an hour, at 3 hours a half hour programme was 25px wide and said "B.."
     const url = (skip) => `/api/live/guide?start=${start}&hours=${hours}&${qs}${skip ? "&skip=" + skip : ""}`;
     const r = await api(url(0));
     if (!$("#guide") || n !== ROUTE_N) return;

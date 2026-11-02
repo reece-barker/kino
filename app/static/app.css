@@ -945,6 +945,12 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 .tb-item { position: relative; }
 .tb-alert { position: absolute; top: 4px; right: calc(50% - 22px); }
 .side-item[aria-current="page"] .alert-dot { box-shadow: 0 0 0 2px #fff; }
+.ac-li { align-items: center; gap: 12px; }
+.li .grow.ac-text { display: block; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+.ac-strip { display: flex; align-items: flex-end; gap: 4px; height: 110px; margin: 4px 0 16px; }
+.ac-day { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 6px; }
+.ac-bar { display: block; width: 100%; max-width: 36px; min-height: 2px; border-radius: 6px 6px 2px 2px; background: var(--blue); }
+.ac-lbl { font-size: 12px; color: var(--label-2); }
 .al-item { align-items: center; }
 .al-item.unread { background: rgba(10, 132, 255, 0.08); border-radius: 12px; padding-left: 10px; padding-right: 10px; }
 .al-art { flex: none; width: 46px; height: 68px; border-radius: 8px; overflow: hidden; background: var(--fill); }

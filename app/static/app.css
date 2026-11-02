@@ -1174,7 +1174,7 @@ body.tv .side-item:focus-visible:not([aria-current]) { background: var(--hover);
 body.tv .side-item[aria-current]:focus-visible { transform: scale(1.04); }
 body.tv .tile:focus-visible .art { transform: scale(1.08) translateY(-3px); box-shadow: 0 0 0 3px #fff, 0 24px 44px rgba(0, 0, 0, 0.6); outline: none; }
 body.tv .search.big:focus-within { box-shadow: 0 0 0 3px #fff; }
-body.tv .player .icon-btn:focus-visible { background: rgba(255, 255, 255, 0.92); color: #000; }
+body.tv .player .icon-btn:focus-visible { background: rgba(255, 255, 255, 0.16); color: #fff; box-shadow: 0 0 0 3px #fff; }
 body.tv .scrub:focus-visible .scrub-track { height: 8px; }
 /* picture in picture on android: just the video */
 body.pip .player-ui, body.pip .skip-intro, body.pip .up-next, body.pip .subs-layer { display: none !important; }
@@ -1244,7 +1244,9 @@ body.tv .tile-x { opacity: 1; }
 /* ---- lite mode for tvs and low memory devices: same look, much less work for the graphics chip */
 html.lite *, html.lite *::before, html.lite *::after { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
 html.lite .side, html.lite .tabbar { background: var(--bg-2); }
-html.lite .glass, html.lite .menu, html.lite .hero-dots { background: rgba(28, 28, 30, 0.94); }
+html.lite .glass, html.lite .hero-dots { background: rgba(28, 28, 30, 0.94); }
+/* menus are solid on a tv, with the blur off a see-through one just shows the page behind it */
+html.lite .menu, html.lite .menu.drop { background: var(--menu-solid, #2c2c2e); }
 html.lite .sheet-wrap { background: rgba(0, 0, 0, 0.78); }
 html.lite .hero-slide.on .hero-bg img { animation: none; }
 html.lite .sk::after { animation: none; display: none; }
@@ -1439,8 +1441,8 @@ body.tv #sres > .srow:first-child { margin-top: 40px; }
 .upd-bar i { display: block; height: 100%; width: 0; background: var(--label); transition: width 0.3s ease; }
 
 /* PIN pad: the focused key shows on a tv, and the pad fits short screens without scrolling */
-body.tv .pin-key:focus, body.tv .pin-key:focus-visible { background: var(--label); color: var(--page-bg); transform: scale(1.08); outline: none; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45); }
-body.tv .pin-key.del:focus { background: var(--label); }
+body.tv .pin-key:focus, body.tv .pin-key:focus-visible { background: var(--hover); color: var(--label); transform: scale(1.08); outline: none; box-shadow: 0 0 0 3px #fff, 0 8px 22px rgba(0, 0, 0, 0.45); }
+body.tv .pin-key.del:focus { background: var(--hover); }
 @media (max-height: 700px) {
   .pin .pin-ic { display: none; }
   .pin h2 { margin: 0 0 2px; font-size: 20px; }
@@ -1462,14 +1464,14 @@ body.tv .icon-pick:focus .av { box-shadow: 0 0 0 3px var(--bg-2), 0 0 0 6px var(
 .tv-select .i { width: 14px; height: 14px; opacity: 0.6; flex: none; }
 .tv-select > span { overflow: hidden; text-overflow: ellipsis; }
 .season-pick .tv-select { height: 44px; font-size: 17px; font-weight: 600; padding: 0 16px; }
-body.tv .tv-select:focus { background: var(--label); color: var(--page-bg); outline: none; transform: scale(1.04); }
+body.tv .tv-select:focus { box-shadow: 0 0 0 3px #fff; outline: none; transform: scale(1.04); }
 .sheet.picker { width: min(420px, 100%); padding: 20px 14px 14px; }
 .pick-title { margin: 0 10px 12px; font-size: 20px; }
 .pick-list { display: grid; gap: 2px; max-height: min(60vh, 420px); overflow-y: auto; padding: 4px; }
 .pick-opt { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 11px 12px; border-radius: 12px; font-size: 16px; color: var(--label); }
 .pick-opt .pick-ck { width: 18px; display: grid; place-items: center; color: var(--blue); }
 .pick-opt.on { font-weight: 600; }
-body.tv .sheet .pick-opt:focus { outline: none; background: var(--label); color: var(--page-bg); }
+body.tv .sheet .pick-opt:focus { outline: none; background: var(--hover); color: var(--label); box-shadow: inset 0 0 0 3px #fff; }
 body.tv .sheet .pick-opt:focus .pick-ck { color: inherit; }
 
 /* Tvs and low memory devices: cards draw flat, only the focused one gets a shadow and the zoom. Each shadow and
@@ -1546,7 +1548,7 @@ body.tv #backups, body.tv #appLog { margin-top: 16px; }
 .int-chip.auto .int-kind { color: var(--blue); }
 .int-chip.sugg { padding: 0 14px 0 10px; background: transparent; box-shadow: inset 0 0 0 1px var(--sep); color: var(--label-2); }
 .int-chip:hover { background: var(--hover); }
-body.tv .int-chip:focus { background: var(--label); color: var(--page-bg); outline: none; }
+body.tv .int-chip:focus { background: var(--hover); box-shadow: 0 0 0 3px #fff; outline: none; }
 body.tv .int-chip:focus .int-kind { color: inherit; opacity: 0.7; }
 .int-add { display: flex; gap: 8px; }
 .int-add input { flex: 1; min-width: 0; height: 38px; border-radius: 10px; border: 0; padding: 0 12px; background: var(--fill); color: var(--label); font: inherit; font-size: 15px; }
@@ -1646,8 +1648,8 @@ body.tv .live-tabs a:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; 
 .opt-list .mi:hover { background: var(--fill); }
 .rec-list .li { gap: 10px; }
 .badge.rec-on { color: #fff; background: #e5383b; box-shadow: none; }
-body.tv .ch-opt:focus-visible { outline: none; background: var(--label); color: var(--page-bg); transform: translateY(-50%) scale(1.1); }
-body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none; background: var(--label); color: var(--page-bg); }
+body.tv .ch-opt:focus-visible { outline: none; background: var(--hover); box-shadow: 0 0 0 3px #fff; transform: translateY(-50%) scale(1.1); }
+body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none; background: var(--hover); color: var(--label); box-shadow: inset 0 0 0 3px #fff; }
 /* phones held upright: the player's title bar sits below the status bar with room to breathe */
 @media (orientation: portrait) and (max-width: 760px) {
   .player-top { padding-top: calc(env(safe-area-inset-top) + 18px); padding-bottom: 56px; background: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0)); }
@@ -1670,7 +1672,7 @@ body.tv .opt-list .mi:focus, body.tv .opt-list .mi:focus-visible { outline: none
 .fav-btn .i { width: 18px; height: 18px; }
 .fav-btn:hover { background: rgba(0, 0, 0, 0.8); }
 .fav-btn.fav-star { color: #ffd60a; }
-body.tv .fav-btn:focus-visible { outline: none; background: #fff; color: #000; transform: scale(1.12); }
+body.tv .fav-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; transform: scale(1.12); }
 body.tv .fav-btn.fav-star:focus-visible { color: #b8860b; }
 /* the star on a channel card is only a marker for favourites, it isnt a button, add and remove live in the ... menu only */
 /* options popup, sits right next to the button it opened from instead of a full screen sheet */

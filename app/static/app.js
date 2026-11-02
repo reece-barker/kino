@@ -43,6 +43,7 @@
     home: "M12 3.2l9 7.6V21a1 1 0 01-1 1h-5.5v-6.5h-5V22H4a1 1 0 01-1-1V10.8z",
     film: "M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1zm1 2v2h2V6zm12 0v2h2V6zM5 10v4h2v-4zm12 0v4h2v-4zM5 16v2h2v-2zm12 0v2h2v-2zM9 6v12h6V6z",
     tv: "M3 5h18a1 1 0 011 1v11a1 1 0 01-1 1h-6v2h3v2H6v-2h3v-2H3a1 1 0 01-1-1V6a1 1 0 011-1z",
+    bell: "M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4a1.5 1.5 0 00-3 0v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z",
     bookmark: "M6 3h12a1 1 0 011 1v17.2a.5.5 0 01-.8.4L12 17.5l-6.2 4.1a.5.5 0 01-.8-.4V4a1 1 0 011-1z",
     server: "M4 3h16a1 1 0 011 1v5a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1zm2 3v1.5h2V6zM4 14h16a1 1 0 011 1v5a1 1 0 01-1 1H4a1 1 0 01-1-1v-5a1 1 0 011-1zm2 3v1.5h2V17z",
     chevron: "M7.4 9.2L12 13.8l4.6-4.6L18 10.6l-6 6-6-6z",
@@ -428,7 +429,7 @@
     const item = (k, label, icon, extra = "") => `<a class="side-item" href="#/${k}" data-k="${k}"><span class="side-ic">${ic(icon)}</span><span class="side-lbl">${label}</span>${extra}</a>`;
     const F = ME.features || {};
     const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"],
-      ...(F.live ? [["live", "Live TV", "live"]] : []), ["mylist", "My List", "bookmark"]];
+      ...(F.live ? [["live", "Live TV", "live"]] : []), ["mylist", "My List", "bookmark"], ["alerts", "Alerts", "bell"]];
     const group = [["settings", "Settings", "gear"], ["history", "History", "clock"]];
     if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["health", "Library Health", "info"], ["server", "Server", "server"]);
     chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
@@ -445,7 +446,7 @@
       </div>
       <div class="side-items">
         <span class="side-pill" id="sidePill" aria-hidden="true"></span>
-        <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i)).join("")}</nav>
+        <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i, k === "alerts" ? `<span class="side-badge"><i class="alert-dot" data-alertdot hidden></i></span>` : "")).join("")}</nav>
         <div class="side-group ${open ? "open" : ""}" id="sideGroup">
           <button class="side-head" id="sideHead" aria-expanded="${open}"><span class="side-lbl">Settings</span>${ic("chevron")}</button>
           <div class="side-sub"><div class="side-sub-in">${group.map(([k, l, i]) => item(k, l, i, k === "sync" ? `<span class="side-badge" id="syncChip"><span class="dot"></span><span class="txt"></span></span>` : "")).join("")}</div></div>
@@ -455,7 +456,7 @@
     <nav class="tabbar" aria-label="Sections">
       ${[["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ...(F.live ? [["live", "Live", "live"]] : []), ["search", "Search", "search"]].map(([k, l, i]) =>
         `<a class="tb-item" href="#/${k}" data-k="${k}">${ic(i)}<span>${l}</span></a>`).join("")}
-      <button class="tb-item" id="tbMore" data-k="more">${pav(p, "xs")}<span>${esc(p.name)}</span></button>
+      <button class="tb-item" id="tbMore" data-k="more">${pav(p, "xs")}<span>${esc(p.name)}</span><i class="alert-dot tb-alert" data-alertdot hidden></i></button>
     </nav>`;
     wireSide();
   }
@@ -466,7 +467,7 @@
     const inGroup = ["settings", "history", "sync", "health", "server"].includes(active);
     if (inGroup) { const g = $("#sideGroup"); if (g && !g.classList.contains("open")) toggleGroup(true, false); }
     $$("#chrome [data-k]").forEach((a) => {
-      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "settings", "history", "sync", "health", "server"].includes(active));
+      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "alerts", "settings", "history", "sync", "health", "server"].includes(active));
       on ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
     });
     placePill();
@@ -549,7 +550,7 @@
       const p = ME.profile;
       const row = (href, icon, label) => `<a class="more-row" href="${href}" data-close>${ic(icon)}<span>${label}</span>${ic("chevron")}</a>`;
       const sh = sheet(`<div class="more-head">${pav(p, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
-        <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
+        <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/alerts", "bell", "Alerts")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
           ${isAdmin() ? row("#/sync", "refresh", "Sync") + row("#/health", "info", "Library Health") + row("#/server", "server", "Server") : ""}
           ${row("#/profiles", "people", "Switch Profile")}</div>
         <div class="menu-label">Appearance</div>${themePicker("sheetTheme")}
@@ -3817,6 +3818,36 @@
         <div class="list">${r.unmatched.map((u) => `<div class="li"><span class="grow" style="display:block;white-space:normal;overflow:visible;overflow-wrap:anywhere"><b>${link(u.id, u.name + (u.year ? ` (${u.year})` : ""))}</b><br><span class="secondary mono">${esc(u.example)}</span></span><span class="r">${u.files} file${u.files === 1 ? "" : "s"}</span></div>`).join("")}</div></section>` : ""}
       ${r.same_show.length ? `<section class="card set-card"><h2 class="set-title">Same Show Twice</h2><p class="secondary set-hint">These library titles were matched to the same show, so something is probably named differently between them.</p>
         <div class="list">${r.same_show.map((g) => `<div class="li"><span class="grow" style="display:block;white-space:normal;overflow:visible;overflow-wrap:anywhere"><b>${esc(g.matched || "")}</b><br>${g.titles.map((t) => `${link(t.id, t.name)} <span class="secondary">${t.files} file${t.files === 1 ? "" : "s"}</span>`).join("<br>")}</span></div>`).join("")}</div></section>` : ""}`;
+
+  // ---- alerts: new episodes and new seasons of shows this profile follows
+  const ALERTS = { n: 0 };
+  async function alertsRefresh() {
+    if (!ME.profile || document.hidden) return;
+    try { ALERTS.n = (await api("/api/alerts")).unread || 0; } catch (_) { return; }
+    $$("[data-alertdot]").forEach((d) => { d.hidden = !ALERTS.n; d.textContent = ALERTS.n > 9 ? "9+" : String(ALERTS.n); });
+  }
+  setInterval(alertsRefresh, 90000);
+  setTimeout(alertsRefresh, 5000);
+  async function pageAlerts() {
+    const n = ROUTE_N;
+    app.innerHTML = topbar("alerts") + `<main class="page narrow"><h1 class="large-title">Alerts</h1><div id="alBody"><div class="card skel" style="height:160px"></div></div></main>`;
+    wireTopbar();
+    const r = await api("/api/alerts");
+    if (n !== ROUTE_N) return;
+    const when = (t) => ago(t);
+    const title = (x) => x.kind === "season" ? `New season of ${esc(x.name)}` : x.count > 1 ? `${x.count} new episodes of ${esc(x.name)}` : `New episode of ${esc(x.name)}`;
+    $("#alBody").innerHTML = r.items.length ? `<div class="actions end" style="margin:0 0 12px"><button class="btn secondary small" id="alClear">Clear All</button></div>
+      <div class="list al-list">${r.items.map((x) => `<div class="li al-item ${x.unread ? "unread" : ""}">
+        <a class="al-art" href="#/title/${esc(x.title_id)}" tabindex="-1" aria-hidden="true">${x.poster ? `<img loading="lazy" decoding="async" src="${img(x.poster, 0, 160)}" alt="" data-fallback="hide">` : ""}</a>
+        <span class="grow" style="display:block;white-space:normal;overflow:visible"><b>${title(x)}</b><br><span class="secondary">Season ${x.season}, episode ${x.episode}${x.ep_name ? ` · ${esc(x.ep_name)}` : ""} · ${esc(when(x.at))}</span></span>
+        <button class="btn primary small" data-alplay="${esc(x.file_id)}" data-alname="${esc(x.name)}">${ic("play")} Play</button>
+        <button class="round-btn sm" data-aldismiss="${esc(x.title_id)}" aria-label="Dismiss" title="Dismiss">${ic("trash")}</button></div>`).join("")}</div>`
+      : `<div class="empty"><h2>No alerts</h2><p>When a new episode or a new season arrives for a show on your list, or one you've been watching, it shows up here.</p></div>`;
+    $$("[data-alplay]").forEach((b) => (b.onclick = () => playFile(b.dataset.alplay, { name: b.dataset.alname })));
+    $$("[data-aldismiss]").forEach((b) => (b.onclick = async () => { await api("/api/alerts/dismiss", { title_id: b.dataset.aldismiss }); pageAlerts(); }));
+    const clr = $("#alClear"); if (clr) clr.onclick = async () => { await api("/api/alerts/dismiss", {}); pageAlerts(); };
+    // Looking at them is what reads them
+    setTimeout(() => { if (n === ROUTE_N) api("/api/alerts/read", {}).then(alertsRefresh).catch(() => {}); }, 1500);
   }
 
   async function pageServer() {
@@ -5441,7 +5472,7 @@
     const row = (cls, n) => `<section class="shelf"><div class="sk sk-line" style="width:180px"></div><div class="row posters">${tiles(n, cls)}</div></section>`;
     if (page === "home" || !page) return `<div class="sk sk-hero"></div><main class="page under-hero">${row("sk-wide", 4)}${row("sk-poster", 7)}</main>`;
     if (page === "title" || page === "discover") return `<div class="sk sk-hero short"></div><main class="page under-hero">${row("sk-wide", 4)}</main>`;
-    if (page === "settings" || page === "history" || page === "sync" || page === "health" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
+    if (page === "settings" || page === "history" || page === "alerts" || page === "sync" || page === "health" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
     if (page === "search") return `<main class="page"><div class="sk sk-search"></div><div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${tiles(12)}</div></main>`;
     return `<main class="page"><div class="sk sk-title"></div><div class="grid">${tiles(14)}</div></main>`;
   }
@@ -5495,6 +5526,7 @@
       else if (page === "search") await pageSearch();
       else if (page === "person" && arg) await pagePerson(safeDecode(arg));
       else if (page === "mylist") await pageMyList();
+      else if (page === "alerts") await pageAlerts();
       else if (page === "settings") await pageSettings();
       else if (page === "health" && isAdmin()) await pageHealth();
       else if (page === "history") await pageHistory();

@@ -358,9 +358,13 @@
   // Taking something out of Continue Watching on a tv: hold OK on the card (or press the remotes menu button), like the
   // streaming apps do. A quick press still plays it
   if (TV) {
-    let hold = null, sheetAt = 0;
+    let hold = null, sheetAt = 0, heldOpen = false;
     const cwSheet = (el) => {
       sheetAt = Date.now();
+      // The key that opened this is still down and keeps pressing (it pressed Cancel, then Play on whatever got focus next), so until it is let go
+      // no Enter or click does anything, a safety timer lets go for a remote that never sends the release
+      heldOpen = true;
+      setTimeout(() => (heldOpen = false), 6000);
       const sh = sheet(`<h2>${esc(el.dataset.cwname || "This")}</h2><p class="secondary">Remove it from Continue Watching? It comes back if you start watching it again.</p>
         <div class="actions end"><button class="btn secondary" id="cwNo">Cancel</button><button class="btn primary" id="cwYes">Remove</button></div>`);
       const no = $("#cwNo", sh.el); no.onclick = sh.close;
@@ -372,9 +376,10 @@
         route();
       };
     };
+    document.addEventListener("click", (e) => { if (heldOpen) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
     document.addEventListener("keydown", (e) => {
       // The key you are still holding when the sheet opens keeps repeating, it must not press a button in it
-      if (e.key === "Enter" && e.repeat && Date.now() - sheetAt < 900) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+      if (e.key === "Enter" && (heldOpen || (e.repeat && Date.now() - sheetAt < 900))) { e.preventDefault(); e.stopImmediatePropagation(); return; }
       const el = !sheetClose && e.target.closest && e.target.closest("[data-cw]");
       if (!el) return;
       if (e.key === "ContextMenu") { e.preventDefault(); return cwSheet(el); }
@@ -384,6 +389,12 @@
       hold = { el, fired: false, t: setTimeout(() => { hold.fired = true; cwSheet(el); }, 550) };
     }, true);
     document.addEventListener("keyup", (e) => {
+      if (e.key === "Enter" && heldOpen) {
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (hold) { clearTimeout(hold.t); hold = null; }
+        setTimeout(() => (heldOpen = false), 150);
+        return;
+      }
       if (e.key !== "Enter" || !hold) return;
       const h = hold; hold = null; clearTimeout(h.t);
       if (!h.fired && document.contains(h.el)) h.el.click();

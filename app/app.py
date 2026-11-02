@@ -3684,6 +3684,61 @@ async def person(name: str, p=Depends(current_profile)):
     return {"name": name, "titles": out}
 
 
+PERSON_RX = re.compile(r"actor|actress|filmmaker|director|comedian|voice|screenwriter|producer|performer|entertainer", re.I)
+PERSON_CACHE = {}  # normalized search -> (when, result or None)
+PERSON_SPARQL = """SELECT ?imdb (MAX(?l) AS ?links) (MIN(?d) AS ?date) (SAMPLE(?lab) AS ?label) (MAX(?ty) AS ?tv) WHERE {
+  { ?f wdt:P161 wd:%(q)s } UNION { ?f wdt:P57 wd:%(q)s } UNION { ?f wdt:P725 wd:%(q)s }
+  ?f wdt:P345 ?imdb . FILTER(STRSTARTS(?imdb, "tt"))
+  ?f wikibase:sitelinks ?l .
+  ?f wdt:P31 ?t . VALUES ?t { wd:Q11424 wd:Q5398426 wd:Q202866 wd:Q1261214 wd:Q63952888 wd:Q117467246 }
+  BIND(IF(?t = wd:Q5398426, 1, 0) AS ?ty)
+  OPTIONAL { ?f wdt:P577 ?d } OPTIONAL { ?f rdfs:label ?lab FILTER(LANG(?lab) = "en") }
+} GROUP BY ?imdb ORDER BY DESC(?links) LIMIT 70"""
+
+
+async def wikidata_person(q):
+    """For a search that is a person's name (jack black): {"name", "films": [(imdb, fame, date, is a show, title)]} with their best known films and
+    shows from Wikidata, or None when it isn't an actor, director or the like. Cinemeta only matches titles, so Jack Black used to find Black Jack.
+    A person is only taken when a Wikidata item has exactly that name and is described as someone in film. Kept 2 weeks on disk, a failure isnt kept"""
+    k = norm(q)
+    hit = PERSON_CACHE.get(k)
+    if hit and time.time() - hit[0] < 7 * 86400:
+        return hit[1]
+    res = None
+    try:
+        hdr = {"User-Agent": "Kino/1.0 (self-hosted media dashboard)", "Accept": "application/json"}
+        async with ac("wikidata", timeout=30, headers=hdr) as c:
+            r = await c.get("https://www.wikidata.org/w/api.php", params={"action": "wbsearchentities", "search": q, "language": "en", "type": "item", "limit": 8, "format": "json"})
+            r.raise_for_status()
+            ent = next((x for x in r.json().get("search") or [] if norm(x.get("label") or "") == k and PERSON_RX.search(x.get("description") or "")), None)
+            if ent and re.fullmatch(r"Q\d{1,12}", ent["id"]):
+                f = DATA_DIR / "people" / f"{ent['id']}.json"
+                rows = None
+                try:
+                    if f.exists() and time.time() - f.stat().st_mtime < 14 * 86400:
+                        rows = json.loads(f.read_text())
+                except (OSError, ValueError):
+                    rows = None
+                if rows is None:
+                    r2 = await c.get("https://query.wikidata.org/sparql", params={"query": PERSON_SPARQL % {"q": ent["id"]}, "format": "json"}, headers={**hdr, "Accept": "application/sparql-results+json"})
+                    r2.raise_for_status()
+                    rows = [[x["imdb"]["value"], int(x["links"]["value"]), (x.get("date") or {}).get("value", "")[:10], int(float(x["tv"]["value"])), (x.get("label") or {}).get("value", "")]
+                            for x in r2.json()["results"]["bindings"] if re.fullmatch(r"tt\d{5,10}", x["imdb"]["value"])]
+                    def save():
+                        f.parent.mkdir(parents=True, exist_ok=True)
+                        f.write_text(json.dumps(rows))
+                    await asyncio.to_thread(save)
+                films = [tuple(x) for x in rows if x[4]]
+                res = {"name": ent["label"], "films": films} if len(films) >= 5 else None  # someone with a name like a title and a film or two isnt who was meant
+    except Exception as e:
+        log.info("wikidata person: %s", str(e)[:100])
+        return None
+    if len(PERSON_CACHE) > 500:
+        PERSON_CACHE.clear()
+    PERSON_CACHE[k] = (time.time(), res)
+    return res
+
+
 @app.get("/api/search/addons")
 async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
     # Kept separate from the library search so the library results show straight away and addons fill in after.
@@ -3693,14 +3748,23 @@ async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
     if videos and not any(video_type(c.get("type")) and (any(e.get("name") == "search" for e in c.get("extra") or []) or "search" in (c.get("extraSupported") or []))
                           for a in addon_rows() for c in a["m"].get("catalogs") or []):
         return {"external": [], "none": True}
+    person = None
     if q and addon_rows():
         summ, _, _ = all_summaries(p["id"])
         have = lib_by_meta_id(summ)
         empty = empty_ids()
+        # Two to four words that are a name might be an actor or director, asked at the same time as the addons
+        ptask = asyncio.create_task(wikidata_person(q)) if not videos and 2 <= len(q.split()) <= 4 and not re.search(r"\d", q) else None
         try:
             hits = await asyncio.wait_for(addon_search(None, q, videos=bool(videos)), timeout=27 if videos else 9)
         except asyncio.TimeoutError:
             hits = []
+        try:
+            person = await asyncio.wait_for(asyncio.shield(ptask), timeout=10) if ptask else None  # a slow first lookup carries on and is kept for the next search
+        except (asyncio.TimeoutError, Exception):
+            person = None
+        if person and any(name_score(q, m.get("name") or "") >= 100 for _, _, m in hits):
+            person = None  # something is called exactly that (Black Jack), it is a title search
         seen, rank, seen_t = {}, {}, DupSet(summ)
         for a, c, m in hits:
             mid = m.get("id")
@@ -3716,6 +3780,8 @@ async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
             except (TypeError, ValueError):
                 r = 0
             sc = name_score(q, item["name"]) + r * 2.5 - pos * 1.5 + (6 if item["poster"] else 0)
+            if person and sc < 100:
+                continue  # a person's name matches titles by accident (Jack Black finds Black Jack), only an exact title name stays
             if mid in seen:
                 # Found by more than one addon, keeps the best score
                 seen[mid]["score"] = max(seen[mid]["score"], sc)
@@ -3735,7 +3801,23 @@ async def search_addons(q: str, videos: int = 0, p=Depends(current_profile)):
             external = list(seen.values())
         await rank_by_popularity(external[:12])
         external.sort(key=lambda x: x["score"], reverse=True)
-    return {"external": external[:120]}
+        if person:
+            # Their films and shows, best known first (a show counts less, they are often only a guest)
+            ranked = sorted(person["films"], key=lambda f: -f[1] * (0.4 if f[3] else 1))
+            known = {x.get("imdb") for x in external}
+            mine = []
+            for imdb, links, date, tv, label in ranked:
+                if imdb in have or imdb in known or imdb in empty:
+                    continue
+                item = {**ext_preview({"id": imdb, "type": "series" if tv else "movie", "name": label, "releaseInfo": date[:4] or None}, "series" if tv else "movie"), "source": person["name"]}
+                if p.get("kids") and not kids_ok(item["genres"], imdb):
+                    continue
+                item["score"] = round(44 - len(mine) * 0.5, 2)
+                mine.append(item)
+                if len(mine) >= 40:
+                    break
+            external = mine + external
+    return {"external": external[:120], "person": person["name"] if person and not videos else None}
 
 
 async def rank_by_popularity(items):

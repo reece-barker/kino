@@ -1773,7 +1773,7 @@
         return;
       }
       if (my !== seq || n !== ROUTE_N || !$("#sres")) return;
-      let ext = [], extDone = false, vids = [], vidsDone = !HAS_VIDEO_ADDON, ideas = [], ideaNote = "";
+      let ext = [], extDone = false, vids = [], vidsDone = !HAS_VIDEO_ADDON, ideas = [], ideaNote = "", personFound = false;
       const draw = () => {
         const all = r.titles.concat(ext).sort((a, b) => (b.score || 0) - (a.score || 0));
         const movies = all.filter((x) => x.kind === "movie"), shows = all.filter((x) => x.kind === "series");
@@ -1782,7 +1782,7 @@
         // Titles that fit what was described (not named), not repeating the ones the name search already has
         const have = new Set(all.map((x) => x.id));
         // Typing a title, or the start of one (movie or show, in the library or from an addon), or a person is a name search: just those, no ideas
-        const named = all.some((x) => nameHit(q, x.name)) || (r.people || []).length > 0;
+        const named = personFound || all.some((x) => nameHit(q, x.name)) || (r.people || []).length > 0;
         const idea = named ? "" : searchRow("ideas", "Matches Your Idea", ideas.filter((x) => !have.has(x.id)));
         if (idea) rows.unshift(idea);
         // When the addon results land the page redraws, focus and how far each row was scrolled stay put
@@ -1811,7 +1811,7 @@
         ideaNote = !ideas.length && x.state === "indexing" ? `Still reading your library for ideas (${x.done} of ${x.total}), try again in a minute.` : "";
         if (ideas.length || ideaNote) draw();
       }).catch(() => {});
-      api("/api/search/addons?q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; ext = x.external; extDone = true; draw(); })
+      api("/api/search/addons?q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; ext = x.external; personFound = !!x.person; extDone = true; draw(); })
         .catch(() => { extDone = true; if (my === seq && $("#sres")) draw(); });
       if (HAS_VIDEO_ADDON) api("/api/search/addons?videos=1&q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; vids = x.external; vidsDone = true; if (x.none) HAS_VIDEO_ADDON = false; draw(); })
         .catch(() => { vidsDone = true; if (my === seq && $("#sres")) draw(); });

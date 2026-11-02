@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS recordings (id INTEGER PRIMARY KEY AUTOINCREMENT, pro
 CREATE TABLE IF NOT EXISTS embed_sources (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, player TEXT, enabled INTEGER DEFAULT 1, added REAL, error TEXT);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
+CREATE TABLE IF NOT EXISTS certs (imdb TEXT PRIMARY KEY, cert TEXT, fetched REAL);
 CREATE TABLE IF NOT EXISTS embeds (key TEXT PRIMARY KEY, h TEXT, vec BLOB, at REAL);
 CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, ref TEXT, kind TEXT, name TEXT, sub TEXT, title_id TEXT,
   device TEXT, ip TEXT, started REAL, last REAL, secs REAL DEFAULT 0, pos REAL, dur REAL);
@@ -1418,7 +1419,7 @@ async def lifespan(app):
                 log.exception("making alerts failed")  # never lets alerts stop the library scan
             await asyncio.sleep(RESCAN_MINUTES * 60)
 
-    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker, rec_worker)]
+    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker, rec_worker, cert_worker)]
     yield
     for t in tasks:
         t.cancel()
@@ -2283,6 +2284,89 @@ def title_summary(t, meta, wm=None, rm=None):
 # A title is fine for kids when its genres say family or animation and nothing scary, the admin can override any title
 KID_GENRES = {"animation", "family", "kids", "children"}
 KID_BLOCK = {"horror", "thriller", "crime", "war", "mystery", "adult", "erotic", "ecchi", "hentai", "psychological", "gore"}
+# Genres cant tell South Park from Toy Story (both are animation and comedy) and Cinemeta has no age rating, so there are two more checks.
+# Adult cartoons everybody knows are never offered (by imdb id, the admin can still allow one for kids), and when a TMDB key is set
+# (TMDB_API_KEY in kino.env, free from themoviedb.org) the real age rating decides, up to KIDS_MAX_RATING (default PG, also TV-PG)
+KIDS_NEVER = {
+    "tt0121955": "South Park", "tt0158983": "South Park: Bigger, Longer & Uncut", "tt0182576": "Family Guy", "tt0397306": "American Dad!",
+    "tt1195935": "The Cleveland Show", "tt2861424": "Rick and Morty", "tt1486217": "Archer", "tt3398228": "BoJack Horseman",
+    "tt0105950": "Beavis and Butt-Head", "tt0437745": "Robot Chicken", "tt6741278": "Invincible", "tt6517102": "Castlevania",
+    "tt6524350": "Big Mouth", "tt7658402": "Harley Quinn", "tt8910922": "Solar Opposites", "tt7216636": "Hazbin Hotel",
+    "tt10691770": "Helluva Boss", "tt5363918": "Disenchantment", "tt0149460": "Futurama", "tt2560140": "Attack on Titan",
+    "tt0877057": "Death Note", "tt6317068": "Final Space", "tt8235236": "Paradise PD", "tt0297494": "Aqua Teen Hunger Force",
+    "tt0386180": "Drawn Together", "tt9561862": "Love, Death & Robots", "tt13309742": "Blue Eye Samurai", "tt8036272": "Tuca & Bertie",
+    "tt4326894": "F Is for Family", "tt2950342": "Mr. Pickles", "tt12590266": "Cyberpunk: Edgerunners", "tt0318871": "Berserk",
+    "tt3741634": "Tokyo Ghoul", "tt13616990": "Chainsaw Man", "tt12343534": "Jujutsu Kaisen", "tt9335498": "Demon Slayer",
+    "tt0839188": "Metalocalypse", "tt23036426": "Sausage Party: Foodtopia", "tt1700841": "Sausage Party", "tt0373732": "The Boondocks",
+    "tt10231312": "Inside Job", "tt10332508": "Primal", "tt28093628": "Common Side Effects", "tt12074628": "Smiling Friends",
+    "tt2022713": "Brickleberry", "tt0068612": "Fritz the Cat", "tt0325547": "Hellsing", "tt0434685": "Gantz", "tt0480489": "Elfen Lied",
+}
+TMDB_KEY = env("TMDB_API_KEY", "").strip()
+CERT_RANK = {"G": 0, "TV-Y": 0, "TV-G": 0, "U": 0, "0": 0, "TV-Y7": 1, "TV-Y7-FV": 1, "PG": 2, "TV-PG": 2, "PG-13": 3, "12": 3, "12A": 3, "TV-14": 3,
+             "R": 4, "15": 4, "16": 4, "18": 4, "R18": 4, "NC-17": 4, "TV-MA": 4}
+KIDS_MAX = CERT_RANK.get(env("KIDS_MAX_RATING", "PG").strip().upper(), 2)
+CERT = {"loaded": False, "by": {}, "want": set()}  # imdb id -> rating text ("" when TMDB doesnt have one), and the ids waiting to be looked up
+
+
+def cert_map():
+    if not CERT["loaded"]:
+        CERT["by"] = {r["imdb"]: r["cert"] for r in db().q("SELECT imdb, cert FROM certs")}
+        CERT["loaded"] = True
+    return CERT["by"]
+
+
+async def tmdb_cert(client, imdb):
+    """The age rating text for an imdb id from TMDB (US first, then GB), "" when there is none. A v4 token goes in a header, a v3 key has to go in the
+    url, so errors from here are never logged with their text (it would have the key in it)"""
+    hdr, par = ({"Authorization": f"Bearer {TMDB_KEY}"}, {}) if TMDB_KEY.startswith("eyJ") else ({}, {"api_key": TMDB_KEY})
+    base = env("TMDB_URL", "https://api.themoviedb.org/3")
+    r = await client.get(f"{base}/find/{imdb}", params={**par, "external_source": "imdb_id"}, headers=hdr, timeout=15)
+    r.raise_for_status()
+    j = r.json()
+    by = {}
+    if j.get("tv_results"):
+        r2 = await client.get(f"{base}/tv/{j['tv_results'][0]['id']}/content_ratings", params=par, headers=hdr, timeout=15)
+        r2.raise_for_status()
+        by = {x.get("iso_3166_1"): x.get("rating") for x in r2.json().get("results") or [] if x.get("rating")}
+    elif j.get("movie_results"):
+        r2 = await client.get(f"{base}/movie/{j['movie_results'][0]['id']}/release_dates", params=par, headers=hdr, timeout=15)
+        r2.raise_for_status()
+        for x in r2.json().get("results") or []:
+            c = next((d.get("certification") for d in x.get("release_dates") or [] if d.get("certification")), None)
+            if c:
+                by[x.get("iso_3166_1")] = c
+    return by.get("US") or by.get("GB") or ""
+
+
+async def cert_worker():
+    """Looks up the age rating of every library title kids could see by genre (and anything a kids profile asked about), a few at a time"""
+    if not TMDB_KEY:
+        return
+    while True:
+        await asyncio.sleep(30)
+        try:
+            known = cert_map()
+            want = set(CERT["want"])
+            for t in list(LIB["titles"].values()):
+                m = meta_light(t)
+                if m and str(m.get("id", "")).startswith("tt") and kids_genre_ok(m.get("genres")):
+                    want.add(m["id"])
+            todo = [i for i in want if i not in known][:25]
+            if not todo:
+                continue
+            async with httpx.AsyncClient() as client:
+                for i in todo:
+                    try:
+                        c = await tmdb_cert(client, i)
+                    except Exception as e:
+                        log.warning("age rating lookup failed (%s)", type(e).__name__)  # not the text, see tmdb_cert
+                        continue
+                    db().q("INSERT OR REPLACE INTO certs VALUES (?,?,?)", (i, c, time.time()))
+                    known[i] = c
+                    CERT["want"].discard(i)
+                    await asyncio.sleep(0.3)
+        except Exception:
+            log.exception("age rating worker")
 
 
 def kid_key(meta_id, tid=None):
@@ -2299,12 +2383,25 @@ def kids_rules():
     return KIDS_RULES["rules"]
 
 
+def kids_genre_ok(genres):
+    g = {str(x).lower() for x in genres or []}
+    return bool(g & KID_GENRES) and not (g & KID_BLOCK)
+
+
 def kids_ok(genres, key):
     rule = kids_rules().get(key) if key else None
     if rule is not None:
-        return rule
-    g = {str(x).lower() for x in genres or []}
-    return bool(g & KID_GENRES) and not (g & KID_BLOCK)
+        return rule  # the admin said so
+    if key in KIDS_NEVER or not kids_genre_ok(genres):
+        return False
+    if TMDB_KEY and key and str(key).startswith("tt"):
+        c = cert_map().get(key)
+        if c is None:
+            CERT["want"].add(key)  # not looked up yet, it stays hidden for now rather than guessed at
+            return False
+        if c:
+            return CERT_RANK.get(c.strip().upper(), 4) <= KIDS_MAX
+    return True
 
 
 def title_allowed(p, t, meta):

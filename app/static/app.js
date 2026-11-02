@@ -659,6 +659,8 @@
       } else res = await api(`/api/profiles/${p.id}/select`, {});
       closeSheet();
       ME.profile = res.profile; ME.features = null;
+      // Admin belongs to one profile, so what is admin has to be asked again after switching
+      try { ME.admin = (await api("/api/me")).admin || null; } catch (_) {}
       location.hash = "#/home";
       if (location.hash === "#/home") route();
     };
@@ -3314,6 +3316,7 @@
           ${applied ? `<span class="${applied.ok ? "" : "err-note"}"> · nginx ${applied.ok ? `updated ${ago(applied.applied_at)}` : `not updated: ${esc(applied.error || "unknown error")}`}</span>` : ""}</div>
         <div class="form-err" id="ipErr" role="alert"></div>`)}
       ${fold("devicesCard", "Allowed Devices", "", `<div id="devicesBody"><div class="skel" style="height:80px"></div></div>`)}
+      ${fold("sessCard", "Admin Sign-ins", "", `<div id="sessBody"><div class="skel" style="height:80px"></div></div>`)}
       <section class="card set-card" id="liveCard"><div class="skel" style="height:80px"></div></section>
       <section class="card set-card" id="liveFilterCard"><div class="skel" style="height:80px"></div></section>
       <section class="card set-card" id="embedCard"></section>
@@ -3321,6 +3324,7 @@
       <section class="card set-card" id="mediaCard"><div class="skel" style="height:80px"></div></section>`;
     drawMediaCard();
     drawDevices();
+    drawSessions();
     drawAddons();
     drawLiveAdmin();
     drawLiveFilter();
@@ -3343,6 +3347,25 @@
       try { await api("/api/admin/allowlist?cidr=" + encodeURIComponent(b.dataset.rmip), undefined, "DELETE"); toast("Network removed"); drawAdminSettings(); }
       catch (er) { $("#ipErr").textContent = er.message; }
     }));
+  }
+
+  // Where an admin is signed in right now. Admin belongs to one profile on one device and ends after a while of not being used, this shows every sign in
+  // and lets you end any of them, or all of them
+  async function drawSessions() {
+    const box = $("#sessBody");
+    if (!box) return;
+    let r;
+    try { r = await api("/api/admin/sessions"); } catch (e) { box.innerHTML = `<p class="secondary set-hint">${esc(e.message)}</p>`; return; }
+    const list = r.sessions || [];
+    box.innerHTML = `<p class="secondary set-hint">Admin only works on the device and profile you signed in on, and ends ${r.idle_hours} hours after you last used it. These are the sign ins that are open right now.</p>
+      <div class="list">${list.map((x) => `<div class="li"><span class="grow"><b>${esc(x.device)}</b>${x.this ? ` <span class="badge">This device</span>` : ""}<br><span class="secondary">${x.profile ? esc(x.profile) + " · " : ""}signed in ${ago(x.created)}${x.ip ? ` · <span class="mono">${esc(x.ip)}</span>` : ""}</span></span>
+        ${x.this ? "" : `<button class="btn secondary small" data-revoke="${esc(x.id)}">Sign Out</button>`}</div>`).join("") || `<p class="secondary set-hint">None.</p>`}</div>
+      <div class="actions end"><button class="btn danger small" id="revokeAll">Sign Out Everywhere</button></div>`;
+    $$("[data-revoke]", box).forEach((b) => (b.onclick = async () => { await api("/api/admin/sessions/revoke", { id: b.dataset.revoke }); toast("Signed out"); drawSessions(); }));
+    $("#revokeAll").onclick = async () => {
+      if (!(await confirmSheet("Sign out of admin everywhere?", "Every device, including this one, has to sign in again to use admin.", "Sign Out Everywhere"))) return;
+      await api("/api/admin/sessions/revoke", { all: true }); ME.admin = null; toast("Signed out of admin everywhere"); route();
+    };
   }
 
   // Live TV: hide the kinds of channel nobody here watches. Nothing is hidden until it is switched on. Favourites stay, whatever they are

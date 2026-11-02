@@ -727,16 +727,44 @@ async def cinemeta_meta(client, kind, imdb_id):
     return slim_meta(m, kind) if m else None
 
 
+NAME_STOP = {"the", "a", "an", "of", "and"}
+
+
+def initials_of(name):
+    """Every run of 2 to 6 words in a name as its initials, so "Law & Order: Special Victims Unit" has "svu" in it (and so does CSI: Miami for "csi")"""
+    w = [x for x in norm(name).split() if x]
+    return {"".join(x[0] for x in w[i:i + n]) for n in range(2, 7) for i in range(0, len(w) - n + 1)}
+
+
+def fit_score(query, cand):
+    """How well a search result's name fits what was searched for, 0 to 1 or a bit over. An abbreviation in the search (SVU, CSI, TNG) counts as
+    matched when it is the initials of a run of words in the name, and an exact name beats a partial one. Ties keep the order Cinemeta gave"""
+    qs = [x for x in norm(query).split() if x not in NAME_STOP]
+    cs = [x for x in norm(cand).split() if x not in NAME_STOP]
+    if not qs or not cs:
+        return 0.0
+    ini = initials_of(cand)
+    hit = sum(1 for q in qs if q in cs or (len(q) >= 2 and q in ini))
+    score = hit / len(qs)
+    return score + (1.0 if norm(query) == norm(cand) else 0.0)
+
+
+def best_meta(metas, name, year):
+    """The search result that fits best. Cinemeta's first result is often a popular show with a similar name (Law and Order SVU came back as Law & Order),
+    so the name decides, and a year narrows it down when there is one. The first result still wins ties and when nothing fits at all"""
+    pool = metas
+    if year:
+        near = [m for m in metas if str(m.get("releaseInfo") or "")[:4].isdigit() and abs(int(str(m.get("releaseInfo"))[:4]) - int(year)) <= 1]
+        pool = near or metas
+    if not pool:
+        return None
+    best = max(enumerate(pool), key=lambda im: (round(fit_score(name, im[1].get("name") or ""), 3), -im[0]))[1]
+    return best
+
+
 async def cinemeta_lookup(client, kind, name, year):
     metas = await cinemeta_search(client, kind, name)
-    pick = None
-    if year:
-        for m in metas:
-            ri = str(m.get("releaseInfo") or "")
-            if ri[:4].isdigit() and abs(int(ri[:4]) - int(year)) <= 1:
-                pick = m
-                break
-    pick = pick or (metas[0] if metas else None)
+    pick = best_meta(metas, name, year)
     if not pick:
         return None
     return await cinemeta_meta(client, kind, pick["id"]) or slim_meta(pick, kind)

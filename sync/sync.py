@@ -212,7 +212,9 @@ def clean_rel(name):
         show = f"{title} ({sy})" if sy else title  # the year stays when the name had one, it is how Doctor Who 2005 is told from the old one
         return fits(f"TV Shows/{show}/Season {int(se):02d}/{show} - S{int(se):02d}E{int(ep):02d}{more}{lang}{ext}")
     year = first(g.get("year"))
-    base = f"{title} ({year})" if year else title
+    if not year:
+        return None  # no year in the name, a plain name would be a guess (random_file.mkv), so it keeps the one it has
+    base = f"{title} ({year})"
     return fits(f"Movies/{base}/{base}{lang}{ext}")
 
 

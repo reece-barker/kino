@@ -291,6 +291,8 @@ svg.i { width: 1em; height: 1em; fill: currentColor; flex: none; }
   min-width: min(320px, 100%); flex: 0 1 320px; color: var(--label-2);
 }
 .search input { background: none; border: 0; outline: 0; flex: 1; font-size: 16px; color: var(--label); min-width: 0; }
+.search input { align-self: stretch; }  /* the whole pill is the target, not just the line of text in it */
+@media (pointer: coarse) { .search:not(.big) { height: 44px; } }  /* fingers need 44px, mice are fine with 38 */
 .search input::placeholder { color: var(--label-3); }
 select.plain { background: var(--fill); border: 0; border-radius: 10px; height: 38px; padding: 0 12px; font-size: 15px; }
 

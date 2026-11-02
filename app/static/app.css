@@ -946,6 +946,13 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 .side-av { position: relative; flex: none; display: inline-flex; }
 .side-av-dot { position: absolute; top: -6px; right: -8px; z-index: 2; box-shadow: 0 0 0 2px var(--bg-2, #1c1c1e); pointer-events: none; }
 .mi-badge { margin-left: auto; display: inline-flex; }
+/* the switch at the top of the Admin page */
+.admin-tabs { display: flex; gap: 8px; margin: 2px 0 24px; padding: 4px 2px; overflow-x: auto; scrollbar-width: none; }
+.admin-tabs::-webkit-scrollbar { display: none; }
+.admin-tabs a { flex: none; display: inline-flex; align-items: center; padding: 9px 18px; border-radius: 999px; background: var(--fill); color: var(--label-2); font-size: 15px; font-weight: 600; transition: background 0.2s ease, color 0.2s ease; }
+.admin-tabs a:hover { background: var(--fill-2); color: var(--label); }
+.admin-tabs a[aria-current="page"] { background: var(--label); color: var(--page-bg); }
+body.tv .admin-tabs a:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; }
 .tb-item { position: relative; }
 .tb-alert { position: absolute; top: 4px; right: calc(50% - 22px); }
 .side-item[aria-current="page"] .alert-dot { box-shadow: 0 0 0 2px #fff; }

@@ -3422,6 +3422,15 @@
     if (isAdmin()) drawAdminSettings();
   }
 
+  // Which folds are open is remembered on this device (the lists inside the cards start open, the sections that are only for set up start closed)
+  const foldOpen = (id, def = false) => { try { const v = localStorage.getItem("kino-fold-" + id); return v === null ? def : v === "1"; } catch (_) { return def; } };
+  document.addEventListener("toggle", (e) => {
+    const d = e.target;
+    if (d && d.matches && d.id && d.matches("details.list-fold, details.set-fold")) { try { localStorage.setItem("kino-fold-" + d.id, d.open ? "1" : "0"); } catch (_) {} }
+  }, true);
+  // A list inside a card that can be hidden, with the buttons to add things staying where they are underneath
+  const listFold = (id, label, body) => `<details class="list-fold" id="${id}" ${foldOpen(id, true) ? "open" : ""}><summary><span>${label}</span><span class="fold-chev" aria-hidden="true">${ic("chevron")}</span></summary>${body}</details>`;
+
   async function drawAdminSettings() {
     const [pr, al] = await Promise.all([api("/api/profiles"), api("/api/admin/allowlist")]);
     const box = $("#adminSettings");
@@ -3430,20 +3439,20 @@
     const applied = al.applied;
     // Profiles, networks and devices fold away (closed to start with), a redraw keeps the ones that were open
     const wasOpen = new Set($$("details.set-fold[open]", box).map((d) => d.id));
-    const fold = (id, title, badge, body) => `<details class="card set-card set-fold" id="${id}" ${wasOpen.has(id) ? "open" : ""}><summary><h2 class="set-title">${title}</h2>
+    const fold = (id, title, badge, body) => `<details class="card set-card set-fold" id="${id}" ${wasOpen.has(id) || foldOpen(id) ? "open" : ""}><summary><h2 class="set-title">${title}</h2>
       <span class="badge fold-badge" ${badge ? "" : "hidden"}>${badge || ""}</span><span class="fold-chev" aria-hidden="true">${ic("chevron")}</span></summary><div class="fold-body">${body}</div></details>`;
     box.innerHTML = `
-      ${fold("profCard", "Profiles", pr.pending && pr.pending.length ? `${pr.pending.length} asked` : "", `
+      <section class="card set-card" id="profCard"><div class="set-card-head"><h2 class="set-title">Profiles</h2><span class="badge" ${pr.pending && pr.pending.length ? "" : "hidden"}>${pr.pending ? pr.pending.length : 0} asked</span></div>
         ${pr.pending && pr.pending.length ? `<h3 class="sr-sub">Asked For</h3><div class="list">${pr.pending.map((p) => `<div class="li">${pav(p, "xs")}<span class="grow">${esc(p.name)}</span>
-          <button class="btn primary small" data-papprove="${p.id}">Approve</button><button class="btn secondary small" data-pdeny="${p.id}">Deny</button></div>`).join("")}</div><h3 class="sr-sub">Profiles</h3>` : ""}
-        <div class="list">${pr.profiles.map((p) => `<div class="li">${pav(p, "xs")}<span class="grow">${esc(p.name)}${p.folder ? ` <span class="secondary">${esc(p.folder)}</span>` : ""}${p.locked ? ` <span class="badge">${ic("lock")} Locked</span>` : ""}</span>
+          <button class="btn primary small" data-papprove="${p.id}">Approve</button><button class="btn secondary small" data-pdeny="${p.id}">Deny</button></div>`).join("")}</div>` : ""}
+        ${listFold("profList", `Profiles (${pr.profiles.length})`, `<div class="list">${pr.profiles.map((p) => `<div class="li">${pav(p, "xs")}<span class="grow">${esc(p.name)}${p.folder ? ` <span class="secondary">${esc(p.folder)}</span>` : ""}${p.locked ? ` <span class="badge">${ic("lock")} Locked</span>` : ""}</span>
           ${p.locked && !p.members ? `<button class="btn secondary small" data-unlock="${p.id}" title="Takes the code off, you never see what it was">Remove Lock</button>` : ""}
-          <button class="btn secondary small" data-editp="${p.id}">${ic("pencil")} Edit</button></div>`).join("")}</div>
-        <div class="actions end"><button class="btn secondary small" id="addP">${ic("plus")} Add Profile</button></div>`)}
-      ${fold("netCard", "Allowed Networks", "", `
+          <button class="btn secondary small" data-editp="${p.id}">${ic("pencil")} Edit</button></div>`).join("")}</div>`)}
+        <div class="actions end"><button class="btn secondary small" id="addP">${ic("plus")} Add Profile</button></div></section>
+      <section class="card set-card" id="netCard"><h2 class="set-title">Allowed Networks</h2>
         <p class="secondary set-hint">Only these internet addresses can open Kino. Add the home IP of each family member. Changes apply within a few seconds.</p>
-        <div class="list">${al.entries.map((e) => `<div class="li"><span class="grow"><b>${esc(e.label)}</b> <span class="secondary mono">${esc(e.cidr)}</span></span>
-          <span class="r">${e.added ? ago(e.added) : ""}</span><button class="round-btn sm" data-rmip="${esc(e.cidr)}" aria-label="Remove ${esc(e.label)}" title="Remove">${ic("trash")}</button></div>`).join("")}</div>
+        ${listFold("netList", `Networks (${al.entries.length})`, `<div class="list">${al.entries.map((e) => `<div class="li"><span class="grow"><b>${esc(e.label)}</b> <span class="secondary mono">${esc(e.cidr)}</span></span>
+          <span class="r">${e.added ? ago(e.added) : ""}</span><button class="round-btn sm" data-rmip="${esc(e.cidr)}" aria-label="Remove ${esc(e.label)}" title="Remove">${ic("trash")}</button></div>`).join("")}</div>`)}
         <form class="ip-form" id="ipForm">
           <input id="ipLabel" placeholder="Name, like Mum's house" maxlength="40" required>
           <input id="ipCidr" placeholder="IP address, like 84.150.12.34" required spellcheck="false" autocapitalize="none">
@@ -3451,15 +3460,13 @@
         </form>
         <div class="note">Your current address is <b class="mono">${esc(mine)}</b>. <button class="linkish" id="fillMine">Use This Address</button>
           ${applied ? `<span class="${applied.ok ? "" : "err-note"}"> · nginx ${applied.ok ? `updated ${ago(applied.applied_at)}` : `not updated: ${esc(applied.error || "unknown error")}`}</span>` : ""}</div>
-        <div class="form-err" id="ipErr" role="alert"></div>`)}
-      ${fold("devicesCard", "Allowed Devices", "", `<div id="devicesBody"><div class="skel" style="height:80px"></div></div>`)}
-      ${fold("sessCard", "Admin Sign-ins", "", `<div id="sessBody"><div class="skel" style="height:80px"></div></div>`)}
-      <section class="card set-card" id="liveCard"><div class="skel" style="height:80px"></div></section>
-      <section class="card set-card" id="liveFilterCard"><div class="skel" style="height:80px"></div></section>
-      <section class="card set-card" id="embedCard"></section>
-      <section class="card set-card" id="addonsCard"><div class="skel" style="height:80px"></div></section>
-      <section class="card set-card" id="mediaCard"><div class="skel" style="height:80px"></div></section>`;
-    drawMediaCard();
+        <div class="form-err" id="ipErr" role="alert"></div></section>
+      <section class="card set-card" id="devicesCard"><div class="set-card-head"><h2 class="set-title">Allowed Devices</h2><span class="badge" id="devBadge" hidden></span></div><div id="devicesBody"><div class="skel" style="height:80px"></div></div></section>
+      <section class="card set-card" id="sessCard"><h2 class="set-title">Admin Sign-ins</h2><div id="sessBody"><div class="skel" style="height:80px"></div></div></section>
+      ${fold("liveCard", "Live TV", "", `<div id="liveBody"><div class="skel" style="height:80px"></div></div>`)}
+      ${fold("liveFilterCard", "Hide Channels", "", `<div id="liveFilterBody"><div class="skel" style="height:80px"></div></div>`)}
+      ${fold("embedCard", "Live TV Embed Sources", "", `<div id="embedBody"></div>`)}
+      ${fold("addonsCard", "Addons", "", `<div id="addonsBody"><div class="skel" style="height:80px"></div></div>`)}`;
     drawDevices();
     drawSessions();
     drawAddons();
@@ -3495,8 +3502,8 @@
     try { r = await api("/api/admin/sessions"); } catch (e) { box.innerHTML = `<p class="secondary set-hint">${esc(e.message)}</p>`; return; }
     const list = r.sessions || [];
     box.innerHTML = `<p class="secondary set-hint">Admin only works on the device and profile you signed in on, and ends ${r.idle_hours} hours after you last used it. These are the sign ins that are open right now.</p>
-      <div class="list">${list.map((x) => `<div class="li"><span class="grow"><b>${esc(x.device)}</b>${x.this ? ` <span class="badge">This device</span>` : ""}<br><span class="secondary">${x.profile ? esc(x.profile) + " · " : ""}signed in ${ago(x.created)}${x.ip ? ` · <span class="mono">${esc(x.ip)}</span>` : ""}</span></span>
-        ${x.this ? "" : `<button class="btn secondary small" data-revoke="${esc(x.id)}">Sign Out</button>`}</div>`).join("") || `<p class="secondary set-hint">None.</p>`}</div>
+      ${listFold("sessList", `Signed in now (${list.length})`, `<div class="list">${list.map((x) => `<div class="li"><span class="grow"><b>${esc(x.device)}</b>${x.this ? ` <span class="badge">This device</span>` : ""}<br><span class="secondary">${x.profile ? esc(x.profile) + " · " : ""}signed in ${ago(x.created)}${x.ip ? ` · <span class="mono">${esc(x.ip)}</span>` : ""}</span></span>
+        ${x.this ? "" : `<button class="btn secondary small" data-revoke="${esc(x.id)}">Sign Out</button>`}</div>`).join("") || `<p class="secondary set-hint">None.</p>`}</div>`)}
       <div class="actions end"><button class="btn danger small" id="revokeAll">Sign Out Everywhere</button></div>`;
     $$("[data-revoke]", box).forEach((b) => (b.onclick = async () => { await api("/api/admin/sessions/revoke", { id: b.dataset.revoke }); toast("Signed out"); drawSessions(); }));
     $("#revokeAll").onclick = async () => {
@@ -3507,13 +3514,12 @@
 
   // Live TV: hide the kinds of channel nobody here watches. Nothing is hidden until it is switched on. Favourites stay, whatever they are
   async function drawLiveFilter() {
-    const box = $("#liveFilterCard");
+    const box = $("#liveFilterBody");
     if (!box) return;
     let r;
     try { r = await api("/api/admin/live/filter"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
-    if (!$("#liveFilterCard")) return;
-    box.innerHTML = `<h2 class="set-title">Hide Channels</h2>
-      <p class="secondary set-hint">Switch on the kinds of channel nobody here watches and they leave Live TV and the Guide for everyone. Channels that are favourites stay. Channels that get watched move to the top by themselves.</p>
+    if (!$("#liveFilterBody")) return;
+    box.innerHTML = `<p class="secondary set-hint">Switch on the kinds of channel nobody here watches and they leave Live TV and the Guide for everyone. Channels that are favourites stay. Channels that get watched move to the top by themselves.</p>
       ${r.categories.map((c) => `<label class="set-row"><span><b>${esc(c.label)}</b><span class="secondary">${c.count} channel${c.count === 1 ? "" : "s"} in your playlists</span></span><input type="checkbox" class="switch" data-fcat="${c.key}" ${c.on ? "checked" : ""}></label>`).join("")}
       <h3 class="sr-sub">Words in a Channel's Name</h3>
       <div class="int-list">${r.words.length ? r.words.map((w) => `<button class="int-chip" data-fword="${esc(w)}" aria-label="Show channels with ${esc(w)} again" title="Remove"><span>${esc(w)}</span>${ic("close")}</button>`).join("") : `<span class="secondary">No words yet. A channel with the word in its name is hidden.</span>`}</div>
@@ -3631,12 +3637,12 @@
       <span class="grow"><b>${esc(d.name || "Unnamed device")}</b>${d.this ? ` <span class="badge">This Device</span>` : ""}<span class="secondary">${esc(kind(d.ua || ""))} · ${d.status === "pending" ? `asked ${ago(d.created)}` : `last used ${ago(d.last_seen)}`}${d.ip ? ` · ${esc(d.ip)}` : ""}</span></span>
       ${d.status === "pending" ? `<button class="btn primary small" data-dev-ok="${d.id}">Allow</button><button class="btn secondary small" data-dev-no="${d.id}">Deny</button>`
         : `<button class="round-btn sm" data-dev-rm="${d.id}" aria-label="Remove ${esc(d.name)}" title="Remove">${ic("trash")}</button>`}</div>`;
-    const badge = $("#devicesCard .fold-badge");
+    const badge = $("#devBadge");
     if (badge) { badge.textContent = pending.length ? `${pending.length} waiting` : ""; badge.hidden = !pending.length; }
     box.innerHTML = `
       <p class="secondary set-hint">A device on this list can open Kino from any network, like a phone on mobile data or a laptop on holiday. Open Kino on the device, tap Ask for Access, then allow it here or type the code it shows.</p>
       ${pending.length ? `<h3 class="sr-sub">Waiting for You</h3><div class="list">${pending.map(row).join("")}</div>` : ""}
-      ${allowed.length ? `<h3 class="sr-sub">Allowed</h3><div class="list">${allowed.map(row).join("")}</div>` : `<p class="secondary sr-empty">No devices yet, networks are the only way in right now.</p>`}
+      ${allowed.length ? listFold("devList", `Allowed Devices (${allowed.length})`, `<div class="list">${allowed.map(row).join("")}</div>`) : `<p class="secondary sr-empty">No devices yet, networks are the only way in right now.</p>`}
       <form class="ip-form" id="devForm">
         <input id="devCode" placeholder="Code, like K7F-29Q" maxlength="8" required spellcheck="false" autocapitalize="characters" class="mono">
         <input id="devName" placeholder="Name, like Mum's iPad" maxlength="40">
@@ -3662,12 +3668,11 @@
   // IPTV playlists for Live TV. Kino checks the channels in the background and hides ones that dont work, english
   // channels (UK, then US) go first. A guide (XMLTV) is optional, lots of playlists name there own
   async function drawLiveAdmin() {
-    const box = $("#liveCard");
+    const box = $("#liveBody");
     if (!box) return;
     let r;
     try { r = await api("/api/admin/live"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
-    box.innerHTML = `<h2 class="set-title">Live TV</h2>
-      <p class="secondary set-hint">Add IPTV playlists (an M3U link) to fill Live TV. Your own TV server (Tvheadend, Jellyfin, ErsatzTV, an HDHomeRun) can make one too. Add a guide (XMLTV) link for the TV Guide, if the playlist doesn't name its own. Channels that don't work get hidden automatically.</p>
+    box.innerHTML = `<p class="secondary set-hint">Add IPTV playlists (an M3U link) to fill Live TV. Your own TV server (Tvheadend, Jellyfin, ErsatzTV, an HDHomeRun) can make one too. Add a guide (XMLTV) link for the TV Guide, if the playlist doesn't name its own. Channels that don't work get hidden automatically.</p>
       <div class="list">${r.lists.map((l) => `<div class="addon ${l.enabled ? "" : "off"}">
         <div class="addon-top"><span class="addon-logo">${ic("live")}</span>
           <span class="grow"><b>${esc(l.name)}</b> <span class="secondary">${l.count} channels${l.good || l.bad ? `, ${l.good} working, ${l.bad} not` : ""}, ${l.guided ? `${l.guided} with a guide` : "no guide yet"}</span>
@@ -3689,9 +3694,8 @@
         <div class="actions end"><button class="btn primary small" type="submit" id="lvGo">${ic("plus")} Add Playlist</button></div>
       </form><div class="form-err" id="lvErr" role="alert"></div>`;
     // Embed sources get there own card underneath so they're easy to find
-    const ebox = $("#embedCard") || box;
-    ebox.innerHTML = `<h2 class="set-title">Live TV Embed Sources</h2>
-      <p class="secondary set-hint">For services that give you a JSON list of channels or events with a player page for each. Kino shows them on Live TV and opens their player in a locked down frame. If the list only has ids, add the player link with {id} where the id goes, like https://example.com/embed/{id}.</p>
+    const ebox = $("#embedBody") || box;
+    ebox.innerHTML = `<p class="secondary set-hint">For services that give you a JSON list of channels or events with a player page for each. Kino shows them on Live TV and opens their player in a locked down frame. If the list only has ids, add the player link with {id} where the id goes, like https://example.com/embed/{id}.</p>
       <div class="list">${(r.embeds || []).map((x) => `<div class="addon ${x.enabled ? "" : "off"}"><div class="addon-top"><span class="addon-logo">${ic("link")}</span>
           <span class="grow"><b>${esc(x.name)}</b><span class="addon-desc secondary">${esc(x.url)}${x.player ? `<br>Player: ${esc(x.player)}` : ""}</span></span>
           <input type="checkbox" class="switch" data-eon="${x.id}" ${x.enabled ? "checked" : ""} aria-label="Turn ${esc(x.name)} on or off"></div>
@@ -3770,7 +3774,7 @@
   }
 
   async function drawAddons() {
-    const box = $("#addonsCard");
+    const box = $("#addonsBody");
     if (!box) return;
     let r;
     try { r = await api("/api/admin/addons"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
@@ -3779,7 +3783,6 @@
     const onlySearch = (a) => a.catalogs.some((c) => vidType(c.type)) && !a.catalogs.some((c) => vidType(c.type) && c.home);
     const uses = (u) => [u.catalogs && "Catalogs", u.meta && "Metadata", u.subtitles && "Subtitles", u.events && "Watch Activity"].filter(Boolean);
     box.innerHTML = `
-      <h2 class="set-title">Addons</h2>
       <p class="secondary set-hint">Paste the link to any Stremio addon, it ends with manifest.json. Kino uses their catalogs on Home and in Search, their metadata for matching, their subtitles in the player and their watch activity tracking.</p>
       <div class="list">${r.addons.map((a) => `<div class="addon ${a.enabled ? "" : "off"}">
         <div class="addon-top">
@@ -3856,9 +3859,11 @@
   }
 
   async function pageSync() {
-    app.innerHTML = topbar("sync") + `<main class="page"><h1 class="large-title">Sync</h1><div id="syncBody"><div class="card skel" style="height:220px"></div></div></main>`;
+    app.innerHTML = topbar("sync") + `<main class="page"><h1 class="large-title">Sync</h1><div id="syncBody"><div class="card skel" style="height:220px"></div></div>
+      <section class="card set-card" id="mediaCard" style="margin-top:18px"><div class="skel" style="height:80px"></div></section></main>`;
     wireTopbar();
     startPoll(drawSync, 2000);
+    drawMediaCard();
   }
 
   async function drawSync() {

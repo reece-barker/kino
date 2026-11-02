@@ -580,6 +580,17 @@ body.with-side .castbar { left: calc(50% + var(--side) / 2); }
 .set-fold[open] .fold-chev { transform: rotate(180deg); }
 .set-fold > summary:hover .fold-chev { color: var(--label); }
 .set-fold .fold-body { padding-top: 6px; }
+/* a card that stays open, with its head holding a badge, and a list inside it that can be hidden while the buttons to add things stay in view */
+.set-card-head { display: flex; align-items: center; gap: 10px; }
+.set-card-head .set-title { margin: 0; }
+.list-fold { margin: 4px 0 10px; }
+.list-fold > summary { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; padding: 8px 10px; margin: 0 -10px; border-radius: 12px; color: var(--label-2); font-size: 15px; font-weight: 600; }
+.list-fold > summary::-webkit-details-marker { display: none; }
+.list-fold > summary:hover { color: var(--label); background: var(--hover); }
+.list-fold .fold-chev { margin-left: auto; display: grid; place-items: center; color: var(--label-2); transition: transform 0.2s; }
+.list-fold .fold-chev .i { width: 20px; height: 20px; }
+.list-fold[open] .fold-chev { transform: rotate(180deg); }
+body.tv .list-fold > summary:focus-visible { outline: none; background: var(--hover); box-shadow: inset 0 0 0 2px var(--label); color: var(--label); }
 body.tv .set-fold > summary:focus-visible { outline: none; background: var(--hover); box-shadow: inset 0 0 0 2px var(--label); }
 .set-hint { font-size: 14px; margin: -6px 0 10px; }
 .set-profile { display: flex; gap: 18px; align-items: center; }

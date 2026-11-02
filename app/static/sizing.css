@@ -108,3 +108,6 @@ body.tv .card .big, body.tv .card .num { font-size: inherit; }
 /* ---- the Admin page switch: 44px to tap, 16px text on a tv */
 @media (pointer: coarse) { .admin-tabs a { min-height: 44px; } }
 body.tv .admin-tabs a { font-size: 16px; min-height: 44px; }
+/* ---- Settings list folds: 44px to tap, 16px text on a tv */
+@media (pointer: coarse) { .list-fold > summary { min-height: 44px; } }
+body.tv .list-fold > summary { font-size: 16px; min-height: 44px; }

@@ -1414,7 +1414,7 @@ body.tv .icon-pick:hover:not(:focus-visible) { transform: none; }
 
 /* ---- v11 */
 /* The first search row had no gap under the search bar, .shelf:first-child took its margin away */
-#sres > .srow:first-child, #sres > .s-more:first-child { margin-top: 30px; }
+#sres > .srow:first-child, #sres > .s-tail:first-child > .s-more:first-child { margin-top: 30px; }
 body.tv #sres > .srow:first-child { margin-top: 40px; }
 
 /* ---- v12 history, backups, app updates */

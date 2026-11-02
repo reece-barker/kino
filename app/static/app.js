@@ -1722,15 +1722,50 @@
     : x.live_id ? liveTile(x) : `<a class="tile landscape ch-tile" href="#/live" data-live="${esc(x.id)}" data-name="${esc(x.name)}"><div class="art">${x.logo ? `<img loading="lazy" decoding="async" src="${img(x.logo, 1, 240)}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(x.name)}">${esc(x.name)}</div>`}<span class="tile-live">Live</span></div>
       <div class="cap">${esc(x.name)}</div><div class="sub">${esc(x.now ? x.now.title : [x.group, flag(x.country)].filter(Boolean).join(" · "))}</div></a>`;
   const tileFor = (tile) => (tile === "wide" ? epTile : tile === "person" ? personTile : tile === "video" ? wideTile : tile === "live" ? liveSearchTile : posterTile);
+  // sig says what is in the row, so a redraw can leave a row alone when nothing in it changed (see reconcileSearch)
+  const rowSig = (items) => { let h = 5381; const t = items.map((x) => x.id || x.ext || x.imdb || x.file_id || x.name || x.cid).join("|"); for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0; return `${items.length}:${h}`; };
   const searchRow = (id, title, items, tile) => {
     if (!items.length) return "";
-    SROWS[id] = { items, tile, shown: Math.min(items.length, SROW_STEP) };
-    return `<section class="shelf srow" data-srow="${id}" aria-label="${esc(title)}">
+    const sig = rowSig(items), prev = SROWS[id];
+    SROWS[id] = prev && prev.sig === sig ? prev : { items, tile, shown: Math.min(items.length, SROW_STEP), sig };
+    return `<section class="shelf srow" data-srow="${id}" data-sig="${sig}" aria-label="${esc(title)}">
       <h2 class="section-title">${esc(title)} <span class="from">${items.length}</span></h2>
-      <div class="row ${tile === "wide" || tile === "video" || tile === "live" ? "wide" : "posters"}">${items.slice(0, SROW_STEP).map(tileFor(tile)).join("")}</div></section>`;
+      <div class="row ${tile === "wide" || tile === "video" || tile === "live" ? "wide" : "posters"}">${items.slice(0, SROWS[id].shown).map(tileFor(tile)).join("")}</div></section>`;
   };
+  // Results come in a few at a time (names, ideas, addons, videos), and the page used to throw every row away and draw them all again each time,
+  // which cut off a swipe in progress, lost how far a row was scrolled and made the page jump. Now only a row whose contents changed is replaced
+  // (keeping how far it was scrolled), the rest are left exactly as they are, and what goes below them is one small block that is redrawn
+  function reconcileSearch(box, htmls, tailHtml) {
+    const keyOf = (h) => (h.match(/data-srow="([^"]+)"/) || [])[1], sigOf = (h) => (h.match(/data-sig="([^"]*)"/) || [])[1];
+    const old = new Map($$(".srow", box).map((el) => [el.dataset.srow, el]));
+    const fresh = [], seen = new Set();
+    let prev = null;
+    htmls.forEach((h) => {
+      const key = keyOf(h);
+      let el = old.get(key);
+      if (!el || el.dataset.sig !== sigOf(h)) {
+        const sl = el ? $(".row", el).scrollLeft : 0;
+        const tpl = document.createElement("template");
+        tpl.innerHTML = h.trim();
+        const nel = tpl.content.firstElementChild;
+        if (el) el.replaceWith(nel); else box.appendChild(nel);
+        el = nel;
+        fresh.push([el, sl]);
+      }
+      seen.add(el);
+      const want = prev ? prev.nextElementSibling : box.firstElementChild;
+      if (el !== want) box.insertBefore(el, want);
+      prev = el;
+    });
+    $$(".srow", box).forEach((el) => { if (!seen.has(el)) el.remove(); });
+    let tail = $(".s-tail", box);
+    if (!tail) { tail = document.createElement("div"); tail.className = "s-tail"; }
+    tail.innerHTML = tailHtml;
+    box.appendChild(tail);
+    fresh.forEach(([el, sl]) => { growRows(el); enhanceRows(el); if (sl) $(".row", el).scrollLeft = sl; });
+  }
   function growRows(box) {
-    $$(".srow", box).forEach((sec) => {
+    (box.classList && box.classList.contains("srow") ? [box] : $$(".srow", box)).forEach((sec) => {
       const row = $(".row", sec), st = SROWS[sec.dataset.srow];
       if (!row || !st) return;
       const more = () => {
@@ -1802,22 +1837,20 @@
         const idea = named ? "" : searchRow("ideas", "Matches Your Idea", ideas.filter((x) => !have.has(keyOf(x))));
         // Words that only half match a name go below its results, an idea that matches no name goes first
         if (idea) rows.splice((all[0] && (all[0].score || 0) >= 60) ? rows.length : 0, 0, idea);
-        // When the addon results land the page redraws, focus and how far each row was scrolled stay put
-        const k = focusKey(document.activeElement), keep = {};
-        $$(".srow", box).forEach((sec) => (keep[sec.dataset.srow] = $(".row", sec).scrollLeft));
+        // When more results land only the rows that changed are redrawn (reconcileSearch), the rest, and how far each was scrolled, stay put
+        const k = focusKey(document.activeElement);
         const people = searchRow("people", "Cast and Crew", r.people || [], "person");
         // Someone typing an actor's name wants the people first
         const peopleFirst = (r.people || []).length && (!all.length || (all[0].score || 0) < 60);
         // Youtubio and the like come in last, there own rows with videos and channels kept apart
-        const vrows = searchRow("vids", "Videos", vids.filter((x) => x.shape !== "square"), "video") + searchRow("chans", "Channels", vids.filter((x) => x.shape === "square"), "video");
+        const vrows = [searchRow("vids", "Videos", vids.filter((x) => x.shape !== "square"), "video"), searchRow("chans", "Channels", vids.filter((x) => x.shape === "square"), "video")];
         SEARCH_EMBEDS = r.embeds || [];
         const liveRow = searchRow("live", "Live TV", [...(r.channels || []), ...SEARCH_EMBEDS, ...ext.filter((x) => x.kind === "live")], "live");
-        box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + liveRow + searchRow("eps", "Episodes", r.episodes, "wide") + vrows
-          + (ideaNote && !idea && !named ? `<p class="secondary s-note">${esc(ideaNote)}</p>` : "") + (!extDone || !vidsDone ? `<div class="s-more"><span class="spin small"></span>${!extDone ? "Looking in your addons" : "Still looking for videos"}</div>` : ""))
-          || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor, director or genre.</p></div>`;
-        growRows(box);
-        enhanceRows(box);
-        $$(".srow", box).forEach((sec) => { if (keep[sec.dataset.srow]) $(".row", sec).scrollLeft = keep[sec.dataset.srow]; });
+        const secs = [...(peopleFirst ? [people, ...rows] : [...rows, people]), liveRow, searchRow("eps", "Episodes", r.episodes, "wide"), ...vrows].filter(Boolean);
+        const tail = (ideaNote && !idea && !named ? `<p class="secondary s-note">${esc(ideaNote)}</p>` : "") + (!extDone || !vidsDone ? `<div class="s-more"><span class="spin small"></span>${!extDone ? "Looking in your addons" : "Still looking for videos"}</div>` : "");
+        // A new search starts from an empty page, the same search just gets updated
+        if (box.dataset.rec !== String(my)) { box.innerHTML = ""; box.dataset.rec = String(my); }
+        reconcileSearch(box, secs, secs.length || tail ? tail : `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor, director or genre.</p></div>`);
         refocus(k);
       };
       draw();

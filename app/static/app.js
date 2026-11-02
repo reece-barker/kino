@@ -480,14 +480,15 @@
     const item = (k, label, icon, extra = "") => `<a class="side-item" href="#/${k}" data-k="${k}"><span class="side-ic">${ic(icon)}</span><span class="side-lbl">${label}</span>${extra}</a>`;
     const F = ME.features || {};
     const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"],
-      ...(F.live ? [["live", "Live TV", "live"]] : []), ["mylist", "My List", "bookmark"], ["alerts", "Alerts", "bell"]];
+      ...(F.live ? [["live", "Live TV", "live"]] : []), ["mylist", "My List", "bookmark"]];
     const group = [["settings", "Settings", "gear"], ["history", "History", "clock"]];
     if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["health", "Library Health", "info"], ["activity", "Activity", "eye"], ["server", "Server", "server"]);
     chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
       <span class="side-shine" aria-hidden="true"></span>
       <div class="menu-wrap side-top">
-        <button class="side-me" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu">${pav(p, "xs")}<span class="side-lbl side-name">${esc(p.name)}</span><span class="side-lbl side-time" id="sideTime">${clockNow()}</span></button>
+        <button class="side-me" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu"><span class="side-av">${pav(p, "xs")}<i class="alert-dot side-av-dot" data-alertdot hidden></i></span><span class="side-lbl side-name">${esc(p.name)}</span><span class="side-lbl side-time" id="sideTime">${clockNow()}</span></button>
         <div class="menu drop side-menu" id="avatarMenu" hidden>
+          <a href="#/alerts" class="mi">${ic("bell")} Alerts <span class="mi-badge"><i class="alert-dot" data-alertdot hidden></i></span></a>
           <a href="#/profiles" class="mi">${ic("people")} Switch Profile</a>
           ${kidsMode() ? "" : isAdmin() ? `<button class="mi" id="adminOut">${ic("lock")} Sign Out of Admin</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin Sign In</button>`}
           <div class="menu-sep"></div>
@@ -497,7 +498,7 @@
       </div>
       <div class="side-items">
         <span class="side-pill" id="sidePill" aria-hidden="true"></span>
-        <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i, k === "alerts" ? `<span class="side-badge"><i class="alert-dot" data-alertdot hidden></i></span>` : "")).join("")}</nav>
+        <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i)).join("")}</nav>
         <div class="side-group ${open ? "open" : ""}" id="sideGroup">
           <button class="side-head" id="sideHead" aria-expanded="${open}"><span class="side-lbl">Settings</span>${ic("chevron")}</button>
           <div class="side-sub"><div class="side-sub-in">${group.map(([k, l, i]) => item(k, l, i, k === "sync" ? `<span class="side-badge" id="syncChip"><span class="dot"></span><span class="txt"></span></span>` : "")).join("")}</div></div>

@@ -318,13 +318,18 @@ FAILS = {}  # ip -> times of failed logins
 
 
 def too_many_fails(ip):
-    d = FAILS.get(ip)
-    if not d:
-        return False
+    """5 wrong passwords from one address in 15 minutes, or 30 from all addresses together. The second limit is there in case the address
+    can be made up (the app is only meant to be reached through nginx, but if something ever reaches it directly the header it reads the
+    address from could be changed on every try)"""
     now = time.time()
-    while d and d[0] < now - 900:
-        d.popleft()
-    return len(d) >= 5
+    for key, limit in ((ip, 5), ("*", 30)):
+        d = FAILS.get(key)
+        if d:
+            while d and d[0] < now - 900:
+                d.popleft()
+            if len(d) >= limit:
+                return True
+    return False
 
 
 def tok_hash(tok):
@@ -2008,6 +2013,7 @@ async def admin_login(request: Request):
     ok = await asyncio.to_thread(check_pw, pw, rows[0]["pw"] if rows else DUMMY_HASH)
     if not rows or not ok:
         FAILS.setdefault(ip, deque()).append(time.time())
+        FAILS.setdefault("*", deque()).append(time.time())
         # fail2ban watches for this exact line
         log.warning("kino login failed user=%s ip=%s", re.sub(r"\s", "_", logsafe(user))[:64], ip)
         raise HTTPException(401, "That username and password don't match")

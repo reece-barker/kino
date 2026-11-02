@@ -4008,6 +4008,9 @@ def sem_sync(fill_ext=False):
                 m = json.loads(r["data"])
             except ValueError:
                 continue
+            if addon_notice(m):
+                db().q("DELETE FROM ext_meta WHERE key = ?", (r["key"],))  # one kept from before it was recognised
+                continue
             docs[r["key"]] = ext_doc(m)
             SEM["genres"][r["key"]] = {str(g).lower() for g in m.get("genres") or []}
             ext_keys.add(r["key"])
@@ -5533,6 +5536,27 @@ async def safe_fetch(url, max_bytes=5 * 1024**2, timeout=12, allow_http=False, k
     raise HTTPException(502, "Too many redirects")
 
 
+# Some addons answer with a notice shaped like a film (a rate limit, a missing key, a subscription ending) in place of a real list. Those are
+# taken out of every list an addon sends, in one place. The first group is never a title, the second only counts when the item has no year and no
+# genres either (so a real film called Unauthorized stays). HIDE_ADDON_TITLES in kino.env is a list, with commas between, of words in a name that
+# always hides it, for anything these miss
+NOTICE_STRONG = re.compile(r"rate[\s_-]*limit|too many requests|quota (exceeded|reached|used)|exceeded (your|the) (rate|quota|limit)|(invalid|missing|expired) (api[\s_-]*)?(key|token)|"
+                           r"api[\s_-]*key (missing|required|invalid|expired)", re.I)
+NOTICE_WEAK = re.compile(r"unauthori[sz]ed|access denied|forbidden|subscription (expired|required|ended)|(please|you must) (configure|log ?in|subscribe|upgrade)|"
+                         r"temporarily (unavailable|disabled)|service (unavailable|down)|under maintenance|server error", re.I)
+HIDE_TITLES = [norm(x) for x in env("HIDE_ADDON_TITLES", "").split(",") if norm(x)]
+
+
+def addon_notice(m):
+    if not isinstance(m, dict):
+        return False
+    name = str(m.get("name") or m.get("title") or "")
+    n = norm(name)
+    if NOTICE_STRONG.search(name) or any(h in n for h in HIDE_TITLES):
+        return True
+    return bool(NOTICE_WEAK.search(name)) and not (m.get("releaseInfo") or m.get("year") or m.get("genres") or m.get("genre"))
+
+
 async def fetch_json(url, ttl=3600, timeout=12):
     hit = ADDON_CACHE.get(url)
     if hit and time.time() - hit[0] < ttl:
@@ -5570,6 +5594,8 @@ async def fetch_json_now(url, timeout, old):
             j = json.loads(data)
         except ValueError:
             raise HTTPException(502, "The addon didn't send valid JSON")
+        if isinstance(j, dict) and isinstance(j.get("metas"), list):
+            j["metas"] = [m for m in j["metas"] if not addon_notice(m)]
     except HTTPException:
         # An old answer beats none: a host that is busy or down still has what it said last time
         if old:

@@ -105,3 +105,6 @@ body.tv .theme-pick button span, body.tv .mono, body.tv b.mono { font-size: 16px
 /* The admin pages (Server, Sync): their small captions and values */
 body.tv .card .secondary, body.tv .card label, body.tv .card span, body.tv .card .state-line, body.tv .set-hint { font-size: 16px; }
 body.tv .card .big, body.tv .card .num { font-size: inherit; }
+/* ---- the Admin page switch: 44px to tap, 16px text on a tv */
+@media (pointer: coarse) { .admin-tabs a { min-height: 44px; } }
+body.tv .admin-tabs a { font-size: 16px; min-height: 44px; }

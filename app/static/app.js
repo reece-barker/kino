@@ -482,7 +482,7 @@
     const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"],
       ...(F.live ? [["live", "Live TV", "live"]] : []), ["mylist", "My List", "bookmark"]];
     const group = [["settings", "Settings", "gear"], ["history", "History", "clock"]];
-    if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["health", "Library Health", "info"], ["activity", "Activity", "eye"], ["server", "Server", "server"]);
+    if (isAdmin()) group.push(["admin", "Admin", "server"]);
     chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
       <span class="side-shine" aria-hidden="true"></span>
       <div class="menu-wrap side-top">
@@ -501,7 +501,7 @@
         <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i)).join("")}</nav>
         <div class="side-group ${open ? "open" : ""}" id="sideGroup">
           <button class="side-head" id="sideHead" aria-expanded="${open}"><span class="side-lbl">Settings</span>${ic("chevron")}</button>
-          <div class="side-sub"><div class="side-sub-in">${group.map(([k, l, i]) => item(k, l, i, k === "sync" ? `<span class="side-badge" id="syncChip"><span class="dot"></span><span class="txt"></span></span>` : "")).join("")}</div></div>
+          <div class="side-sub"><div class="side-sub-in">${group.map(([k, l, i]) => item(k, l, i, k === "admin" ? `<span class="side-badge" id="syncChip"><span class="dot"></span><span class="txt"></span></span>` : "")).join("")}</div></div>
         </div>
       </div>
     </aside>
@@ -516,10 +516,10 @@
   // Moves the highlight pill to the current page with a spring, like the selection on apple tv
   function setActive(active) {
     SIDE_ACTIVE = active;
-    const inGroup = ["settings", "history", "sync", "health", "activity", "server"].includes(active);
+    const inGroup = ["settings", "history", "admin"].includes(active);
     if (inGroup) { const g = $("#sideGroup"); if (g && !g.classList.contains("open")) toggleGroup(true, false); }
     $$("#chrome [data-k]").forEach((a) => {
-      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "alerts", "settings", "history", "sync", "health", "activity", "server"].includes(active));
+      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "alerts", "settings", "history", "admin"].includes(active));
       on ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
     });
     placePill();
@@ -603,7 +603,7 @@
       const row = (href, icon, label) => `<a class="more-row" href="${href}" data-close>${ic(icon)}<span>${label}</span>${ic("chevron")}</a>`;
       const sh = sheet(`<div class="more-head">${pav(p, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
         <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/alerts", "bell", "Alerts")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
-          ${isAdmin() ? row("#/sync", "refresh", "Sync") + row("#/health", "info", "Library Health") + row("#/activity", "eye", "Activity") + row("#/server", "server", "Server") : ""}
+          ${isAdmin() ? row("#/admin", "server", "Admin") : ""}
           ${row("#/profiles", "people", "Switch Profile")}</div>
         <div class="menu-label">Appearance</div>${themePicker("sheetTheme")}
         ${kidsMode() ? "" : `<div class="actions end" style="margin-top:18px">${isAdmin() ? `<button class="btn secondary small" id="mAdminOut">Sign Out of Admin</button>` : `<button class="btn secondary small" id="mAdminIn">${ic("lock")} Admin Sign In</button>`}</div>`}`);
@@ -3830,6 +3830,21 @@
   }
 
   // ---------------------------------------------------------- sync page
+  // One Admin page with a switch between Server, Sync, Library Health and Activity. Each of those draws itself the way it always did (they put
+  // themselves on screen before their first wait), then the heading and the switch are put on top of what they drew
+  const ADMIN_TABS = [["server", "Server"], ["sync", "Sync"], ["health", "Library Health"], ["activity", "Activity"]];
+  async function pageAdmin(tab) {
+    const t = ADMIN_TABS.some(([k]) => k === tab) ? tab : "server";
+    const run = { server: pageServer, sync: pageSync, health: pageHealth, activity: pageActivity }[t]();
+    const main = $("main.page", app), h1 = main && $(".large-title", main);
+    if (h1) {
+      h1.textContent = "Admin";
+      h1.insertAdjacentHTML("afterend", `<nav class="admin-tabs" aria-label="Admin sections">${ADMIN_TABS.map(([k, l]) => `<a href="#/admin/${k}" ${k === t ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>`);
+    }
+    setActive("admin");
+    return run;
+  }
+
   async function pageSync() {
     app.innerHTML = topbar("sync") + `<main class="page"><h1 class="large-title">Sync</h1><div id="syncBody"><div class="card skel" style="height:220px"></div></div></main>`;
     wireTopbar();
@@ -5839,7 +5854,7 @@
     const row = (cls, n) => `<section class="shelf"><div class="sk sk-line" style="width:180px"></div><div class="row posters">${tiles(n, cls)}</div></section>`;
     if (page === "home" || !page) return `<div class="sk sk-hero"></div><main class="page under-hero">${row("sk-wide", 4)}${row("sk-poster", 7)}</main>`;
     if (page === "title" || page === "discover") return `<div class="sk sk-hero short"></div><main class="page under-hero">${row("sk-wide", 4)}</main>`;
-    if (page === "settings" || page === "history" || page === "alerts" || page === "sync" || page === "health" || page === "activity" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
+    if (page === "settings" || page === "history" || page === "alerts" || page === "sync" || page === "health" || page === "activity" || page === "server" || page === "admin") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
     if (page === "search") return `<main class="page"><div class="sk sk-search"></div><div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${tiles(12)}</div></main>`;
     return `<main class="page"><div class="sk sk-title"></div><div class="grid">${tiles(14)}</div></main>`;
   }
@@ -5895,11 +5910,12 @@
       else if (page === "mylist") await pageMyList();
       else if (page === "alerts") await pageAlerts();
       else if (page === "settings") await pageSettings();
-      else if (page === "health" && isAdmin()) await pageHealth();
-      else if (page === "activity" && isAdmin()) await pageActivity();
+      else if (page === "admin" && isAdmin()) await pageAdmin(arg);
+      else if (page === "health" && isAdmin()) await pageAdmin("health");
+      else if (page === "activity" && isAdmin()) await pageAdmin("activity");
       else if (page === "history") await pageHistory();
-      else if (page === "sync" && isAdmin()) await pageSync();
-      else if (page === "server" && isAdmin()) await pageServer();
+      else if (page === "sync" && isAdmin()) await pageAdmin("sync");
+      else if (page === "server" && isAdmin()) await pageAdmin("server");
       else if (page && page !== "home") {
         // An address that is not a page (a typo, an old link), or an admin page for someone who isnt admin. It used to just show Home, which looked like the link worked
         app.innerHTML = topbar("") + `<main class="page"><div class="empty"><h2>That page isn't here</h2><p>The link may be old or mistyped${page === "sync" || page === "server" ? ", or it is only for the admin" : ""}.</p>

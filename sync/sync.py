@@ -619,7 +619,7 @@ def fix_state(state, by_path, old, new):
         by_path[os.path.realpath(DEST / new)] = k
 
 
-def rename_existing(apply, strip, recover=False):
+def rename_existing(apply, strip, recover=False, limit=0):
     """Renames what is already on the box to plain names. Every rename is written to the log first, and the database is changed in the same step
     as the file (one file at a time), so if it stops half way `--recover` finishes the bookkeeping from the log. Without --apply it only prints
     what it would do"""
@@ -667,6 +667,8 @@ def rename_existing(apply, strip, recover=False):
         print(f"went through the log, {n} files still had history under the old name and it was moved to the new one")
         return
     moves, skipped = plan_renames()
+    if limit:
+        moves = moves[:limit]  # a trial run on the first few files
     for old, why in skipped:
         print(f"leaving {old}: {why}")
     for old, new in moves:
@@ -728,7 +730,7 @@ def rename_existing(apply, strip, recover=False):
             if state:
                 save_state(state)
     stripped = 0
-    if strip:
+    if strip and not limit:
         have = stripped_set()
         for rel in sorted(walk_media(VIDEO_EXT)):  # files that were already named plainly, or weren't touched by the rename, still get their tags removed
             if rel not in have and (DEST / rel).suffix.lower() in TAGGABLE and strip_tags(DEST / rel):
@@ -895,7 +897,8 @@ def main():
 
 if __name__ == "__main__":
     if "--rename-existing" in sys.argv:
-        rename_existing("--apply" in sys.argv, "--strip-tags" in sys.argv, "--recover" in sys.argv)
+        lim = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else 0
+        rename_existing("--apply" in sys.argv, "--strip-tags" in sys.argv, "--recover" in sys.argv, lim)
         sys.exit(0)
     try:
         main()

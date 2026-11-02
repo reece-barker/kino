@@ -5288,7 +5288,7 @@ ACT_WATCHING_SECS = 60  # a player reports every few seconds, longer than this a
 async def admin_activity(days: int = 7, admin=Depends(require_admin)):
     now = time.time()
     days = max(1, min(int(days), ACT_KEEP_DAYS))
-    names = {r["id"]: r for r in db().q("SELECT id, name, icon, kids FROM profiles")}
+    names = {r["id"]: r for r in db().q("SELECT id, name, icon, kids, image FROM profiles")}
     # Rows still open in memory are newer than what was last written to the database
     live = {}
     for (pid, dev, ref), s in ACT_OPEN.items():
@@ -5297,7 +5297,7 @@ async def admin_activity(days: int = 7, admin=Depends(require_admin)):
     for (pid, dev), v in PRESENCE.items():
         if now - v["last"] > ACT_ACTIVE_SECS or pid not in names:
             continue
-        e = now_list.setdefault(pid, {"id": pid, "name": names[pid]["name"], "icon": names[pid]["icon"], "kids": bool(names[pid]["kids"]),
+        e = now_list.setdefault(pid, {"id": pid, "name": names[pid]["name"], "icon": names[pid]["icon"], "image": names[pid]["image"] or "", "kids": bool(names[pid]["kids"]),
                                       "devices": [], "last": 0, "watching": None})
         e["devices"].append({"label": v["label"], "ip": v["ip"], "last": v["last"]})
         e["last"] = max(e["last"], v["last"])
@@ -5322,7 +5322,7 @@ async def admin_activity(days: int = 7, admin=Depends(require_admin)):
         if not r["secs"] or r["secs"] < 30:
             continue
         pid = r["profile_id"]
-        e = per.setdefault(pid, {"id": pid, "name": (names.get(pid) or {"name": "Removed profile"})["name"], "icon": (names.get(pid) or {"icon": 0})["icon"],
+        e = per.setdefault(pid, {"id": pid, "name": (names.get(pid) or {"name": "Removed profile"})["name"], "icon": (names.get(pid) or {"icon": 0})["icon"], "image": (names.get(pid) or {"image": ""})["image"] or "",
                                  "secs": 0, "plays": 0, "last": 0, "titles": {}})
         e["secs"] += r["secs"]
         e["plays"] += 1
@@ -5331,7 +5331,7 @@ async def admin_activity(days: int = 7, admin=Depends(require_admin)):
     people = []
     for e in sorted(per.values(), key=lambda e: -e["secs"]):
         top = max(e["titles"].items(), key=lambda kv: kv[1])[0] if e["titles"] else ""
-        people.append({"id": e["id"], "name": e["name"], "icon": e["icon"], "secs": round(e["secs"]), "plays": e["plays"], "last": e["last"], "top": top})
+        people.append({"id": e["id"], "name": e["name"], "icon": e["icon"], "image": e["image"], "secs": round(e["secs"]), "plays": e["plays"], "last": e["last"], "top": top})
     # Watch time per day for the strip along the top, by the server's own days
     by_day = {}
     for r in rows:
@@ -5343,7 +5343,7 @@ async def admin_activity(days: int = 7, admin=Depends(require_admin)):
     for i in range(days - 1, -1, -1):
         d = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
         strip.append({"day": d, "secs": round(by_day.get(d, 0))})
-    recent = [{"profile": (names.get(r["profile_id"]) or {"name": "Removed profile"})["name"], "icon": (names.get(r["profile_id"]) or {"icon": 0})["icon"],
+    recent = [{"profile": (names.get(r["profile_id"]) or {"name": "Removed profile"})["name"], "icon": (names.get(r["profile_id"]) or {"icon": 0})["icon"], "image": (names.get(r["profile_id"]) or {"image": ""})["image"] or "",
                "name": r["name"], "sub": r["sub"], "kind": r["kind"], "title_id": r["title_id"], "device": r["device"], "ip": r["ip"],
                "started": r["started"], "last": r["last"], "secs": round(r["secs"] or 0)} for r in rows if (r["secs"] or 0) >= 30][:80]
     sp = ai_spent()

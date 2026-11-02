@@ -5502,7 +5502,12 @@
       else if (page === "history") await pageHistory();
       else if (page === "sync" && isAdmin()) await pageSync();
       else if (page === "server" && isAdmin()) await pageServer();
-      else await pageHome();
+      else if (page && page !== "home") {
+        // An address that is not a page (a typo, an old link), or an admin page for someone who isnt admin. It used to just show Home, which looked like the link worked
+        app.innerHTML = topbar("") + `<main class="page"><div class="empty"><h2>That page isn't here</h2><p>The link may be old or mistyped${page === "sync" || page === "server" ? ", or it is only for the admin" : ""}.</p>
+          <a class="btn secondary small" href="#/home">Go Home</a></div></main>`;
+        wireTopbar();
+      } else await pageHome();
       if (isAdmin() && page !== "sync" && page !== "home") api("/api/admin/sync").then((s) => { SYNC = s; updateSyncChip(); }).catch(() => {});
       if (n === ROUTE_N) { enhanceRows(app); tvSelects(app); }
       if (changed && n === ROUTE_N) {

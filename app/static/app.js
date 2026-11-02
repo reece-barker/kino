@@ -3807,6 +3807,8 @@
     try { ALERTS.n = (await api("/api/alerts")).unread || 0; } catch (_) { return; }
     $$("[data-alertdot]").forEach((d) => { d.hidden = !ALERTS.n; d.textContent = ALERTS.n > 9 ? "9+" : String(ALERTS.n); });
   }
+  setInterval(alertsRefresh, 90000);
+  setTimeout(alertsRefresh, 5000);
   async function pageAlerts() {
     const n = ROUTE_N;
     app.innerHTML = topbar("alerts") + `<main class="page narrow"><h1 class="large-title">Alerts</h1><div id="alBody"><div class="card skel" style="height:160px"></div></div></main>`;
@@ -5544,8 +5546,6 @@
   }
   window.addEventListener("hashchange", route);
   route();
-  setInterval(alertsRefresh, 90000);
-  setTimeout(alertsRefresh, 5000);
 
   // Installable app, the service worker only caches the app shell, never videos or api calls
   if ("serviceWorker" in navigator && location.protocol === "https:") {

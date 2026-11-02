@@ -2047,65 +2047,6 @@ async def admin_login(request: Request):
     return resp
 
 
-def aired(released):
-    """True if an episode's air date (an ISO date or time from the metadata) has passed. No date counts as aired, most old episodes have none"""
-    try:
-        return datetime.datetime.fromisoformat(str(released).replace("Z", "+00:00")).timestamp() <= time.time()
-    except (TypeError, ValueError):
-        return True
-
-
-def ranges(nums):
-    """[1, 2, 3, 5, 7, 8] as "1-3, 5, 7-8" """
-    out, nums = [], sorted(set(nums))
-    i = 0
-    while i < len(nums):
-        j = i
-        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
-            j += 1
-        out.append(str(nums[i]) if i == j else f"{nums[i]}-{nums[j]}")
-        i = j + 1
-    return ", ".join(out)
-
-
-@app.get("/api/admin/library-health")
-async def library_health(admin=Depends(require_admin)):
-    """What is worth a look in the library: titles Kino could not match, shows that are missing seasons or episodes that have aired (checked against what
-    the metadata says exists), and two library titles that turned out to be the same show. Only reads what is cached, it never asks the internet"""
-    unmatched, gaps, same, pending, checked = [], [], {}, 0, 0
-    for t in list(LIB["titles"].values()):
-        files = [LIB["files"][f] for f in t["files"] if f in LIB["files"]]
-        m, _ = cached_meta(t["key"])
-        checked += 1
-        if m is None:
-            pending += 1  # not looked up yet, the background job gets to it
-            continue
-        if not m.get("id"):
-            unmatched.append({"id": t["id"], "name": t["guess_name"], "year": t.get("year"), "kind": t["kind"], "files": len(files), "example": files[0]["name"] if files else ""})
-            continue
-        same.setdefault(m["id"], []).append({"id": t["id"], "name": t["guess_name"], "matched": m.get("name"), "files": len(files)})
-        if t["kind"] != "series":
-            continue
-        have = {}
-        for f in files:
-            if f.get("season") is not None and f.get("episode") is not None:
-                have.setdefault(int(f["season"]), set()).add(int(f["episode"]))
-        want = {}
-        for v in m.get("videos") or []:
-            if v.get("season") and v.get("episode") and aired(v.get("released")):
-                want.setdefault(int(v["season"]), set()).add(int(v["episode"]))
-        seasons = []
-        for sn in sorted(want):
-            miss = want[sn] - have.get(sn, set())
-            if miss:
-                seasons.append({"season": sn, "have": len(want[sn]) - len(miss), "of": len(want[sn]), "missing": ranges(miss) if have.get(sn) else "all"})
-        if seasons:
-            gaps.append({"id": t["id"], "name": m.get("name") or t["guess_name"], "seasons": seasons})
-    return {"checked": checked, "pending": pending, "unmatched": sorted(unmatched, key=lambda x: x["name"].lower()),
-            "series_gaps": sorted(gaps, key=lambda x: x["name"].lower()),
-            "same_show": [{"matched": v[0]["matched"], "titles": v} for v in same.values() if len(v) > 1]}
-
-
 @app.post("/api/admin/logout")
 async def admin_logout(request: Request):
     tok = request.cookies.get("kino_admin")
@@ -6628,6 +6569,65 @@ async def intro_clear(tid: str, season: int, admin=Depends(require_admin)):
 async def library_rescan(admin=Depends(require_admin)):
     asyncio.create_task(rescan())
     return {"ok": True}
+
+
+def aired(released):
+    """True if an episode's air date (an ISO date or time from the metadata) has passed. No date counts as aired, most old episodes have none"""
+    try:
+        return datetime.datetime.fromisoformat(str(released).replace("Z", "+00:00")).timestamp() <= time.time()
+    except (TypeError, ValueError):
+        return True
+
+
+def ranges(nums):
+    """[1, 2, 3, 5, 7, 8] as "1-3, 5, 7-8" """
+    out, nums = [], sorted(set(nums))
+    i = 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append(str(nums[i]) if i == j else f"{nums[i]}-{nums[j]}")
+        i = j + 1
+    return ", ".join(out)
+
+
+@app.get("/api/admin/library-health")
+async def library_health(admin=Depends(require_admin)):
+    """What is worth a look in the library: titles Kino could not match, shows that are missing seasons or episodes that have aired (checked against what
+    the metadata says exists), and two library titles that turned out to be the same show. Only reads what is cached, it never asks the internet"""
+    unmatched, gaps, same, pending, checked = [], [], {}, 0, 0
+    for t in list(LIB["titles"].values()):
+        files = [LIB["files"][f] for f in t["files"] if f in LIB["files"]]
+        m, _ = cached_meta(t["key"])
+        checked += 1
+        if m is None:
+            pending += 1  # not looked up yet, the background job gets to it
+            continue
+        if not m.get("id"):
+            unmatched.append({"id": t["id"], "name": t["guess_name"], "year": t.get("year"), "kind": t["kind"], "files": len(files), "example": files[0]["name"] if files else ""})
+            continue
+        same.setdefault(m["id"], []).append({"id": t["id"], "name": t["guess_name"], "matched": m.get("name"), "files": len(files)})
+        if t["kind"] != "series":
+            continue
+        have = {}
+        for f in files:
+            if f.get("season") is not None and f.get("episode") is not None:
+                have.setdefault(int(f["season"]), set()).add(int(f["episode"]))
+        want = {}
+        for v in m.get("videos") or []:
+            if v.get("season") and v.get("episode") and aired(v.get("released")):
+                want.setdefault(int(v["season"]), set()).add(int(v["episode"]))
+        seasons = []
+        for sn in sorted(want):
+            miss = want[sn] - have.get(sn, set())
+            if miss:
+                seasons.append({"season": sn, "have": len(want[sn]) - len(miss), "of": len(want[sn]), "missing": ranges(miss) if have.get(sn) else "all"})
+        if seasons:
+            gaps.append({"id": t["id"], "name": m.get("name") or t["guess_name"], "seasons": seasons})
+    return {"checked": checked, "pending": pending, "unmatched": sorted(unmatched, key=lambda x: x["name"].lower()),
+            "series_gaps": sorted(gaps, key=lambda x: x["name"].lower()),
+            "same_show": [{"matched": v[0]["matched"], "titles": v} for v in same.values() if len(v) > 1]}
 
 
 # ---- admin: ip allow list

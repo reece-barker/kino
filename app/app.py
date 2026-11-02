@@ -1237,7 +1237,7 @@ async def session_reaper():
     while True:
         await asyncio.sleep(15)
         for sid, s in list(SESS.items()):
-            if time.time() - s["last"] > 90:
+            if time.time() - s["last"] > (900 if s.get("cast") else 90):
                 kill_session(sid)
                 continue
             if s.get("live") or s["proc"].returncode is not None:
@@ -1323,7 +1323,7 @@ async def too_big(request: Request, exc: OverflowError):
 
 
 CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https:; style-src 'self' 'unsafe-inline'; "
-       "script-src 'self'; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-src https:; frame-ancestors 'none'; "
+       "script-src 'self' https://www.gstatic.com chrome-extension:; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-src https:; frame-ancestors 'none'; "
        "base-uri 'none'; form-action 'self'")
 
 
@@ -3851,6 +3851,11 @@ async def hls_file(sid: str, name: str, p=Depends(current_profile)):
     s = SESS.get(sid)
     if not s or s["owner"] != f"p{p['id']}" or not HLS_NAME.match(name):
         raise HTTPException(404, "This player session ended")
+    return await hls_serve(s, name)
+
+
+async def hls_serve(s, name, headers=None):
+    """The playlist or a piece of the converted video, for the player (with a login) and for a cast link (with a signed link)"""
     s["last"] = time.time()
     m = re.match(r"seg(\d+)\.m4s$", name)
     if m:
@@ -3867,9 +3872,42 @@ async def hls_file(sid: str, name: str, p=Depends(current_profile)):
         # Tells players to start at the beginning even tho the playlist is still growing, safari needs this
         if not s.get("live"):
             txt = txt.replace("#EXTM3U\n", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", 1)
-        return Response(txt, media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
+        return Response(txt, media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store", **(headers or {})})
     return FileResponse(path, media_type="video/mp4" if name.endswith(".mp4") else "video/iso.segment",
-                        headers={"Cache-Control": "private, max-age=600"})
+                        headers={"Cache-Control": "private, max-age=600", **(headers or {})})
+
+
+# ---- casting and AirPlay
+# A TV or speaker fetches the video itself and has no login cookie, so a cast gets its own converted stream with a signed link (good for 12 hours) instead.
+# The link only works for that one stream, and the address of the TV still has to be on the allowed networks, like any other request to Kino
+CAST_HOURS = 12
+CAST_CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Range, Content-Type", "Access-Control-Expose-Headers": "Content-Length, Content-Range, Content-Type"}
+
+
+def cast_token(sid, exp=None):
+    exp = exp or int(time.time()) + CAST_HOURS * 3600
+    return f"{exp}.{sign('cast', sid, exp)[:32]}"
+
+
+@app.post("/api/cast/{fid}")
+async def cast_start(fid: str, request: Request, p=Depends(current_profile)):
+    """Starts a stream for a TV like /api/play does (same body: t, audio, hevc, ad) and gives back a link that needs no login"""
+    r = await play_start(fid, request, p)
+    SESS[r["sid"]]["cast"] = True  # a TV that is paused stops fetching, so it gets longer than a normal player before the stream is cleaned up
+    return {**r, "url": f"/api/c/{r['sid']}/{cast_token(r['sid'])}/index.m3u8"}
+
+
+@app.api_route("/api/c/{sid}/{tok}/{name}", methods=["GET", "OPTIONS"])
+async def cast_file(sid: str, tok: str, name: str, request: Request):
+    if request.method == "OPTIONS":
+        return Response(status_code=204, headers=CAST_CORS)
+    exp, _, sig = tok.partition(".")
+    if not exp.isdigit() or int(exp) < time.time() or not hmac.compare_digest(sig, sign("cast", sid, int(exp))[:32]):
+        raise HTTPException(403, "This cast link has run out")
+    s = SESS.get(sid)
+    if not s or not HLS_NAME.match(name):
+        raise HTTPException(404, "This player session ended")
+    return await hls_serve(s, name, CAST_CORS)
 
 
 @app.post("/api/play/{sid}/stop")

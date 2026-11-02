@@ -356,6 +356,19 @@ select.plain { background: var(--fill); border: 0; border-radius: 10px; height: 
 
 /* ---------- toast */
 .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 100; padding: 12px 18px; border-radius: 14px; font-size: 15px; max-width: min(520px, calc(100vw - 32px)); }
+/* the remote control bar while casting to a TV */
+.castbar { position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 95; display: grid; gap: 10px; width: min(520px, calc(100vw - 32px)); padding: 14px 16px; border-radius: 18px; }
+.castbar[hidden] { display: none; }
+.castbar .cb-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.castbar .cb-text { display: grid; gap: 2px; min-width: 0; font-size: 15px; }
+.castbar .cb-text b, .castbar .cb-text span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.castbar .cb-text span { color: var(--label-2); font-size: 13px; }
+.castbar .cb-seek { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--label-2); font-variant-numeric: tabular-nums; }
+.castbar .cb-seek input { flex: 1; min-width: 0; }
+.castbar .cb-btns { display: flex; justify-content: center; gap: 8px; }
+@media (max-width: 760px) { .castbar { bottom: calc(86px + env(safe-area-inset-bottom)); } }
+body.with-side .castbar { left: calc(50% + var(--side) / 2); }
+
 
 /* ---------- player */
 .player { position: fixed; inset: 0; z-index: 90; background: #000; }

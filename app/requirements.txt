@@ -8,3 +8,4 @@ requests>=2.31,<3
 numpy>=1.26,<3
 faster-whisper>=1.0,<2
 fastembed>=0.4,<1
+anthropic>=2.4,<3

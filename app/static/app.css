@@ -946,6 +946,11 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 .side-av { position: relative; flex: none; display: inline-flex; }
 .side-av-dot { position: absolute; top: -6px; right: -8px; z-index: 2; box-shadow: 0 0 0 2px var(--bg-2, #1c1c1e); pointer-events: none; }
 .mi-badge { margin-left: auto; display: inline-flex; }
+/* Live TV is marked Soon for everyone who isn't an admin */
+.side-badge.soon { color: var(--orange, #ff9f0a); font-size: 12px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; }
+.side:not(.open):not(.pinned) .side-badge.soon { left: 41px; right: auto; top: 5px; }
+.side:not(.open):not(.pinned) .side-badge.soon::before { content: ""; display: block; width: 9px; height: 9px; border-radius: 50%; background: var(--orange, #ff9f0a); box-shadow: 0 0 0 2px var(--bg-2, #1c1c1e); }
+.tb-soon { position: absolute; top: 6px; left: calc(50% + 8px); width: 9px; height: 9px; border-radius: 50%; background: var(--orange, #ff9f0a); box-shadow: 0 0 0 2px var(--bg-2, #1c1c1e); }
 /* the switch at the top of the Admin page */
 .admin-tabs { display: flex; gap: 8px; margin: 2px 0 24px; padding: 4px 2px; overflow-x: auto; scrollbar-width: none; }
 .admin-tabs::-webkit-scrollbar { display: none; }

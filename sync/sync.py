@@ -138,10 +138,17 @@ def existing_library():
             if not key:
                 continue
             if not res:
-                ck = f"{p.relative_to(DEST)}|{p.stat().st_size}"
+                try:
+                    ck = f"{p.relative_to(DEST)}|{p.stat().st_size}"
+                except OSError:
+                    continue
                 if ck not in HEIGHT_CACHE:
-                    HEIGHT_CACHE[ck] = probe_height(p)  # Name doesnt say the quality, so ffprobe reads it from the file
-                res = HEIGHT_CACHE[ck]
+                    h = probe_height(p)  # Name doesnt say the quality, so ffprobe reads it from the file
+                    if h:
+                        HEIGHT_CACHE[ck] = h  # a failed probe (0) isnt remembered, it is tried again next time
+                    res = h
+                else:
+                    res = HEIGHT_CACHE[ck]
             if res >= have.get(key, (-1, ""))[0]:
                 have[key] = (res, n)
     return have
@@ -168,6 +175,8 @@ def clean_rel(name):
     if ext in SUB_EXT:
         try:
             lang = "." + first(g.get("subtitle_language")).alpha2
+            low = name.lower()
+            lang += (".forced" if re.search(r"(^|[\W_])forced([\W_]|$)", low) else "") + (".sdh" if re.search(r"(^|[\W_])(sdh|hi)([\W_]|$)", low) else "")
         except Exception:
             lang = ""
     if g.get("type") == "episode":
@@ -195,6 +204,20 @@ TAGGABLE = {".mkv", ".mp4", ".m4v", ".mov", ".webm"}  # other containers (avi, t
 def title_ok(t):
     toks = [x for x in re.split(r"[^a-z0-9]+", str(t or "").lower()) if x]
     return bool(toks) and all(x in TITLE_OK or x.isdigit() for x in toks)
+
+
+def unique_target(target, used):
+    """The target, or the same name with (2), (3) and so on when something is already there or already picked. A subtitle gets the number before
+    its language, Heat (1995) (2).en.srt, so it still looks like a subtitle"""
+    n, cand = 2, target
+    while cand in used or cand.exists():
+        if n > 99:
+            return None
+        stem, ext = target.stem, target.suffix
+        m = re.match(r"^(.*?)((?:\.[A-Za-z]{2,3})(?:\.(?:forced|sdh))*)$", stem) if ext.lower() in SUB_EXT else None
+        cand = target.with_name((f"{m.group(1)} ({n}){m.group(2)}" if m else f"{stem} ({n})") + ext)
+        n += 1
+    return cand
 
 
 def strip_tags(path):
@@ -240,7 +263,7 @@ def strip_tags(path):
         if not count["video"]:
             return False
         cmd += ["-c", "copy", "-map_metadata:g", "-1", "-map_chapters", "1" if chapters else "-1", "-map_metadata:s:v", "-1", "-map_metadata:s:a", "-1",
-                "-map_metadata:s:s", "-1", "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact", *langs, str(tmp)]
+                "-map_metadata:s:s", "-1", "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact", *(["-default_mode", "passthrough"] if path.suffix.lower() in (".mkv", ".webm") else []), *langs, str(tmp)]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
         if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size < path.stat().st_size * 0.9:
             raise RuntimeError((r.stderr or "ffmpeg failed")[-200:])
@@ -248,10 +271,10 @@ def strip_tags(path):
         return True
     except Exception as e:
         print(f"couldnt strip tags from {path.name}, left as it was: {e}", flush=True)
-        tmp.unlink(missing_ok=True)
         return False
     finally:
         meta.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)  # gone already after a good run, but a stop (SIGTERM) halfway must not leave it behind
 
 
 def is_junk(name, size):
@@ -571,7 +594,6 @@ def main():
     have = existing_library() if guessit else {}
     save_heights()
     skipped_deleted = []
-    used = set()
     cands = []  # (kind, id_param, item_id, file, key, target, media_key, res)
     for kind, id_param in KINDS:
         for item in list_items(kind):
@@ -593,12 +615,7 @@ def main():
                 if CLEAN:
                     cr = clean_rel(name)
                     if cr:
-                        target = (DEST / cr).resolve()
-                        n, root = 2, target
-                        while (target.exists() or target in used) and n < 50:  # two copies that end up with the same name, the second gets (2)
-                            target = root.with_name(f"{root.stem} ({n}){root.suffix}")
-                            n += 1
-                        used.add(target)
+                        target = (DEST / cr).resolve()  # same-name clashes are sorted out below, once it is known what is really being downloaded
                 # Makes sure a weird filename cant write outside of the dest folder
                 if DEST not in target.parents:
                     print(f"skipping suspicious path: {name}")
@@ -645,6 +662,18 @@ def main():
     skipped += skipped_deleted
     status["skipped"] = skipped[:60]
     todo = [c[:6] for c in todo]
+    if CLEAN:
+        # Two files that end up with the same plain name, the second gets (2). Only the ones really being downloaded count, a copy that was
+        # skipped must not take the name from the one that is kept
+        used, fixed = set(), []
+        for c in todo:
+            t = unique_target(c[5], used)
+            if t is None:
+                print(f"too many files with the name {c[5].name}, skipping one", flush=True)
+                continue
+            used.add(t)
+            fixed.append(c[:5] + (t,))
+        todo = fixed
 
     status.update(state="running", queue_total=len(todo), queue_done=0)
     write_status()

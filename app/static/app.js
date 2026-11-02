@@ -459,6 +459,7 @@
       <button class="tb-item" id="tbMore" data-k="more">${pav(p, "xs")}<span>${esc(p.name)}</span><i class="alert-dot tb-alert" data-alertdot hidden></i></button>
     </nav>`;
     wireSide();
+    setTimeout(alertsRefresh, 400);  // the count on the bell, for whoever just opened this profile
   }
 
   // Moves the highlight pill to the current page with a spring, like the selection on apple tv

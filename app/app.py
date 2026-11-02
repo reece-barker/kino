@@ -164,6 +164,7 @@ CREATE TABLE IF NOT EXISTS cont_hidden (profile_id INTEGER, key TEXT, at REAL, P
 CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, title_id TEXT, kind TEXT, season INTEGER, episode INTEGER, file_id TEXT, at REAL,
     read INTEGER DEFAULT 0, dismissed INTEGER DEFAULT 0, UNIQUE (profile_id, title_id, season, episode));
 CREATE TABLE IF NOT EXISTS alert_follow (profile_id INTEGER, title_id TEXT, since REAL, max_season INTEGER, PRIMARY KEY (profile_id, title_id));
+CREATE TABLE IF NOT EXISTS file_seen (file_id TEXT PRIMARY KEY, at REAL);
 CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, code TEXT, name TEXT, ua TEXT, ip TEXT, status TEXT,
     created REAL, last_seen REAL);
 CREATE TABLE IF NOT EXISTS search_recent (profile_id INTEGER, key TEXT, kind TEXT, title_id TEXT, name TEXT, poster TEXT,
@@ -1846,7 +1847,7 @@ async def profile_delete(pid: int, admin=Depends(require_admin)):
 
 
 def drop_profile(pid):
-    for t in ("watch", "ratings", "mylist", "cont_hidden", "search_recent", "live_fav"):
+    for t in ("watch", "ratings", "mylist", "cont_hidden", "search_recent", "live_fav", "alerts", "alert_follow"):
         db().q(f"DELETE FROM {t} WHERE profile_id = ?", (pid,))
     db().q("DELETE FROM profiles WHERE id = ?", (pid,))
 
@@ -5978,10 +5979,28 @@ def followed_series(pid):
 
 def make_alerts():
     now = time.time()
+    # When a file first turned up is remembered here (not its date, that changes when a file is touched or copied with rsync). The first time this runs
+    # everything already there counts as old
+    seen = {r["file_id"]: r["at"] for r in db().q("SELECT file_id, at FROM file_seen")}
+    first_run = not seen
+    fresh = [(fid, 0 if first_run else now) for fid in LIB["files"] if fid not in seen]
+    for fid, at in fresh:
+        seen[fid] = at
+    if fresh:
+        for x in fresh:
+            db().q("INSERT OR IGNORE INTO file_seen VALUES (?,?)", x)
+    if LIB["titles"]:  # alerts for titles that are no longer in the library go (not when the library is empty, that is probably a scan that failed)
+        for r in db().q("SELECT DISTINCT title_id FROM alerts"):
+            if r["title_id"] not in LIB["titles"]:
+                db().q("DELETE FROM alerts WHERE title_id = ?", (r["title_id"],))
     for prof in db().q("SELECT id FROM profiles WHERE pending = 0 AND (members IS NULL OR members = '')"):
         pid = prof["id"]
         wm = watch_map(pid)
-        for tid in followed_series(pid):
+        follows = followed_series(pid)
+        for r in db().q("SELECT title_id FROM alert_follow WHERE profile_id = ?", (pid,)):
+            if r["title_id"] not in follows:
+                db().q("DELETE FROM alert_follow WHERE profile_id = ? AND title_id = ?", (pid, r["title_id"]))  # unfollowed, so it starts fresh if it is followed again
+        for tid in follows:
             t = LIB["titles"][tid]
             files = [LIB["files"][f] for f in t["files"] if f in LIB["files"]]
             seasons = [f["season"] for f in files if f.get("season") is not None]
@@ -5990,7 +6009,7 @@ def make_alerts():
                 db().q("INSERT OR IGNORE INTO alert_follow VALUES (?,?,?,?)", (pid, tid, now, max(seasons) if seasons else 0))
                 continue  # first time this show is seen for the profile, what is there now is not news
             since, top = row[0]["since"], row[0]["max_season"] or 0
-            new = [f for f in files if f["mtime"] > since and f.get("season") is not None and f.get("episode") is not None and not (wm.get(f["id"]) or {}).get("watched")]
+            new = [f for f in files if seen.get(f["id"], 0) > since and f.get("season") is not None and f.get("episode") is not None and not (wm.get(f["id"]) or {}).get("watched")]
             for f in sorted(new, key=lambda f: (f["season"], f["episode"])):
                 kind = "season" if f["season"] > top else "episode"
                 top = max(top, f["season"])
@@ -6004,7 +6023,8 @@ def make_alerts():
 async def alerts_get(p=Depends(current_profile)):
     wm = watch_map(p["id"])
     groups = {}
-    for r in db().q("SELECT * FROM alerts WHERE profile_id = ? AND dismissed = 0 ORDER BY at DESC, id DESC", (p["id"],)):
+    ids = group_ids(p["id"])  # a joint profile shows what the two people in it have
+    for r in db().q(f"SELECT * FROM alerts WHERE profile_id IN ({ids_sql(ids)}) AND dismissed = 0 ORDER BY at DESC, id DESC", ids):
         t = LIB["titles"].get(r["title_id"])
         f = LIB["files"].get(r["file_id"])
         if not t or not f or (wm.get(f["id"]) or {}).get("watched"):
@@ -6014,6 +6034,9 @@ async def alerts_get(p=Depends(current_profile)):
             continue
         g = groups.setdefault(r["title_id"], {"title_id": r["title_id"], "name": m.get("name") or t["guess_name"], "poster": m.get("poster"), "kind": "episode", "count": 0,
                                               "unread": 0, "at": r["at"], "eps": []})
+        if any(e["season"] == r["season"] and e["episode"] == r["episode"] for e in g["eps"]):
+            # the same episode for both people in a joint profile counts once
+            continue
         g["count"] += 1
         g["unread"] += 0 if r["read"] else 1
         if r["kind"] == "season":
@@ -6033,20 +6056,22 @@ async def alerts_get(p=Depends(current_profile)):
 @app.post("/api/alerts/read")
 async def alerts_read(request: Request, p=Depends(current_profile)):
     b = await json_obj(request)
+    ids = group_ids(p["id"])
     if b.get("title_id"):
-        db().q("UPDATE alerts SET read = 1 WHERE profile_id = ? AND title_id = ?", (p["id"], str(b["title_id"])))
+        db().q(f"UPDATE alerts SET read = 1 WHERE profile_id IN ({ids_sql(ids)}) AND title_id = ?", (*ids, str(b["title_id"])))
     else:
-        db().q("UPDATE alerts SET read = 1 WHERE profile_id = ?", (p["id"],))
+        db().q(f"UPDATE alerts SET read = 1 WHERE profile_id IN ({ids_sql(ids)})", ids)
     return {"ok": True}
 
 
 @app.post("/api/alerts/dismiss")
 async def alerts_dismiss(request: Request, p=Depends(current_profile)):
     b = await json_obj(request)
+    ids = group_ids(p["id"])
     if b.get("title_id"):
-        db().q("UPDATE alerts SET dismissed = 1, read = 1 WHERE profile_id = ? AND title_id = ?", (p["id"], str(b["title_id"])))
+        db().q(f"UPDATE alerts SET dismissed = 1, read = 1 WHERE profile_id IN ({ids_sql(ids)}) AND title_id = ?", (*ids, str(b["title_id"])))
     else:
-        db().q("UPDATE alerts SET dismissed = 1, read = 1 WHERE profile_id = ?", (p["id"],))
+        db().q(f"UPDATE alerts SET dismissed = 1, read = 1 WHERE profile_id IN ({ids_sql(ids)})", ids)
     return {"ok": True}
 
 

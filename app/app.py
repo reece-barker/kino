@@ -106,7 +106,8 @@ KIND_DIRS = {"torrents", "webdl", "usenet"}
 # Only these hosts can be fetched by the image proxy, otherwise someone could use it to reach random urls
 IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.space",
              "m.media-amazon.com", "image.tmdb.org"}
-SESSION_DAYS = 30
+SESSION_DAYS = 30  # how long the admin cookie may stay in the browser, the sign in itself ends much sooner, see ADMIN_IDLE_HOURS
+ADMIN_IDLE_HOURS = float(env("ADMIN_IDLE_HOURS", "12"))  # an admin sign in ends this long after it was last used
 AVATAR_COUNT = 36  # Has to match the AVATARS list in app.js
 DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False, "live_english": True, "previews": True, "preview_sound": True}
 
@@ -248,6 +249,9 @@ def migrate():
         d.q("ALTER TABLE iptv_lists ADD COLUMN relay INTEGER DEFAULT 0")  # 1 = its channels play through the UK server (UK_PROXY)
     if "src_prio" not in [r["name"] for r in d.q("PRAGMA table_info(addons)")]:
         d.q("ALTER TABLE addons ADD COLUMN src_prio INTEGER DEFAULT 0")  # 1 = its sources are tried first, 2 next, and so on, 0 = normal
+    if "profile_id" not in [r["name"] for r in d.q("PRAGMA table_info(sessions)")]:
+        d.q("ALTER TABLE sessions ADD COLUMN profile_id INTEGER")  # the profile that was open when the admin signed in, admin only counts while that one is open
+        d.q("DELETE FROM sessions")  # old sign ins ran for 30 days on any profile, everyone signs in once more under the new rules
     if "device" not in [r["name"] for r in d.q("PRAGMA table_info(sessions)")]:
         # Admin sign ins are tied to the device they were made on now, old ones without it get signed out
         d.q("ALTER TABLE sessions ADD COLUMN device TEXT")
@@ -461,12 +465,23 @@ def admin_user(request):
     tok = request.cookies.get("kino_admin")
     if not tok:
         return None
-    rows = db().q("SELECT s.username, s.expires, s.device FROM sessions s JOIN users u ON u.username = s.username "
+    rows = db().q("SELECT s.username, s.expires, s.device, s.profile_id FROM sessions s JOIN users u ON u.username = s.username "
                   "WHERE s.token_hash = ? AND u.role = 'admin'", (tok_hash(tok),))
-    if not rows or rows[0]["expires"] < time.time():
+    now = time.time()
+    if not rows or rows[0]["expires"] < now:
         return None
     if rows[0]["device"] and not hmac.compare_digest(rows[0]["device"], tok_hash(browser_key(request))):
         return None
+    # Admin belongs to the profile it was signed in under. Someone else opening another profile on this device (a kid on the family tablet) is not admin,
+    # and it comes back when the first profile is opened again. On the profile picker (no profile open) it still counts, that is where Manage Profiles is
+    if rows[0]["profile_id"]:
+        cur = cookie_profile(request)
+        if cur and cur["id"] != rows[0]["profile_id"]:
+            return None
+    # Each use pushes the end out again, so it ends after ADMIN_IDLE_HOURS of not being used, not that long after signing in
+    idle = ADMIN_IDLE_HOURS * 3600
+    if rows[0]["expires"] - now < idle / 2:
+        db().q("UPDATE sessions SET expires = ? WHERE token_hash = ?", (now + idle, tok_hash(tok)))
     return rows[0]["username"]
 
 
@@ -2037,14 +2052,43 @@ async def admin_login(request: Request):
         raise HTTPException(401, "That username and password don't match")
     FAILS.pop(ip, None)
     tok = secrets.token_urlsafe(32)
-    exp = time.time() + SESSION_DAYS * 86400
-    db().q("INSERT INTO sessions (token_hash, username, created, expires, ip, ua, device) VALUES (?,?,?,?,?,?,?)",
-           (tok_hash(tok), user, time.time(), exp, ip, request.headers.get("user-agent", "")[:200], tok_hash(browser_key(request))))
+    exp = time.time() + ADMIN_IDLE_HOURS * 3600
+    prof = cookie_profile(request)
+    db().q("INSERT INTO sessions (token_hash, username, created, expires, ip, ua, device, profile_id) VALUES (?,?,?,?,?,?,?,?)",
+           (tok_hash(tok), user, time.time(), exp, ip, request.headers.get("user-agent", "")[:200], tok_hash(browser_key(request)), prof["id"] if prof else None))
     db().q("DELETE FROM sessions WHERE expires < ?", (time.time(),))
     log.info("kino login ok user=%s ip=%s", user, ip)
     resp = JSONResponse({"ok": True, "admin": user})
     set_cookie(resp, "kino_admin", tok, SESSION_DAYS * 86400)
     return resp
+
+
+@app.get("/api/admin/sessions")
+async def admin_sessions(request: Request, admin=Depends(require_admin)):
+    """Where an admin is signed in right now: no tokens, just which device, which profile and when. id is the start of the token's hash"""
+    mine = tok_hash(request.cookies.get("kino_admin", ""))
+    out = []
+    for r in db().q("SELECT token_hash, username, created, expires, ip, ua, profile_id FROM sessions WHERE expires > ? ORDER BY created DESC", (time.time(),)):
+        p = profile_row(r["profile_id"]) if r["profile_id"] else None
+        out.append({"id": r["token_hash"][:16], "username": r["username"], "created": r["created"], "expires": r["expires"], "ip": r["ip"],
+                    "device": ua_family(r["ua"]), "profile": p["name"] if p else None, "this": r["token_hash"] == mine})
+    return {"sessions": out, "idle_hours": ADMIN_IDLE_HOURS}
+
+
+@app.post("/api/admin/sessions/revoke")
+async def admin_session_revoke(request: Request, admin=Depends(require_admin)):
+    b = await json_obj(request)
+    sid = str(b.get("id") or "")
+    if b.get("all"):
+        db().q("DELETE FROM sessions")
+        log.info("kino admin signed out everywhere by=%s", admin)
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie("kino_admin", path="/")
+        return resp
+    if len(sid) < 16:
+        raise HTTPException(400, "Pick a sign in to end")
+    db().q("DELETE FROM sessions WHERE substr(token_hash, 1, 16) = ?", (sid[:16],))
+    return {"ok": True}
 
 
 @app.post("/api/admin/logout")

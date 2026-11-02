@@ -367,6 +367,7 @@ select.plain { background: var(--fill); border: 0; border-radius: 10px; height: 
 body.with-side .hand { left: calc(50% + var(--side) / 2); }
 body.tv .hand { bottom: 36px; }
 
+
 /* ---------- player */
 .player { position: fixed; inset: 0; z-index: 90; background: #000; }
 .player video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
@@ -515,6 +516,19 @@ body.tv .hand { bottom: 36px; }
 .hero-dots button[aria-selected="true"] { width: 24px; background: #fff; }
 .hero-logo { object-position: left bottom; }
 .banner { position: fixed; top: 76px; left: 50%; transform: translateX(-50%); z-index: 45; background: rgba(255, 159, 10, 0.18); color: var(--orange); padding: 10px 16px; border-radius: 12px; font-size: 14px; font-weight: 600; -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); width: max-content; max-width: calc(100vw - 32px); }  /* max-content, or left: 50% leaves it only the right half of the screen to wrap in */
+
+/* the remote control bar while casting to a TV */
+.castbar { position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 95; display: grid; gap: 10px; width: min(520px, calc(100vw - 32px)); padding: 14px 16px; border-radius: 18px; }
+.castbar[hidden] { display: none; }
+.castbar .cb-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.castbar .cb-text { display: grid; gap: 2px; min-width: 0; font-size: 15px; }
+.castbar .cb-text b, .castbar .cb-text span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.castbar .cb-text span { color: var(--label-2); font-size: 13px; }
+.castbar .cb-seek { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--label-2); font-variant-numeric: tabular-nums; }
+.castbar .cb-seek input { flex: 1; min-width: 0; }
+.castbar .cb-btns { display: flex; justify-content: center; gap: 8px; }
+@media (max-width: 760px) { .castbar { bottom: calc(86px + env(safe-area-inset-bottom)); } }
+body.with-side .castbar { left: calc(50% + var(--side) / 2); }
 
 /* tiles extras */
 .tile-check { position: absolute; top: 8px; right: 8px; z-index: 3; width: 24px; height: 24px; border-radius: 50%; background: rgba(0, 0, 0, 0.7); display: grid; place-items: center; font-size: 15px; }

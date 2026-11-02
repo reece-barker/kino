@@ -29,6 +29,7 @@
     gear: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96a7 7 0 00-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84a.47.47 0 00-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 00-.59.22L2.74 8.87a.47.47 0 00.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 00-.12-.61zM12 15.6a3.6 3.6 0 110-7.2 3.6 3.6 0 010 7.2z",
     trash: "M9 3h6l1 2h4v2H4V5h4zm-3 6h12l-1 12H7z",
     wand: "M3 19.6L13.6 9l1.4 1.4L4.4 21zM15 3l.9 2.1L18 6l-2.1.9L15 9l-.9-2.1L12 6l2.1-.9zm5 6l.6 1.4L22 11l-1.4.6L20 13l-.6-1.4L18 11l1.4-.6z",
+    cast: "M21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11z",
     airplay: "M5 4h14a2 2 0 012 2v9a2 2 0 01-2 2h-2.2l-1.6-2H19V6H5v9h3.8l-1.6 2H5a2 2 0 01-2-2V6a2 2 0 012-2zm7 9l6 7H6z",
     pip: "M3 5h18a1 1 0 011 1v12a1 1 0 01-1 1H3a1 1 0 01-1-1V6a1 1 0 011-1zm1 2v10h16V7zm7 4h8v5h-8z",
     speed: "M12 4a9 9 0 00-7.8 13.5l1.7-1A7 7 0 1119 12h2a9 9 0 00-9-8zm4.2 4.3l-5.6 4.1a1.8 1.8 0 102.5 2.5z",
@@ -1998,6 +1999,7 @@
             ${resume ? `<button class="btn secondary" id="playStart">Start Over</button>` : ""}
             ${up && t.imdb ? `<button class="btn secondary" id="srcMain">${ic("link")} Sources</button>` : ""}
             ${t.imdb ? `<button class="btn secondary" id="trailerBtn" type="button" hidden>${ic("trailer")} Trailer</button>` : ""}
+            ${up ? `<button class="btn secondary" id="castBtn" type="button" hidden>${ic("cast")} Cast</button>` : ""}
             ${listBtn(t.in_list)}
             <button class="round-btn ${t.watched ? "on" : ""}" id="watchedBtn" aria-pressed="${t.watched}" aria-label="${t.watched ? "Mark as unwatched" : "Mark as watched"}" title="${t.watched ? "Watched" : "Mark as Watched"}">${ic(t.watched ? "check" : "eye")}</button>
             <span class="rate-group" role="group" aria-label="Rate this">${rateBtn(-1, "down", "Not for me")}${rateBtn(1, "up", "I like this")}${rateBtn(2, "love", "Love this")}</span>
@@ -2078,6 +2080,11 @@
     const sm = $("#srcMain");
     if (sm) sm.onclick = () => openSources(t, up);
     heroTrailer(t.kind, t.imdb);
+    const castB = $("#castBtn");
+    if (castB && up) castEnsure(() => {
+      castB.hidden = false;
+      castB.onclick = () => castStart(up.id, resume ? up.progress.pos : 0, { title: t.name, sub: up.season != null && up.episode != null ? `Season ${up.season}, episode ${up.episode}` : "", poster: t.poster });
+    });
     wireListBtn({ title_id: t.id }, t.list_key);
     const kt = $("#kidsT");
     if (kt) kt.onclick = async () => {
@@ -4393,6 +4400,7 @@
     if (my !== PLAY_N || pl.el.hidden) return;
     loadArt(info.art, (opts.title && opts.title.name) || info.show || info.name);
     if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
+    pl.cookieless = false;
     pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false; pl.fakeAsked = false; pl.greenChecked = false; pl.frameAt = 0;
     pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0; pl.ad = 0;
     pl.title = opts.title || null;
@@ -4548,7 +4556,8 @@
     const au = (pl.info.audio || []).find((x) => x.n === pl.audio);
     loadNote([au && au.label, vc.dovi ? "Dolby Vision to HDR" : "", t > 1 ? `from ${clock(t)}` : ""].filter(Boolean).join(" · "));
     try {
-      r = await api(`/api/play/${pl.info.id}`, { t, audio: pl.audio, hevc: codecOk("hevc"), ad: pl.ad || 0 });
+      r = await api(`/api/${pl.cookieless ? "cast" : "play"}/${pl.info.id}`, { t, audio: pl.audio, hevc: pl.cookieless ? false : codecOk("hevc"), ad: pl.ad || 0 });
+      if (pl.cookieless) r.url = location.origin + r.url;  // for AirPlay, a link that works without this page's login
     } catch (e) {
       if (my !== PLAY_N || !pl.info || mine !== pl.hlsSeq) return;
       loadHide();
@@ -4665,13 +4674,147 @@
     }
   }
 
+  // ---- casting to a TV or speaker (Chromecast, Google TV and anything else that works with Google Cast), in Chrome and Edge
+  // The video goes to the TV as its own converted stream with a signed link, so the TV needs no login. While casting this page is the remote control:
+  // a bar with play and pause, 10 seconds back and on, a position slider and Stop. A jump starts a new stream at that spot, and what is watched is saved
+  const CAST = { ready: false, loading: false, waiters: [], fid: null, sid: null, offset: 0, dur: 0, meta: {}, info: null, audio: 0, timer: null };
+  const castOk = () => !TV && !window.KinoAndroid && /Chrome\/|Edg\//.test(navigator.userAgent) && !/CriOS|OPR\//.test(navigator.userAgent);
+  function castEnsure(then) {
+    // Google's sender script is only loaded once someone opens a title or the player, and only in a browser that can use it
+    if (!castOk()) return;
+    if (CAST.ready) { if (then) then(); return; }
+    if (then) CAST.waiters.push(then);
+    if (CAST.loading) return;
+    CAST.loading = true;
+    window.__onGCastApiAvailable = (ok) => { if (ok) castInit(); };
+    const sc = document.createElement("script");
+    sc.src = "https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1";
+    sc.async = true;
+    sc.onerror = () => { CAST.loading = false; };
+    document.head.appendChild(sc);
+  }
+  function castInit() {
+    try {
+      const ctx = cast.framework.CastContext.getInstance();
+      ctx.setOptions({ receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID, autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED });
+      CAST.player = new cast.framework.RemotePlayer();
+      CAST.ctl = new cast.framework.RemotePlayerController(CAST.player);
+      CAST.ctl.addEventListener(cast.framework.RemotePlayerEventType.ANY_CHANGE, castSync);
+      ctx.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, (e) => { if (e.sessionState === cast.framework.SessionState.SESSION_ENDED) castEnded(); });
+      CAST.ready = true;
+      CAST.waiters.splice(0).forEach((f) => { try { f(); } catch (_) {} });
+    } catch (e) { CAST.loading = false; console.warn("Cast isn't available:", e && e.message); }
+  }
+  const castPos = () => Math.max(0, CAST.offset + ((CAST.player && CAST.player.currentTime) || 0));
+  function castBar() {
+    let bar = $("#castBar");
+    if (bar) return bar;
+    bar = document.createElement("div");
+    bar.id = "castBar"; bar.className = "castbar glass"; bar.hidden = true; bar.setAttribute("role", "region"); bar.setAttribute("aria-label", "Casting");
+    bar.innerHTML = `<div class="cb-top"><div class="cb-text"><b id="cbTitle"></b><span id="cbSub"></span></div><button class="btn secondary small" id="cbStop">Stop Casting</button></div>
+      <div class="cb-seek"><span id="cbPos">0:00</span><input type="range" id="cbSeek" min="0" max="1000" value="0" aria-label="Position"><span id="cbDur">0:00</span></div>
+      <div class="cb-btns"><button class="btn secondary small" id="cbBack" aria-label="Back 10 seconds">−10s</button><button class="btn primary small" id="cbPlay">Pause</button><button class="btn secondary small" id="cbFwd" aria-label="Forward 10 seconds">+10s</button></div>`;
+    document.body.appendChild(bar);
+    $("#cbPlay").onclick = () => CAST.ctl && CAST.ctl.playOrPause();
+    $("#cbBack").onclick = () => castSeek(castPos() - 10);
+    $("#cbFwd").onclick = () => castSeek(castPos() + 10);
+    $("#cbSeek").onchange = (e) => castSeek((Number(e.target.value) / 1000) * (CAST.dur || 0));
+    $("#cbSeek").oninput = (e) => { CAST.drag = true; $("#cbPos").textContent = clock((Number(e.target.value) / 1000) * (CAST.dur || 0)); };
+    $("#cbStop").onclick = () => { try { cast.framework.CastContext.getInstance().endCurrentSession(true); } catch (_) {} castEnded(); };
+    return bar;
+  }
+  function castSync() {
+    const bar = castBar();
+    const ctx = window.cast && cast.framework ? cast.framework.CastContext.getInstance() : null, ses = ctx && ctx.getCurrentSession();
+    if (!CAST.fid || !ses) { bar.hidden = true; return; }
+    const dev = (ses.getCastDevice && ses.getCastDevice().friendlyName) || "the TV";
+    bar.hidden = false;
+    $("#cbTitle").textContent = CAST.meta.title || "Casting";
+    $("#cbSub").textContent = `${CAST.loadingNow ? "Getting it ready for " : "Casting to "}${dev}${CAST.meta.sub ? ` · ${CAST.meta.sub}` : ""}`;
+    const pos = castPos();
+    if (!CAST.drag) { $("#cbPos").textContent = clock(pos); $("#cbSeek").value = CAST.dur ? Math.min(1000, Math.round((pos / CAST.dur) * 1000)) : 0; }
+    $("#cbDur").textContent = clock(CAST.dur);
+    $("#cbPlay").textContent = CAST.player && CAST.player.isPaused ? "Play" : "Pause";
+  }
+  async function castStart(fid, start, meta, onGo) {
+    let ses = null;
+    try {
+      const ctx = cast.framework.CastContext.getInstance();
+      await ctx.requestSession();
+      ses = ctx.getCurrentSession();
+    } catch (e) { if (e && e !== "cancel") toast("Couldn't connect to that TV"); return; }
+    if (!ses) return;
+    if (onGo) onGo();
+    CAST.meta = meta || {};
+    CAST.info = null;
+    await castLoad(fid, start);
+  }
+  async function castLoad(fid, start) {
+    const ses = cast.framework.CastContext.getInstance().getCurrentSession();
+    if (!ses) return;
+    CAST.fid = fid; CAST.loadingNow = true; castSync();
+    try {
+      CAST.info = CAST.info && CAST.info.id === fid ? CAST.info : await api(`/api/file/${fid}`);
+      const r = await api(`/api/cast/${fid}`, { t: Math.max(0, start || 0), audio: CAST.audio || 0, hevc: false });
+      CAST.sid = r.sid; CAST.offset = r.offset || start || 0; CAST.dur = CAST.info.duration || 0;
+      const mi = new chrome.cast.media.MediaInfo(location.origin + r.url, "application/x-mpegURL");
+      mi.streamType = chrome.cast.media.StreamType.BUFFERED;
+      mi.hlsSegmentFormat = chrome.cast.media.HlsSegmentFormat.FMP4;
+      mi.hlsVideoSegmentFormat = chrome.cast.media.HlsVideoSegmentFormat.FMP4;
+      mi.metadata = new chrome.cast.media.GenericMediaMetadata();
+      mi.metadata.title = CAST.meta.title || CAST.info.name || "Kino";
+      if (CAST.meta.sub) mi.metadata.subtitle = CAST.meta.sub;
+      if (CAST.meta.poster && /^https:/.test(CAST.meta.poster)) mi.metadata.images = [new chrome.cast.Image(CAST.meta.poster)];
+      const rq = new chrome.cast.media.LoadRequest(mi);
+      rq.autoplay = true;
+      const err = await ses.loadMedia(rq);
+      if (err) throw new Error("The TV couldn't play that");
+      clearInterval(CAST.timer);
+      CAST.timer = setInterval(castSave, 10000);  // what is watched is saved, and it keeps the stream going while the TV is paused
+    } catch (e) {
+      toast((e && e.message) || "Casting didn't start", 5000);
+      CAST.fid = null;
+    }
+    CAST.loadingNow = false; castSync();
+  }
+  function castSeek(t) {
+    CAST.drag = false;
+    if (!CAST.fid) return;
+    castLoad(CAST.fid, Math.max(0, Math.min(t, (CAST.dur || t) - 5)));
+  }
+  function castSave() {
+    if (!CAST.fid || !CAST.player || !CAST.player.isConnected) return;
+    api("/api/progress", { file_id: CAST.fid, pos: castPos(), dur: CAST.dur }).catch(() => {});
+  }
+  function castEnded() {
+    clearInterval(CAST.timer);
+    if (CAST.fid && CAST.player) castSave();
+    if (CAST.sid) api(`/api/play/${CAST.sid}/stop`, {}).catch(() => {});
+    CAST.fid = CAST.sid = null;
+    const bar = $("#castBar"); if (bar) bar.hidden = true;
+  }
+
   function setupDeviceButtons() {
     // Only shows AirPlay and picture in picture when this device can actualy do them
-    const air = $("#pAir"), pip = $("#pPip");
+    const air = $("#pAir"), pip = $("#pPip"), cst = $("#pCast");
     air.hidden = true;
+    cst.hidden = true;
+    cst.innerHTML = ic("cast");
+    castEnsure(() => { cst.hidden = !!(pl.info && (pl.info.live || pl.info.recording)); });
+    cst.onclick = () => {
+      const i = pl.info;
+      if (!i || !CAST.ready) return;
+      // The player only closes once a TV is picked, so backing out of the list leaves the film playing
+      castStart(i.id, pos(), { title: i.show || i.name, sub: i.season ? `Season ${i.season}, episode ${i.episode}` : "", poster: i.art && i.art.poster }, () => { pl.v.pause(); closePlayer(); });
+    };
     if (window.WebKitPlaybackTargetAvailabilityEvent) {
       pl.v.addEventListener("webkitplaybacktargetavailabilitychanged", (e) => { air.hidden = e.availability !== "available"; });
-      air.onclick = () => pl.v.webkitShowPlaybackTargetPicker && pl.v.webkitShowPlaybackTargetPicker();
+      // An Apple TV fetches the video itself, without this page's login, so before the list of screens opens the film gets a stream with a signed link
+      pl.v.addEventListener("webkitcurrentplaybacktargetiswirelesschanged", () => { if (!pl.v.webkitCurrentPlaybackTargetIsWireless) pl.cookieless = false; });
+      air.onclick = async () => {
+        try { if (pl.info && !pl.info.live && !pl.cookieless && (pl.mode === "hls" || pl.mode === "direct")) { pl.cookieless = true; await startHls(pos()); } } catch (_) {}
+        if (pl.v.webkitShowPlaybackTargetPicker) pl.v.webkitShowPlaybackTargetPicker();
+      };
     }
     const canPip = (document.pictureInPictureEnabled && !pl.v.disablePictureInPicture) || (pl.v.webkitSupportsPresentationMode && pl.v.webkitSupportsPresentationMode("picture-in-picture"));
     pip.hidden = !canPip;

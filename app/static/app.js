@@ -430,7 +430,7 @@
     const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"],
       ...(F.live ? [["live", "Live TV", "live"]] : []), ["mylist", "My List", "bookmark"]];
     const group = [["settings", "Settings", "gear"], ["history", "History", "clock"]];
-    if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["server", "Server", "server"]);
+    if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["health", "Library Health", "info"], ["server", "Server", "server"]);
     chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
       <span class="side-shine" aria-hidden="true"></span>
       <div class="menu-wrap side-top">
@@ -463,10 +463,10 @@
   // Moves the highlight pill to the current page with a spring, like the selection on apple tv
   function setActive(active) {
     SIDE_ACTIVE = active;
-    const inGroup = ["settings", "history", "sync", "server"].includes(active);
+    const inGroup = ["settings", "history", "sync", "health", "server"].includes(active);
     if (inGroup) { const g = $("#sideGroup"); if (g && !g.classList.contains("open")) toggleGroup(true, false); }
     $$("#chrome [data-k]").forEach((a) => {
-      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "settings", "history", "sync", "server"].includes(active));
+      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "settings", "history", "sync", "health", "server"].includes(active));
       on ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
     });
     placePill();
@@ -550,7 +550,7 @@
       const row = (href, icon, label) => `<a class="more-row" href="${href}" data-close>${ic(icon)}<span>${label}</span>${ic("chevron")}</a>`;
       const sh = sheet(`<div class="more-head">${pav(p, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
         <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
-          ${isAdmin() ? row("#/sync", "refresh", "Sync") + row("#/server", "server", "Server") : ""}
+          ${isAdmin() ? row("#/sync", "refresh", "Sync") + row("#/health", "info", "Library Health") + row("#/server", "server", "Server") : ""}
           ${row("#/profiles", "people", "Switch Profile")}</div>
         <div class="menu-label">Appearance</div>${themePicker("sheetTheme")}
         ${kidsMode() ? "" : `<div class="actions end" style="margin-top:18px">${isAdmin() ? `<button class="btn secondary small" id="mAdminOut">Sign Out of Admin</button>` : `<button class="btn secondary small" id="mAdminIn">${ic("lock")} Admin Sign In</button>`}</div>`}`);
@@ -3799,6 +3799,26 @@
       <div class="kv"><span><b>${bytes(d.used)}</b> used</span><span><b>${Math.round(p * 100)}%</b> full</span></div></section>`;
   }
 
+  // What is worth a look in the library: shows with missing seasons or episodes, titles that were not matched, and two titles that are the same show
+  async function pageHealth() {
+    const n = ROUTE_N;
+    app.innerHTML = topbar("health") + `<main class="page narrow"><h1 class="large-title">Library Health</h1><div id="hBody"><div class="card skel" style="height:220px"></div></div></main>`;
+    wireTopbar();
+    const r = await api("/api/admin/library-health");
+    if (n !== ROUTE_N) return;
+    const link = (id, name) => `<a class="plain-link" href="#/title/${esc(id)}">${esc(name)}</a>`;
+    const nothing = !r.unmatched.length && !r.series_gaps.length && !r.same_show.length;
+    $("#hBody").innerHTML = `<p class="secondary set-hint">Looked at ${r.checked} title${r.checked === 1 ? "" : "s"}${r.pending ? `, ${r.pending} not looked up yet (it happens in the background, check again in a few minutes)` : ""}. This only compares your files with what Kino already knows, it never asks the internet.</p>
+      ${nothing ? `<section class="card set-card"><h2 class="set-title">All good</h2><p class="secondary">Every title is matched, no show is missing episodes that have aired, and nothing is listed twice.</p></section>` : ""}
+      ${r.series_gaps.length ? `<section class="card set-card"><h2 class="set-title">Missing Episodes</h2><p class="secondary set-hint">Episodes that have aired but have no file in your library.</p>
+        <div class="list">${r.series_gaps.map((g) => { const part = g.seasons.filter((x) => x.have), none = g.seasons.filter((x) => !x.have);
+          return `<div class="li"><span class="grow" style="display:block;white-space:normal;overflow:visible;overflow-wrap:anywhere"><b>${link(g.id, g.name)}</b><br>${part.map((x) => `<span class="secondary">Season ${x.season}: ${x.have} of ${x.of}, missing episode${x.missing.includes(",") || x.missing.includes("-") ? "s" : ""} ${esc(x.missing)}</span>`).join("<br>")}${part.length && none.length ? "<br>" : ""}${none.length ? `<span class="secondary">No files for season${none.length === 1 ? "" : "s"} ${none.map((x) => x.season).join(", ")}</span>` : ""}</span></div>`; }).join("")}</div></section>` : ""}
+      ${r.unmatched.length ? `<section class="card set-card"><h2 class="set-title">Not Matched</h2><p class="secondary set-hint">Kino couldn't find these, so they show with the name from the file. Open one and use Fix Match, or rename the file so it has the full title and the year.</p>
+        <div class="list">${r.unmatched.map((u) => `<div class="li"><span class="grow" style="display:block;white-space:normal;overflow:visible;overflow-wrap:anywhere"><b>${link(u.id, u.name + (u.year ? ` (${u.year})` : ""))}</b><br><span class="secondary mono">${esc(u.example)}</span></span><span class="r">${u.files} file${u.files === 1 ? "" : "s"}</span></div>`).join("")}</div></section>` : ""}
+      ${r.same_show.length ? `<section class="card set-card"><h2 class="set-title">Same Show Twice</h2><p class="secondary set-hint">These library titles were matched to the same show, so something is probably named differently between them.</p>
+        <div class="list">${r.same_show.map((g) => `<div class="li"><span class="grow" style="display:block;white-space:normal;overflow:visible;overflow-wrap:anywhere"><b>${esc(g.matched || "")}</b><br>${g.titles.map((t) => `${link(t.id, t.name)} <span class="secondary">${t.files} file${t.files === 1 ? "" : "s"}</span>`).join("<br>")}</span></div>`).join("")}</div></section>` : ""}`;
+  }
+
   async function pageServer() {
     app.innerHTML = topbar("server") + `<main class="page"><h1 class="large-title">Server</h1><div id="srvBody"><div class="card skel" style="height:220px"></div></div>
       <div id="stress"></div><div id="srvErrors"></div><div id="backups"></div><div id="appLog"></div><div id="storageReview"></div></main>`;
@@ -5421,7 +5441,7 @@
     const row = (cls, n) => `<section class="shelf"><div class="sk sk-line" style="width:180px"></div><div class="row posters">${tiles(n, cls)}</div></section>`;
     if (page === "home" || !page) return `<div class="sk sk-hero"></div><main class="page under-hero">${row("sk-wide", 4)}${row("sk-poster", 7)}</main>`;
     if (page === "title" || page === "discover") return `<div class="sk sk-hero short"></div><main class="page under-hero">${row("sk-wide", 4)}</main>`;
-    if (page === "settings" || page === "history" || page === "sync" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
+    if (page === "settings" || page === "history" || page === "sync" || page === "health" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
     if (page === "search") return `<main class="page"><div class="sk sk-search"></div><div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${tiles(12)}</div></main>`;
     return `<main class="page"><div class="sk sk-title"></div><div class="grid">${tiles(14)}</div></main>`;
   }
@@ -5476,6 +5496,7 @@
       else if (page === "person" && arg) await pagePerson(safeDecode(arg));
       else if (page === "mylist") await pageMyList();
       else if (page === "settings") await pageSettings();
+      else if (page === "health" && isAdmin()) await pageHealth();
       else if (page === "history") await pageHistory();
       else if (page === "sync" && isAdmin()) await pageSync();
       else if (page === "server" && isAdmin()) await pageServer();

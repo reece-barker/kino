@@ -2125,6 +2125,24 @@ def title_allowed(p, t, meta):
         raise HTTPException(404, "That title isn't available on this profile")
 
 
+def kids_block_file(p, f):
+    """A kids profile only gets what is allowed for kids, wherever it asks for a library file (playing, downloading, subtitles, an outside player link)"""
+    if p.get("kids"):
+        t = LIB["titles"].get(f["title_id"])
+        if not t:
+            raise HTTPException(404, "That title isn't available on this profile")
+        title_allowed(p, t, meta_for(t))
+
+
+async def kids_block_stream(p, r):
+    """The same for a source from an addon, it is checked against the details of the film or show it belongs to"""
+    if p.get("kids"):
+        show, cur, _ = await ep_context(r["kind"], r["video_id"])
+        m = show if cur else await meta_lookup(r["kind"], show_of(r["video_id"]))
+        if not kids_ok((m or {}).get("genres"), show_of(r["video_id"])):
+            raise HTTPException(404, "That title isn't available on this profile")
+
+
 def kids_profile(pid):
     r = db().q("SELECT kids FROM profiles WHERE id = ?", (pid,))
     return bool(r and r[0]["kids"])
@@ -3629,7 +3647,9 @@ def range_response(path, request, download_name=None):
 
 @app.get("/api/stream/{fid}/direct")
 async def stream_direct(fid: str, request: Request, p=Depends(current_profile)):
-    return range_response(file_or_404(fid)["path"], request)
+    f = file_or_404(fid)
+    kids_block_file(p, f)
+    return range_response(f["path"], request)
 
 
 @app.get("/api/dl/{fid}")
@@ -3657,6 +3677,7 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
         ad = 0.0
     if fid.startswith("s"):
         r = stream_row(fid)
+        await kids_block_stream(p, r)
         if r["url"].startswith("torbox:"):
             url, pr = await tb_probe(r)
         elif is_hls(r["url"]):
@@ -3666,6 +3687,7 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
         f = {"id": fid, "path": url}
     else:
         f = file_or_404(fid)
+        kids_block_file(p, f)
         pr = await get_probe(f)
     v = pr.get("video")
     if not v:
@@ -3852,6 +3874,8 @@ async def extract_sub(fid, path, index):
 @app.get("/api/subs/{fid}/{sub_id}")
 async def subtitles(fid: str, sub_id: str, p=Depends(current_profile)):
     f = file_or_404(fid) if not fid.startswith("s") else {"ext_subs": []}
+    if not fid.startswith("s"):
+        kids_block_file(p, f)
     if sub_id.startswith("x"):
         s = next((s for s in f["ext_subs"] if s["id"] == sub_id), None)
         if not s:
@@ -5411,7 +5435,9 @@ async def pd_open(url, headers, kind="play"):
 
 @app.get("/api/rstream/{sid}")
 async def rstream(sid: str, request: Request, dl: int = 0, p=Depends(current_profile)):
-    return await stream_proxy(stream_row(sid), request, dl)
+    r = stream_row(sid)
+    await kids_block_stream(p, r)
+    return await stream_proxy(r, request, dl)
 
 
 def video_answer(status, ctype):
@@ -6081,9 +6107,11 @@ def ext_link_ok(url, ip):
 async def extlink(fid: str, request: Request, p=Depends(current_profile)):
     if fid.startswith("s"):
         r = stream_row(fid)
+        await kids_block_stream(p, r)
         name = r["name"] + (Path(urlparse(r["url"]).path).suffix if not r["url"].startswith("torbox:") else ".mkv")
     else:
         f = file_or_404(fid)
+        kids_block_file(p, f)
         name = f["name"]
     return {"url": ext_link(fid, client_ip(request), name)}
 

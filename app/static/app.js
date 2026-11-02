@@ -235,9 +235,11 @@
   const handKey = (x) => `${x.fid}|${Math.round(x.started)}`;
   function handHide() { const el = $("#handOff"); if (el) el.remove(); }
   async function handCheck() {
-    if (!ME.profile || document.hidden || !pl.el.hidden) return;
+    if (!ME.profile || document.hidden) return;
+    if (!pl.el.hidden) { handHide(); return; }  // a film is open here, nothing to offer
     let r;
     try { r = await api("/api/nowplaying"); } catch (_) { return; }
+    if (!pl.el.hidden) return;  // one was started while that was on its way
     const x = r && r.playing, el = $("#handOff");
     if (!x || handSeen().includes(handKey(x))) { if (el) handHide(); return; }
     if (el && el.dataset.k === handKey(x)) return;
@@ -4553,7 +4555,7 @@
 
   function closePlayer(keepOpen, keepLoading) {
     const wasOpen = !pl.el.hidden;
-    if (pl.info) { saveProgress(); if (pl.evStarted) sendEvent("stop"); pl.evStarted = false; }
+    if (pl.info) { saveProgress(); if (pl.evStarted) sendEvent("stop"); pl.evStarted = false; if (wasOpen) api("/api/nowplaying/stop", {}).catch(() => {}); }
     clearInterval(pl.saveT);
     clearInterval(pl.upNextT);
     if (pl.hls) { pl.hls.destroy(); pl.hls = null; }

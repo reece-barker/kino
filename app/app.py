@@ -3984,27 +3984,48 @@ async def progress(request: Request, p=Depends(current_profile)):
 # ---- playing on another device
 # The player reports its position every few seconds (also while paused), so the last report per profile says where it is being watched right now.
 # Another device that opens the same profile asks about it and offers to carry on from there. Nothing is stored on disk, it is only about right now
-NOW_PLAYING = {}
+NOW_PLAYING = {}  # profile id -> {device: what it is playing}, so two devices playing at once do not overwrite each other
+STOPPED = {}  # (profile, device) -> when that device closed its player
 NOW_PLAYING_SECS = 45  # a player that has not reported for this long is closed or gone
 
 
 def note_playing(pid, fid, pos, dur, done, request):
-    if done or not (pos > 5):
-        NOW_PLAYING.pop(pid, None)  # finished, or just opened
-        return
     dev = tok_hash(browser_key(request))[:16]
-    old = NOW_PLAYING.get(pid)
-    same = old and old["fid"] == fid and old["dev"] == dev and time.time() - old["updated"] < 5 * 60
-    NOW_PLAYING[pid] = {"fid": fid, "dev": dev, "label": ua_family(request.headers.get("user-agent")), "pos": pos, "dur": dur, "updated": time.time(),
-                        "started": old["started"] if same else time.time()}
+    devs = NOW_PLAYING.setdefault(pid, {})
+    if done or not (pos > 5):
+        devs.pop(dev, None)  # finished, or just opened
+        return
+    if time.time() - STOPPED.get((pid, dev), 0) < 5:
+        return  # the final report of a player that has just closed arrives after the stop
+    old = devs.get(dev)
+    same = old and old["fid"] == fid and time.time() - old["updated"] < 5 * 60
+    devs[dev] = {"fid": fid, "dev": dev, "label": ua_family(request.headers.get("user-agent")), "pos": pos, "dur": dur, "updated": time.time(),
+                 "started": old["started"] if same else time.time()}
+
+
+@app.post("/api/nowplaying/stop")
+async def nowplaying_stop(request: Request, p=Depends(current_profile)):
+    """This device closed its player, so it is not playing anything now"""
+    dev = tok_hash(browser_key(request))[:16]
+    NOW_PLAYING.get(p["id"], {}).pop(dev, None)
+    STOPPED[(p["id"], dev)] = time.time()
+    if len(STOPPED) > 500:
+        for k in [k for k, t in STOPPED.items() if time.time() - t > 60]:
+            STOPPED.pop(k, None)
+    return {"ok": True}
 
 
 @app.get("/api/nowplaying")
 async def nowplaying(request: Request, p=Depends(current_profile)):
-    """Something this profile is watching right now on a different device, or null"""
-    e = NOW_PLAYING.get(p["id"])
-    if not e or time.time() - e["updated"] > NOW_PLAYING_SECS or e["dev"] == tok_hash(browser_key(request))[:16]:
+    """Something this profile is watching right now on a different device (the one that reported last if there are several), or null"""
+    me, now = tok_hash(browser_key(request))[:16], time.time()
+    devs = NOW_PLAYING.get(p["id"], {})
+    for dv in [d for d, e in devs.items() if now - e["updated"] > NOW_PLAYING_SECS]:
+        del devs[dv]
+    others = [e for dv, e in devs.items() if dv != me]
+    if not others:
         return {"playing": None}
+    e = max(others, key=lambda x: x["updated"])
     fid, name, tid, sub = e["fid"], "", None, ""
     if fid in LIB["files"]:
         f = LIB["files"][fid]
@@ -4026,7 +4047,7 @@ async def nowplaying(request: Request, p=Depends(current_profile)):
     else:
         return {"playing": None}
     return {"playing": {"fid": fid, "tid": tid, "name": name, "sub": sub, "pos": e["pos"], "dur": e["dur"], "device": e["label"], "started": e["started"],
-                        "ago": int(time.time() - e["updated"])}}
+                        "ago": int(now - e["updated"])}}
 
 
 # ---- images

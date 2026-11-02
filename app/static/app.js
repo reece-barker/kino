@@ -3790,9 +3790,11 @@
   // themselves on screen before their first wait), then the heading and the switch are put on top of what they drew
   const ADMIN_TABS = [["server", "Server"], ["sync", "Sync"], ["health", "Library Health"], ["activity", "Activity"]];
   async function pageAdmin(tab) {
+
     const t = ADMIN_TABS.some(([k]) => k === tab) ? tab : "server";
     const run = { server: pageServer, sync: pageSync, health: pageHealth, activity: pageActivity }[t]();
     const main = $("main.page", app), h1 = main && $(".large-title", main);
+    if (main) main.classList.remove("narrow");  // Library Health and Activity were drawn narrow, Sync and Server wide, all four are wide here
     if (h1) {
       h1.textContent = "Admin";
       h1.insertAdjacentHTML("afterend", `<nav class="admin-tabs" aria-label="Admin sections">${ADMIN_TABS.map(([k, l]) => `<a href="#/admin/${k}" ${k === t ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>`);
@@ -5810,7 +5812,8 @@
     const row = (cls, n) => `<section class="shelf"><div class="sk sk-line" style="width:180px"></div><div class="row posters">${tiles(n, cls)}</div></section>`;
     if (page === "home" || !page) return `<div class="sk sk-hero"></div><main class="page under-hero">${row("sk-wide", 4)}${row("sk-poster", 7)}</main>`;
     if (page === "title" || page === "discover") return `<div class="sk sk-hero short"></div><main class="page under-hero">${row("sk-wide", 4)}</main>`;
-    if (page === "settings" || page === "history" || page === "alerts" || page === "sync" || page === "health" || page === "activity" || page === "server" || page === "admin") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
+    if (page === "admin" || page === "sync" || page === "health" || page === "activity" || page === "server") return `<main class="page"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
+    if (page === "settings" || page === "history" || page === "alerts") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
     if (page === "search") return `<main class="page"><div class="sk sk-search"></div><div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${tiles(12)}</div></main>`;
     return `<main class="page"><div class="sk sk-title"></div><div class="grid">${tiles(14)}</div></main>`;
   }

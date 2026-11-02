@@ -6677,7 +6677,7 @@ async def library_rescan(admin=Depends(require_admin)):
 def aired(released):
     """True if an episode's air date (an ISO date or time from the metadata) has passed. No date counts as aired, most old episodes have none"""
     try:
-        return datetime.datetime.fromisoformat(str(released).replace("Z", "+00:00")).timestamp() <= time.time()
+        return datetime.datetime.fromisoformat(str(released).replace("Z", "+00:00")).timestamp() + 86400 <= time.time()  # a day of grace, a new episode takes a while to turn up
     except (TypeError, ValueError):
         return True
 
@@ -6713,10 +6713,17 @@ async def library_health(admin=Depends(require_admin)):
         same.setdefault(m["id"], []).append({"id": t["id"], "name": t["guess_name"], "matched": m.get("name"), "files": len(files)})
         if t["kind"] != "series":
             continue
+        if any(f.get("season") is None for f in files):
+            continue  # files with no season in the name (some anime) cannot be lined up with the seasons, so this show is left out instead of listed as missing everything
         have = {}
         for f in files:
             if f.get("season") is not None and f.get("episode") is not None:
-                have.setdefault(int(f["season"]), set()).add(int(f["episode"]))
+                eps = guess(f["rel"]).get("episode")  # a double episode file (S01E05E06) has both
+                for e in (eps if isinstance(eps, list) else [f["episode"]]):
+                    try:
+                        have.setdefault(int(f["season"]), set()).add(int(e))
+                    except (TypeError, ValueError):
+                        pass
         want = {}
         for v in m.get("videos") or []:
             if v.get("season") and v.get("episode") and aired(v.get("released")):

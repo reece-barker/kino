@@ -83,7 +83,9 @@ body.tv .tr-box { border-radius: 0; overflow: visible; box-shadow: none; }
 
 /* ---- TV audit fixes ---- */
 /* The sidebar when it is open: the item the remote is on is the brightest thing (white), the page you are on is a calmer bar, not the other way round */
-body.tv .side:is(.open, .pinned) .side-pill { background: var(--hover); box-shadow: none; }
+/* the current page is shown by its white icon alone, no highlight block behind its row (that stayed behind when focus moved on). A mouse that isn't there can't hover either */
+body.tv .side .side-pill { background: transparent; box-shadow: none; }
+body.tv .side .side-item:hover:not(:focus-visible) { background: none; }
 body.tv .side:is(.open, .pinned) .side-item[aria-current="page"] { color: var(--label); }
 body.tv .side:is(.open, .pinned) .side-item[aria-current="page"] .side-ic { background: var(--side-on-bg); color: var(--side-on-fg); }
 body.tv .side:is(.open, .pinned) .side-item:focus-visible { background: var(--hover); color: var(--label); box-shadow: inset 0 0 0 3px #fff; transform: none; }  /* a white ring, not a white block */

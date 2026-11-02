@@ -5,11 +5,13 @@
 # - if you already have a film or episode in 1080p or better, other copies are skipped whatever there quality
 # - if TorBox has several copies of the same thing, only the best one is downloaded
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -30,6 +32,12 @@ STATUS = Path(os.environ.get("SYNC_STATUS", "/var/lib/torbox-sync/status.json"))
 PAUSE = Path(os.environ.get("PAUSE_FILE", "/var/lib/kino/pause.json"))
 DELETED = Path(os.environ.get("DELETED_FILE", "/var/lib/kino/deleted.json"))  # written by the dashboard when the admin deletes media
 REQUIRE_MOUNT = os.environ.get("REQUIRE_MOUNT", "1") == "1"
+# Off by default. When on, saved files get plain "Title (Year)" names in Movies and TV Shows folders (no release names or torbox folders) and
+# have their embedded tags stripped. Kino reads the clean names fine, it matches by title and year or season and episode
+CLEAN = os.environ.get("CLEAN_FILES", "0") == "1"
+KINO_DB = Path(os.environ.get("KINO_DB", "/var/lib/kino/kino.db"))  # only the rename-existing tool touches it
+RENAME_LOG = Path(os.environ.get("RENAME_LOG", "/var/lib/kino/rename-log.jsonl"))
+KIND_DIRS = {"torrents", "webdl", "usenet"}
 MIN_FREE = 20 * 1024**3  # Keeps 20gb free so the storage box dosent fill up compleatly
 
 # Kind of download and the name of the id param that requestdl wants for it
@@ -52,6 +60,11 @@ GOOD_ENOUGH = 1080  # Already having this or better means other copies get skipp
 
 def norm(x):
     return re.sub(r"[^a-z0-9]+", " ", str(x).lower()).strip()
+
+
+def unorm(x):
+    """Like norm but keeps letters of every alphabet, so Russian, Japanese, Greek and accented titles can be compared too"""
+    return re.sub(r"[\W_]+", " ", str(x).casefold()).strip()
 
 
 def first(v):
@@ -85,6 +98,28 @@ def media_key(name):
     return ("movie", title, first(g.get("year")) or 0), res
 
 
+HEIGHTS = DEST / ".heights.json"  # remembers each file's picture height, clean names dont say the quality and ffprobe on the whole box every run is slow
+HEIGHT_CACHE = {}
+
+
+def load_heights():
+    try:
+        HEIGHT_CACHE.update(json.loads(HEIGHTS.read_text()))
+    except Exception:
+        pass
+
+
+def save_heights():
+    if not HEIGHT_CACHE:
+        return
+    try:
+        tmp = HEIGHTS.with_name(".heights.tmp")
+        tmp.write_text(json.dumps(HEIGHT_CACHE))
+        tmp.replace(HEIGHTS)
+    except OSError:
+        pass
+
+
 def probe_height(path):
     try:
         out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height",
@@ -99,7 +134,7 @@ def existing_library():
     """What we already have on the storage box: key -> (best resolution, file name)"""
     have = {}
     for root, dirs, names in os.walk(DEST):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS]
         for n in names:
             p = Path(root) / n
             if n.startswith(".") or p.suffix.lower() not in VIDEO_EXT:
@@ -108,10 +143,155 @@ def existing_library():
             if not key:
                 continue
             if not res:
-                res = probe_height(p)  # Name doesnt say the quality, so ffprobe reads it from the file
+                try:
+                    ck = f"{p.relative_to(DEST)}|{p.stat().st_size}"
+                except OSError:
+                    continue
+                if ck not in HEIGHT_CACHE:
+                    h = probe_height(p)  # Name doesnt say the quality, so ffprobe reads it from the file
+                    if h:
+                        HEIGHT_CACHE[ck] = h  # a failed probe (0) isnt remembered, it is tried again next time
+                    res = h
+                else:
+                    res = HEIGHT_CACHE[ck]
             if res >= have.get(key, (-1, ""))[0]:
                 have[key] = (res, n)
     return have
+
+
+def safe_name(x):
+    return re.sub(r"\s+", " ", re.sub(r'[\\/:*?"<>|]+', " ", str(x))).strip(" ").lstrip(".").strip(" ")  # a dot on the end stays (S.W.A.T.), one at the start would hide the folder
+
+
+def fits(rel):
+    """Linux names can be 255 bytes at most and a Russian letter is 2 of them, a very long title just keeps its normal name"""
+    return rel if all(len(x.encode()) <= 240 for x in rel.split("/")) else None
+
+
+def stem_taken(t):
+    """Is there already a video with this name (whatever its extension) in the folder"""
+    try:
+        return any(x.stem.lower() == t.stem.lower() and x.suffix.lower() in VIDEO_EXT for x in t.parent.iterdir())
+    except OSError:
+        return False
+
+
+def clean_rel(name):
+    """Plain path for a file, like Movies/Heat (1995)/Heat (1995).mkv or TV Shows/Fargo/Season 02/Fargo - S02E03.mkv. None means it
+    couldnt be worked out, and then the file keeps its normal name"""
+    if not guessit:
+        return None
+    try:
+        g = guessit(name)
+    except Exception:
+        return None
+    title = safe_name(first(g.get("title")) or "")
+    nt = unorm(title)
+    # The parser can cut a title short (WALL-E became E, Spider-Man became Man), a plain name made from that would be wrong. The title has to be
+    # where the file name begins, and an episode needs a real S01E02 style number (Blade Runner 2049 is not season 20 episode 49)
+    if not nt or not any(unorm(Path(x).stem).startswith(nt) for x in Path(name).parts):
+        return None
+    if g.get("type") == "episode" and not re.search(r"[Ss]\d{1,2}[ ._-]?[Ee]\d{1,3}|\b\d{1,2}x\d{2,3}\b|[Ss]eason[ ._-]?\d", name):
+        return None
+    ext = Path(name).suffix.lower()
+    lang = ""
+    if ext in SUB_EXT:
+        try:
+            lang = "." + first(g.get("subtitle_language")).alpha2
+            low = name.lower()
+            lang += (".forced" if re.search(r"(^|[\W_])forced([\W_]|$)", low) else "") + (".sdh" if re.search(r"(^|[\W_])(sdh|hi)([\W_]|$)", low) else "")
+        except Exception:
+            lang = ""
+    if g.get("type") == "episode":
+        se, ep = first(g.get("season")), first(g.get("episode"))
+        if se is None or ep is None:
+            return None
+        eps = g.get("episode") if isinstance(g.get("episode"), list) else [ep]
+        more = f"-E{int(max(eps)):02d}" if len(eps) > 1 and max(eps) != int(ep) else ""  # a double episode file keeps both numbers
+        sy = first(g.get("year"))
+        show = f"{title} ({sy})" if sy else title  # the year stays when the name had one, it is how Doctor Who 2005 is told from the old one
+        return fits(f"TV Shows/{show}/Season {int(se):02d}/{show} - S{int(se):02d}E{int(ep):02d}{more}{lang}{ext}")
+    year = first(g.get("year"))
+    if not year:
+        return None  # no year in the name, a plain name would be a guess (random_file.mkv), so it keeps the one it has
+    base = f"{title} ({year})"
+    return fits(f"Movies/{base}/{base}{lang}{ext}")
+
+
+# A stream title is kept unless it looks like a release name or a site (Kino shows these in the audio and subtitle pickers, like Atmos,
+# Director's Commentary or Spanish (Latin America)). Dots between words, underscores, site names, codec/source words and a -GROUP on the end go
+RELEASEY = re.compile(r"(www\.|https?:|@|_|\.(com|net|org|to|io|tv|cc|me)\b|[A-Za-z]{2,}\.[A-Za-z]{2,}|\b(bluray|blu-ray|web-?dl|webrip|hdtv|x26[45]|h\.?26[45]|remux|yify|rarbg|ettv|amzn)\b)", re.I)
+GROUP_OK = {"hd", "ma", "es", "ex", "x", "he", "lc", "hra"}  # DTS-HD, DTS-ES and so on are not group names
+INTRO_RX = re.compile(r"\b(intro|opening|op)\b", re.I)
+CREDITS_RX = re.compile(r"\b(credits|ending|outro|ed)\b", re.I)
+TAGGABLE = {".mkv", ".mp4", ".m4v", ".mov", ".webm"}  # other containers (avi, ts, wmv) are left alone, remuxing them is where things go wrong
+
+
+def title_ok(t):
+    t = str(t or "").strip()
+    if not t or len(t) > 60 or RELEASEY.search(t):
+        return False
+    m = re.search(r"-([A-Za-z0-9]{2,10})$", t)
+    return not (m and m.group(1).lower() not in GROUP_OK)
+
+
+def strip_tags(path):
+    """Remuxes a video without the tags that could say where it came from (title, comment, encoder strings, cover art, odd stream titles).
+    What Kino uses stays: audio and subtitle languages, stream titles made only of known words (Atmos, Commentary, SDH), default and forced
+    flags, and the chapters (their times always, their titles only when they are an intro or credits, that is how skip intro works).
+    Dolby Vision files and other containers are left alone. Any problem and the file is left exactly as it was"""
+    if path.suffix.lower() not in TAGGABLE:
+        return False
+    tmp = path.with_name(".clean-" + path.name)
+    meta = path.with_name(".clean-" + path.name + ".txt")
+    try:
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_chapters", "-of", "json", str(path)],
+                            capture_output=True, text=True, timeout=300)
+        j = json.loads(pr.stdout)
+        streams = j.get("streams") or []
+        if any("dovi" in json.dumps(st.get("side_data_list") or []).lower() for st in streams):
+            print(f"{path.name} is Dolby Vision, tags left alone so it keeps playing in Dolby Vision", flush=True)
+            return False
+        cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(path)]
+        chapters = j.get("chapters") or []
+        lines = [";FFMETADATA1"]
+        for i, c in enumerate(chapters, 1):
+            t = (c.get("tags") or {}).get("title", "")
+            keep = t if (INTRO_RX.search(t) or CREDITS_RX.search(t)) else f"Chapter {i}"  # a chapter with no title at all breaks the chapter list in mp4
+            tb = str(c.get("time_base") or "1/1000").split("/")
+            lines += ["[CHAPTER]", f"TIMEBASE={tb[0]}/{tb[1]}", f"START={c['start']}", f"END={c['end']}", f"title={keep}"]
+        if chapters:
+            meta.write_text("\n".join(lines) + "\n")
+            cmd += ["-i", str(meta)]
+        langs, count = [], {"video": 0, "audio": 0, "subtitle": 0}
+        for st in streams:
+            t = st.get("codec_type")
+            if t not in count or (st.get("disposition") or {}).get("attached_pic"):
+                continue
+            cmd += ["-map", f"0:{st['index']}"]
+            tags = st.get("tags") or {}
+            if tags.get("language"):
+                langs += [f"-metadata:s:{t[0]}:{count[t]}", f"language={tags['language']}"]
+            if t != "video" and title_ok(tags.get("title")):
+                langs += [f"-metadata:s:{t[0]}:{count[t]}", f"title={tags['title']}"]
+            count[t] += 1
+        if not count["video"]:
+            return False
+        cmd += ["-c", "copy", "-map_metadata:g", "-1", "-map_chapters", "1" if chapters else "-1", "-map_metadata:s:v", "-1", "-map_metadata:s:a", "-1",
+                "-map_metadata:s:s", "-1", "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact", *(["-default_mode", "passthrough"] if path.suffix.lower() in (".mkv", ".webm") else []), *langs, str(tmp)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size < path.stat().st_size * 0.9:
+            raise RuntimeError((r.stderr or "ffmpeg failed")[-200:])
+        st = path.stat()
+        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))  # Kino uses the file date for Recently Added and new-episode checks, a rewrite mustnt make it look new
+        tmp.replace(path)
+        return True
+    except Exception as e:
+        print(f"couldnt strip tags from {path.name}, left as it was: {e}", flush=True)
+        return False
+    finally:
+        meta.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)  # gone already after a good run, but a stop (SIGTERM) halfway must not leave it behind
 
 
 def is_junk(name, size):
@@ -262,6 +442,304 @@ def on_term(*_):
     raise SystemExit(0)
 
 
+def short_id(x):
+    return hashlib.sha1(x.encode()).hexdigest()[:16]  # same as kino, its file ids are made from the path, so a renamed file needs its history moved
+
+
+SKIP_DIRS = {"kino-backups", "kino-recordings"}  # kino keeps its own things in these, they are never renamed (a recording has its path in the database)
+
+
+def parse_key(rel):
+    """What kino will think a file is, kind of title plus year or season and episode, so a rename can be checked not to change it"""
+    parts = Path(rel).parts
+    if parts and parts[0] in KIND_DIRS:
+        parts = parts[1:]
+    try:
+        g = guessit(str(Path(*parts)))
+    except Exception:
+        return None
+    t = unorm(first(g.get("title")) or "")
+    if g.get("type") == "episode":
+        return ("ep", t, first(g.get("season")), first(g.get("episode")))
+    return ("movie", t, first(g.get("year")))
+
+
+def src_of(rel):
+    parts = Path(rel).parts
+    return str(Path(*parts[1:])) if parts[0] in KIND_DIRS and len(parts) > 1 else rel
+
+
+def walk_media(want):
+    out = []
+    for root, dirs, names in os.walk(DEST):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS]
+        for n in names:
+            p = Path(root) / n
+            if n.startswith(".") or p.suffix.lower() not in want or p.is_symlink():
+                continue
+            out.append(str(p.relative_to(DEST)))
+    return out
+
+
+def plan_renames():
+    """(old rel, new rel) for every video that isnt named plainly yet, plus its subtitles, and the ones left alone with a reason. Subtitles are
+    handled the way kino pairs them: next to the video (all of them when it is the only video in its folder, otherwise the ones whose name starts
+    with the video's name) or in a Subs folder next to it. They only move together with their video. A name that is already taken leaves the
+    file where it is"""
+    vids, subs, skipped, moves = walk_media(VIDEO_EXT), walk_media(SUB_EXT), [], []
+    taken = {r.lower() for r in vids + subs}  # lower case, so a box that doesnt tell Heat and heat apart is safe too
+    vid_dirs, info = {}, {}
+    for rel in vids:
+        vid_dirs.setdefault(str(Path(rel).parent), []).append(rel)
+
+    def free(new):
+        return new.lower() not in taken and not (DEST / new).exists()
+
+    stems = {(str(Path(r).parent).lower(), Path(r).stem.lower()) for r in vids}  # a second copy with another extension (mkv and mp4) is a clash too
+
+    for rel in sorted(vids):
+        new = clean_rel(src_of(rel))
+        info[rel] = None
+        if "sample" in Path(rel).name.lower():
+            skipped.append((rel, "looks like a sample clip, kino ignores those anyway"))
+            continue
+        if not new:
+            skipped.append((rel, "couldnt work out a safe plain name"))
+            continue
+        pk = parse_key(rel)
+        if pk and pk[0] == "movie" and not pk[2]:
+            skipped.append((rel, "no year in the name, so a plain name could be a guess"))
+            continue
+        if pk != parse_key(new):
+            skipped.append((rel, "the new name would change what kino matches it to"))
+            continue
+        if new != rel:
+            sk = (str(Path(new).parent).lower(), Path(new).stem.lower())
+            if not free(new) or sk in stems:
+                skipped.append((rel, "a file with the plain name is already there"))
+                continue
+            taken.add(new.lower())
+            stems.add(sk)
+            moves.append((rel, new))
+        info[rel] = new
+    for rel in sorted(subs):
+        pth = Path(rel)
+        in_subs = pth.parent.name in ("Subs", "subs") and str(pth.parent.parent) in vid_dirs
+        owner = str(pth.parent.parent) if in_subs else str(pth.parent)
+        vs = vid_dirs.get(owner, [])
+        if not vs:
+            skipped.append((rel, "no video next to it, left where it is"))
+            continue
+        if in_subs:
+            # kino gives a Subs folder to every video next to it, so it only moves when all of them go to the same new folder
+            dirs = {str(Path(info[v]).parent) if info.get(v) else None for v in vs}
+            if None in dirs or len(dirs) != 1:
+                skipped.append((rel, "its videos are not all being renamed into one folder, left where it is"))
+                continue
+            nd = dirs.pop()
+            pre = [v for v in vs if pth.stem.lower().startswith(Path(v).stem.lower()) and (len(pth.stem) == len(Path(v).stem) or not pth.stem[len(Path(v).stem)].isalnum())]
+            if pre:  # named after its video, so it follows the video's new name and kino still reads its language from what comes after
+                v = max(pre, key=lambda x: len(Path(x).stem))
+                tail = re.sub(r'[\\/:*?"<>|]+', "_", pth.stem[len(Path(v).stem):])
+                new = str(Path(nd) / pth.parent.name / f"{Path(info[v]).stem}{tail}{pth.suffix}")
+            else:
+                new = str(Path(nd) / pth.parent.name / pth.name)  # other names stay as they are, so does their label
+        else:
+            stem = pth.stem
+            pre = [v for v in vs if stem.lower().startswith(Path(v).stem.lower()) and (len(stem) == len(Path(v).stem) or not stem[len(Path(v).stem)].isalnum())]
+            if pre:
+                v = max(pre, key=lambda x: len(Path(x).stem))
+                if not info.get(v):
+                    skipped.append((rel, "its video was left alone, so it stays too"))
+                    continue
+                tail = re.sub(r'[\\/:*?"<>|]+', "_", stem[len(Path(v).stem):])  # what comes after the video's name stays exactly as it was
+                new = str(Path(info[v]).parent / f"{Path(info[v]).stem}{tail}{pth.suffix}")
+            elif len(vs) == 1 and info.get(vs[0]):
+                new = str(Path(info[vs[0]]).parent / pth.name)  # kino shows every subtitle in the folder of a lone video, its own name stays so its label does too
+            else:
+                skipped.append((rel, "couldnt tell which video it belongs to, left where it is"))
+                continue
+        if new != rel:
+            if not free(new):
+                skipped.append((rel, "a file with the plain name is already there"))
+                continue
+            taken.add(new.lower())
+            moves.append((rel, new))
+    return moves, skipped
+
+
+def migrate_rows(db, old, new):
+    """Everything in kino's database that is tied to a file's path"""
+    o, n = short_id(old), short_id(new)
+    for sql, args in (("UPDATE OR IGNORE watch SET file_id = ? WHERE file_id = ?", (n, o)),
+                      ("UPDATE OR IGNORE progress SET file_id = ? WHERE file_id = ?", (n, o)),
+                      ("UPDATE OR IGNORE auto_intros SET file_id = ? WHERE file_id = ?", (n, o)),
+                      ("UPDATE OR IGNORE media_origin SET rel = ? WHERE rel = ?", (new, old))):
+        db.execute(sql, args)
+
+
+def kino_running():
+    try:
+        return subprocess.run(["systemctl", "is-active", "--quiet", "kino"], timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
+def mark_stripped(rel, old=None):
+    """Remembers which files had their tags removed, so a second run doesnt rewrite them all again"""
+    f = DEST / ".stripped.json"
+    try:
+        done = set(json.loads(f.read_text()))
+    except Exception:
+        done = set()
+    if old:
+        if old not in done:
+            return
+        done.discard(old)
+    done.add(rel)
+    try:
+        tmp = f.with_name(".stripped.tmp")
+        tmp.write_text(json.dumps(sorted(done)))
+        tmp.replace(f)
+    except OSError:
+        pass
+
+
+def stripped_set():
+    try:
+        return set(json.loads((DEST / ".stripped.json").read_text()))
+    except Exception:
+        return set()
+
+
+def fix_state(state, by_path, old, new):
+    k = by_path.get(os.path.realpath(DEST / old))
+    if k and isinstance(state.get(k), dict):
+        state[k] = {"path": str(DEST / new), "size": state[k].get("size"), "at": state[k].get("at")}  # the TorBox name and kind go too
+        by_path[os.path.realpath(DEST / new)] = k
+
+
+def rename_existing(apply, strip, recover=False, limit=0):
+    """Renames what is already on the box to plain names. Every rename is written to the log first, and the database is changed in the same step
+    as the file (one file at a time), so if it stops half way `--recover` finishes the bookkeeping from the log. Without --apply it only prints
+    what it would do"""
+    if not guessit:
+        sys.exit("guessit isnt installed, cant work out names")
+    if REQUIRE_MOUNT and not os.path.ismount(DEST):
+        sys.exit(f"{DEST} is not mounted")
+    if (apply or recover) and not KINO_DB.is_file():
+        sys.exit(f"{KINO_DB} doesnt exist, set KINO_DB to kino's database. Nothing was changed")
+    if apply or recover:
+        try:
+            chk = sqlite3.connect(f"file:{KINO_DB}?mode=ro", uri=True)
+            chk.execute("SELECT 1 FROM watch LIMIT 1")
+            chk.close()
+        except sqlite3.Error as e:
+            sys.exit(f"{KINO_DB} doesnt look like kino's database ({e}). Nothing was changed")
+        if kino_running() and "--force" not in sys.argv:
+            sys.exit("kino is running. Stop it first (systemctl stop kino), it writes watch history under the old names. Nothing was changed")
+    try:
+        state = json.loads(STATE.read_text())
+    except Exception:
+        state = {}
+    by_path = {os.path.realpath(v.get("path") or ""): k for k, v in state.items() if isinstance(v, dict)}
+    if recover:
+        db = sqlite3.connect(str(KINO_DB), timeout=60, isolation_level=None)
+        n = 0
+        try:
+            for line in RENAME_LOG.read_text().splitlines():
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if (DEST / e["new"]).exists() and not (DEST / e["old"]).exists():
+                    before = db.total_changes
+                    db.execute("BEGIN IMMEDIATE")
+                    migrate_rows(db, e["old"], e["new"])
+                    db.execute("COMMIT")
+                    fix_state(state, by_path, e["old"], e["new"])
+                    mark_stripped(e["new"], e["old"])
+                    n += db.total_changes > before
+        finally:
+            db.close()
+            if state:
+                save_state(state)
+        print(f"went through the log, {n} files still had history under the old name and it was moved to the new one")
+        return
+    moves, skipped = plan_renames()
+    if limit:
+        moves = moves[:limit]  # a trial run on the first few files
+    for old, why in skipped:
+        print(f"leaving {old}: {why}")
+    for old, new in moves:
+        print(f"{old}  ->  {new}")
+    print(f"\n{len(moves)} to rename, {len(skipped)} left alone")
+    if not apply:
+        print("Nothing changed. Stop kino first (systemctl stop kino) and the sync timer (systemctl stop torbox-sync.timer), back up kino.db, "
+              "run again with --apply, then start them again. Add --strip-tags to remove embedded tags as well")
+        return
+    shutil.copy2(KINO_DB, KINO_DB.with_name(KINO_DB.name + ".pre-rename"))  # a copy of the database from just before, in case something is wrong
+    db = sqlite3.connect(str(KINO_DB), timeout=60, isolation_level=None)
+    db.execute("PRAGMA busy_timeout = 60000")
+    RENAME_LOG.parent.mkdir(parents=True, exist_ok=True)
+    done = 0
+    signal.signal(signal.SIGTERM, on_term)
+    with open(RENAME_LOG, "a") as jf:
+        try:
+            for old, new in moves:
+                src, dst = DEST / old, DEST / new
+                jf.write(json.dumps({"old": old, "new": new}) + "\n")  # written before the file moves, so a stop in the middle can be recovered
+                jf.flush()
+                os.fsync(jf.fileno())
+                try:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    db.execute("BEGIN IMMEDIATE")
+                    migrate_rows(db, old, new)
+                    src.rename(dst)
+                    db.execute("COMMIT")
+                except sqlite3.Error as e:
+                    try:
+                        db.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                    print(f"database problem, stopping so nothing gets out of step: {e}")
+                    break
+                except OSError as e:
+                    try:
+                        db.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                    print(f"failed {old}: {e}")
+                    continue
+                fix_state(state, by_path, old, new)
+                mark_stripped(new, old)
+                done += 1
+                if done % 25 == 0 and state:
+                    save_state(state)
+                if strip and dst.suffix.lower() in VIDEO_EXT and new not in stripped_set() and strip_tags(dst):
+                    mark_stripped(new)
+                d = src.parent
+                while d != DEST and DEST in d.parents:  # empty folders left behind, including the old torrents/webdl/usenet ones
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        break
+                    d = d.parent
+        finally:
+            db.close()
+            if state:
+                save_state(state)
+    stripped = 0
+    if strip and not limit:
+        have = stripped_set()
+        for rel in sorted(walk_media(VIDEO_EXT)):  # files that were already named plainly, or weren't touched by the rename, still get their tags removed
+            if rel not in have and (DEST / rel).suffix.lower() in TAGGABLE and strip_tags(DEST / rel):
+                mark_stripped(rel)
+                stripped += 1
+    print(f"\nrenamed {done}{f', removed tags from {stripped} more' if strip else ''}. Every rename is in {RENAME_LOG}. Start kino again and press Rescan Library. "
+          f"A copy of the database from before is next to it ({KINO_DB.name}.pre-rename)")
+
+
 def main():
     signal.signal(signal.SIGTERM, on_term)
     load_old_status()
@@ -280,7 +758,9 @@ def main():
     blocked, allow = load_deleted()
 
     # Builds the full todo list first so the dashboard can show "3 of 12"
+    load_heights()
     have = existing_library() if guessit else {}
+    save_heights()
     skipped_deleted = []
     cands = []  # (kind, id_param, item_id, file, key, target, media_key, res)
     for kind, id_param in KINDS:
@@ -300,6 +780,10 @@ def main():
                 if is_junk(name, f.get("size", 0)):
                     continue
                 target = (DEST / kind / name.lstrip("/")).resolve()
+                if CLEAN:
+                    cr = clean_rel(name)
+                    if cr:
+                        target = (DEST / cr).resolve()  # same-name clashes are sorted out below, once it is known what is really being downloaded
                 # Makes sure a weird filename cant write outside of the dest folder
                 if DEST not in target.parents:
                     print(f"skipping suspicious path: {name}")
@@ -346,7 +830,30 @@ def main():
     skipped += skipped_deleted
     status["skipped"] = skipped[:60]
     todo = [c[:6] for c in todo]
-
+    if CLEAN:
+        # A file whose plain name is already taken (by another file in this run or one already on the box) keeps its normal name instead, and so do
+        # the subtitles of its item. Numbering them (2) would make kino attach subtitles to the wrong copy
+        used, used_stems, fallen, fixed = set(), set(), set(), []
+        is_vid = lambda c: Path(c[3].get("name", "")).suffix.lower() in VIDEO_EXT
+        for c in [x for x in todo if is_vid(x)] + [x for x in todo if not is_vid(x)]:
+            orig = (DEST / c[0] / c[3]["name"].lstrip("/")).resolve()
+            t = c[5]
+            vclash = is_vid(c) and t != orig and ((t.parent / t.stem).as_posix().lower() in used_stems or stem_taken(t))
+            if t != orig and (t in used or t.exists() or vclash or (c[0], c[2]) in fallen):
+                if not is_vid(c) and (c[0], c[2]) not in fallen:
+                    # a subtitle whose plain name is taken (a second English one and so on) goes in a Subs folder next to its video, under the name it had,
+                    # which is where kino looks for them too
+                    t = t.parent / "Subs" / Path(c[3]["name"]).name
+                    if t in used or t.exists():
+                        t = orig
+                else:
+                    t = orig
+                    fallen.add((c[0], c[2]))
+            used.add(t)
+            if is_vid(c):
+                used_stems.add((t.parent / t.stem).as_posix().lower())
+            fixed.append(c[:5] + (t,))
+        todo = fixed
     status.update(state="running", queue_total=len(todo), queue_done=0)
     write_status()
     stopped_by_pause = False
@@ -359,9 +866,17 @@ def main():
             print(f"downloading {target}", flush=True)
             url = get_link(kind, id_param, item_id, f["id"])
             download(url, target, f.get("size", 0), rel)
+            if CLEAN and target.suffix.lower() in VIDEO_EXT:
+                status["message"] = "Removing tags"
+                write_status()
+                if strip_tags(target):
+                    mark_stripped(str(target.relative_to(DEST)))
+                status["message"] = None
             # Which TorBox item it came from and when, so the dashboard can show where a file came from and the delete list can
             # tell a new download from an old one
-            state[key] = {"path": str(target), "size": f.get("size", 0), "at": time.time(), "item": f.get("_item"), "kind": kind}
+            state[key] = {"path": str(target), "size": f.get("size", 0), "at": time.time()}
+            if not CLEAN:  # clean mode keeps the TorBox name and kind off the box, the key is all kino needs
+                state[key].update(item=f.get("_item"), kind=kind)
             save_state(state)  # Saved after every file so a crash dosent lose progress
             status["new"] += 1
             status["recent"] = ([{"name": target.name, "rel": rel, "size": f.get("size", 0), "at": time.time()}]
@@ -381,6 +896,10 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--rename-existing" in sys.argv:
+        lim = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else 0
+        rename_existing("--apply" in sys.argv, "--strip-tags" in sys.argv, "--recover" in sys.argv, lim)
+        sys.exit(0)
     try:
         main()
     except SystemExit as e:

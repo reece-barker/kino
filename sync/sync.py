@@ -62,6 +62,11 @@ def norm(x):
     return re.sub(r"[^a-z0-9]+", " ", str(x).lower()).strip()
 
 
+def unorm(x):
+    """Like norm but keeps letters of every alphabet, so Russian, Japanese, Greek and accented titles can be compared too"""
+    return re.sub(r"[\W_]+", " ", str(x).casefold()).strip()
+
+
 def first(v):
     return v[0] if isinstance(v, list) and v else v
 
@@ -155,7 +160,20 @@ def existing_library():
 
 
 def safe_name(x):
-    return re.sub(r"\s+", " ", re.sub(r'[\\/:*?"<>|]+', " ", str(x))).strip(" .")
+    return re.sub(r"\s+", " ", re.sub(r'[\\/:*?"<>|]+', " ", str(x))).strip(" ").lstrip(".").strip(" ")  # a dot on the end stays (S.W.A.T.), one at the start would hide the folder
+
+
+def fits(rel):
+    """Linux names can be 255 bytes at most and a Russian letter is 2 of them, a very long title just keeps its normal name"""
+    return rel if all(len(x.encode()) <= 240 for x in rel.split("/")) else None
+
+
+def stem_taken(t):
+    """Is there already a video with this name (whatever its extension) in the folder"""
+    try:
+        return any(x.stem.lower() == t.stem.lower() and x.suffix.lower() in VIDEO_EXT for x in t.parent.iterdir())
+    except OSError:
+        return False
 
 
 def clean_rel(name):
@@ -168,10 +186,10 @@ def clean_rel(name):
     except Exception:
         return None
     title = safe_name(first(g.get("title")) or "")
-    nt = norm(title)
+    nt = unorm(title)
     # The parser can cut a title short (WALL-E became E, Spider-Man became Man), a plain name made from that would be wrong. The title has to be
     # where the file name begins, and an episode needs a real S01E02 style number (Blade Runner 2049 is not season 20 episode 49)
-    if not nt or not any(norm(Path(x).stem).startswith(nt) for x in Path(name).parts):
+    if not nt or not any(unorm(Path(x).stem).startswith(nt) for x in Path(name).parts):
         return None
     if g.get("type") == "episode" and not re.search(r"[Ss]\d{1,2}[ ._-]?[Ee]\d{1,3}|\b\d{1,2}x\d{2,3}\b|[Ss]eason[ ._-]?\d", name):
         return None
@@ -188,10 +206,14 @@ def clean_rel(name):
         se, ep = first(g.get("season")), first(g.get("episode"))
         if se is None or ep is None:
             return None
-        return f"TV Shows/{title}/Season {int(se):02d}/{title} - S{int(se):02d}E{int(ep):02d}{lang}{ext}"
+        eps = g.get("episode") if isinstance(g.get("episode"), list) else [ep]
+        more = f"-E{int(max(eps)):02d}" if len(eps) > 1 and max(eps) != int(ep) else ""  # a double episode file keeps both numbers
+        sy = first(g.get("year"))
+        show = f"{title} ({sy})" if sy else title  # the year stays when the name had one, it is how Doctor Who 2005 is told from the old one
+        return fits(f"TV Shows/{show}/Season {int(se):02d}/{show} - S{int(se):02d}E{int(ep):02d}{more}{lang}{ext}")
     year = first(g.get("year"))
     base = f"{title} ({year})" if year else title
-    return f"Movies/{base}/{base}{lang}{ext}"
+    return fits(f"Movies/{base}/{base}{lang}{ext}")
 
 
 # A stream title is kept unless it looks like a release name or a site (Kino shows these in the audio and subtitle pickers, like Atmos,
@@ -231,11 +253,11 @@ def strip_tags(path):
         cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(path)]
         chapters = j.get("chapters") or []
         lines = [";FFMETADATA1"]
-        for c in chapters:
+        for i, c in enumerate(chapters, 1):
             t = (c.get("tags") or {}).get("title", "")
-            keep = t if (INTRO_RX.search(t) or CREDITS_RX.search(t)) else ""
+            keep = t if (INTRO_RX.search(t) or CREDITS_RX.search(t)) else f"Chapter {i}"  # a chapter with no title at all breaks the chapter list in mp4
             tb = str(c.get("time_base") or "1/1000").split("/")
-            lines += ["[CHAPTER]", f"TIMEBASE={tb[0]}/{tb[1]}", f"START={c['start']}", f"END={c['end']}"] + ([f"title={keep}"] if keep else [])
+            lines += ["[CHAPTER]", f"TIMEBASE={tb[0]}/{tb[1]}", f"START={c['start']}", f"END={c['end']}", f"title={keep}"]
         if chapters:
             meta.write_text("\n".join(lines) + "\n")
             cmd += ["-i", str(meta)]
@@ -434,7 +456,7 @@ def parse_key(rel):
         g = guessit(str(Path(*parts)))
     except Exception:
         return None
-    t = norm(first(g.get("title")) or "")
+    t = unorm(first(g.get("title")) or "")
     if g.get("type") == "episode":
         return ("ep", t, first(g.get("season")), first(g.get("episode")))
     return ("movie", t, first(g.get("year")))
@@ -458,16 +480,27 @@ def walk_media(want):
 
 
 def plan_renames():
-    """(old rel, new rel) for every video that isnt named plainly yet, plus its subtitles, and the ones left alone with a reason. A subtitle only
-    moves together with the video it sits next to, and a name that is already taken leaves the file where it is"""
-    vids, subs, skipped, moves, by_dir = walk_media(VIDEO_EXT), walk_media(SUB_EXT), [], [], {}
+    """(old rel, new rel) for every video that isnt named plainly yet, plus its subtitles, and the ones left alone with a reason. Subtitles are
+    handled the way kino pairs them: next to the video (all of them when it is the only video in its folder, otherwise the ones whose name starts
+    with the video's name) or in a Subs folder next to it. They only move together with their video. A name that is already taken leaves the
+    file where it is"""
+    vids, subs, skipped, moves = walk_media(VIDEO_EXT), walk_media(SUB_EXT), [], []
     taken = {r.lower() for r in vids + subs}  # lower case, so a box that doesnt tell Heat and heat apart is safe too
+    vid_dirs, info = {}, {}
+    for rel in vids:
+        vid_dirs.setdefault(str(Path(rel).parent), []).append(rel)
 
     def free(new):
         return new.lower() not in taken and not (DEST / new).exists()
 
+    stems = {(str(Path(r).parent).lower(), Path(r).stem.lower()) for r in vids}  # a second copy with another extension (mkv and mp4) is a clash too
+
     for rel in sorted(vids):
         new = clean_rel(src_of(rel))
+        info[rel] = None
+        if "sample" in Path(rel).name.lower():
+            skipped.append((rel, "looks like a sample clip, kino ignores those anyway"))
+            continue
         if not new:
             skipped.append((rel, "couldnt work out a safe plain name"))
             continue
@@ -479,25 +512,51 @@ def plan_renames():
             skipped.append((rel, "the new name would change what kino matches it to"))
             continue
         if new != rel:
-            if not free(new):
+            sk = (str(Path(new).parent).lower(), Path(new).stem.lower())
+            if not free(new) or sk in stems:
                 skipped.append((rel, "a file with the plain name is already there"))
                 continue
             taken.add(new.lower())
+            stems.add(sk)
             moves.append((rel, new))
-        by_dir.setdefault(str(Path(rel).parent), []).append((Path(rel).stem, Path(new).stem, str(Path(new).parent)))
+        info[rel] = new
     for rel in sorted(subs):
-        stem, ext = Path(rel).stem, Path(rel).suffix.lower()
-        best = None
-        for v in by_dir.get(str(Path(rel).parent), []):
-            tail = stem[len(v[0]):]
-            if stem.startswith(v[0]) and (not tail or not tail[0].isalnum()) and (best is None or len(v[0]) > len(best[0][0])):
-                best = (v, tail)
-        if not best:
-            skipped.append((rel, "no video it belongs to was renamed, left where it is"))
+        pth = Path(rel)
+        in_subs = pth.parent.name in ("Subs", "subs") and str(pth.parent.parent) in vid_dirs
+        owner = str(pth.parent.parent) if in_subs else str(pth.parent)
+        vs = vid_dirs.get(owner, [])
+        if not vs:
+            skipped.append((rel, "no video next to it, left where it is"))
             continue
-        (vs, nstem, ndir), tail = best
-        tail = re.sub(r'[\\/:*?"<>|]+', "_", tail)  # what comes after the video's name stays exactly as it was, only characters a path cant have change
-        new = str(Path(ndir) / f"{nstem}{tail}{ext}")
+        if in_subs:
+            # kino gives a Subs folder to every video next to it, so it only moves when all of them go to the same new folder
+            dirs = {str(Path(info[v]).parent) if info.get(v) else None for v in vs}
+            if None in dirs or len(dirs) != 1:
+                skipped.append((rel, "its videos are not all being renamed into one folder, left where it is"))
+                continue
+            nd = dirs.pop()
+            pre = [v for v in vs if pth.stem.lower().startswith(Path(v).stem.lower()) and (len(pth.stem) == len(Path(v).stem) or not pth.stem[len(Path(v).stem)].isalnum())]
+            if pre:  # named after its video, so it follows the video's new name and kino still reads its language from what comes after
+                v = max(pre, key=lambda x: len(Path(x).stem))
+                tail = re.sub(r'[\\/:*?"<>|]+', "_", pth.stem[len(Path(v).stem):])
+                new = str(Path(nd) / pth.parent.name / f"{Path(info[v]).stem}{tail}{pth.suffix}")
+            else:
+                new = str(Path(nd) / pth.parent.name / pth.name)  # other names stay as they are, so does their label
+        else:
+            stem = pth.stem
+            pre = [v for v in vs if stem.lower().startswith(Path(v).stem.lower()) and (len(stem) == len(Path(v).stem) or not stem[len(Path(v).stem)].isalnum())]
+            if pre:
+                v = max(pre, key=lambda x: len(Path(x).stem))
+                if not info.get(v):
+                    skipped.append((rel, "its video was left alone, so it stays too"))
+                    continue
+                tail = re.sub(r'[\\/:*?"<>|]+', "_", stem[len(Path(v).stem):])  # what comes after the video's name stays exactly as it was
+                new = str(Path(info[v]).parent / f"{Path(info[v]).stem}{tail}{pth.suffix}")
+            elif len(vs) == 1 and info.get(vs[0]):
+                new = str(Path(info[vs[0]]).parent / pth.name)  # kino shows every subtitle in the folder of a lone video, its own name stays so its label does too
+            else:
+                skipped.append((rel, "couldnt tell which video it belongs to, left where it is"))
+                continue
         if new != rel:
             if not free(new):
                 skipped.append((rel, "a file with the plain name is already there"))
@@ -770,15 +829,25 @@ def main():
     if CLEAN:
         # A file whose plain name is already taken (by another file in this run or one already on the box) keeps its normal name instead, and so do
         # the subtitles of its item. Numbering them (2) would make kino attach subtitles to the wrong copy
-        used, fallen, fixed = set(), set(), []
+        used, used_stems, fallen, fixed = set(), set(), set(), []
         is_vid = lambda c: Path(c[3].get("name", "")).suffix.lower() in VIDEO_EXT
         for c in [x for x in todo if is_vid(x)] + [x for x in todo if not is_vid(x)]:
             orig = (DEST / c[0] / c[3]["name"].lstrip("/")).resolve()
             t = c[5]
-            if t != orig and (t in used or t.exists() or (c[0], c[2]) in fallen):
-                t = orig
-                fallen.add((c[0], c[2]))
+            vclash = is_vid(c) and t != orig and ((t.parent / t.stem).as_posix().lower() in used_stems or stem_taken(t))
+            if t != orig and (t in used or t.exists() or vclash or (c[0], c[2]) in fallen):
+                if not is_vid(c) and (c[0], c[2]) not in fallen:
+                    # a subtitle whose plain name is taken (a second English one and so on) goes in a Subs folder next to its video, under the name it had,
+                    # which is where kino looks for them too
+                    t = t.parent / "Subs" / Path(c[3]["name"]).name
+                    if t in used or t.exists():
+                        t = orig
+                else:
+                    t = orig
+                    fallen.add((c[0], c[2]))
             used.add(t)
+            if is_vid(c):
+                used_stems.add((t.parent / t.stem).as_posix().lower())
             fixed.append(c[:5] + (t,))
         todo = fixed
     status.update(state="running", queue_total=len(todo), queue_done=0)

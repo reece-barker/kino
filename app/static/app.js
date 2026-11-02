@@ -1777,8 +1777,8 @@
         // Titles that fit what was described (not named), not repeating the ones the name search already has
         const have = new Set(all.map((x) => x.id));
         const idea = searchRow("ideas", "Matches Your Idea", ideas.filter((x) => !have.has(x.id)));
-        // A sentence that finds no name puts its matches first, a name that finds titles keeps them first
-        if (idea) rows.splice(all.length ? rows.length : 0, 0, idea);
+        // Words that only half match a name (something funny finding Funny Games) put the idea matches first, a title typed properly keeps its own first
+        if (idea) rows.splice(all.length && (all[0].score || 0) >= 100 ? rows.length : 0, 0, idea);
         // When the addon results land the page redraws, focus and how far each row was scrolled stay put
         const k = focusKey(document.activeElement), keep = {};
         $$(".srow", box).forEach((sec) => (keep[sec.dataset.srow] = $(".row", sec).scrollLeft));
@@ -1798,8 +1798,8 @@
         refocus(k);
       };
       draw();
-      // Search by idea: a few words describing what you feel like (not a title) finds matches by what the titles are about
-      if (q.split(/\s+/).length >= 3 || !r.titles.length) api("/api/search/ideas?q=" + encodeURIComponent(q)).then((x) => {
+      // Search by idea: words describing what you feel like (funny, a heist with a clever team) find matches by what the titles are about, next to the ones with the words in their name
+      if (q.length >= 3) api("/api/search/ideas?q=" + encodeURIComponent(q)).then((x) => {
         if (my !== seq || !$("#sres")) return;
         ideas = x.titles || [];
         ideaNote = !ideas.length && x.state === "indexing" ? `Still reading your library for ideas (${x.done} of ${x.total}), try again in a minute.` : "";

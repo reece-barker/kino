@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS recordings (id INTEGER PRIMARY KEY AUTOINCREMENT, pro
 CREATE TABLE IF NOT EXISTS embed_sources (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, player TEXT, enabled INTEGER DEFAULT 1, added REAL, error TEXT);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
+CREATE TABLE IF NOT EXISTS embeds (key TEXT PRIMARY KEY, h TEXT, vec BLOB, at REAL);
 """
 
 
@@ -1318,6 +1319,7 @@ async def session_reaper():
         except OSError:
             pass
         voice_unload()
+        sem_unload()
 
 
 
@@ -1349,6 +1351,8 @@ async def lifespan(app):
     async def scanner():
         while True:
             await rescan()
+            if SEM_ON:
+                asyncio.create_task(asyncio.to_thread(sem_sync))  # the search by idea numbers, quick when nothing is new
             try:
                 make_alerts()
             except Exception:
@@ -3438,6 +3442,137 @@ async def voice(request: Request, p=Depends(current_profile)):
         log.warning("voice search failed: %s", e)
         raise HTTPException(500, "Voice search didn't work, try again")
     return {"text": re.sub(r"[.?!]+$", "", text)}
+
+
+# ---- search by idea
+# A small sentence model (BGE small, runs on the cpu, about 130 MB on disk and 330 MB of memory while it is loaded) turns every title's
+# description into a list of numbers, and the search sentence the same way. Titles whose numbers are close to the sentence's are the ones that
+# fit the idea, like "cosy comedy about bakers by the sea". It reads the title details Kino already has, nothing is sent anywhere, and the
+# search sentence is not saved. The numbers for each title are kept in the database and only made again when the details change
+SEM_ON = os.environ.get("SEMANTIC_SEARCH", "1") != "0"
+SEM_MODEL = "BAAI/bge-small-en-v1.5"
+SEM_MIN = 0.55  # a title has to be at least this close to the words
+SEM_BAND = 0.12  # and within this of the closest title
+SEM = {"lock": threading.Lock(), "build": threading.Lock(), "model": None, "used": 0.0, "keys": [], "mat": None, "state": "idle", "done": 0, "total": 0, "error": None}
+
+
+def sem_model():
+    with SEM["lock"]:
+        if SEM["model"] is None:
+            from fastembed import TextEmbedding
+            SEM["model"] = TextEmbedding(SEM_MODEL, cache_dir=str(DATA_DIR / "models"), threads=2)
+        SEM["used"] = time.time()
+        return SEM["model"]
+
+
+def sem_unload():
+    # Gives the memory back after 30 minutes without a search or an update
+    if SEM["model"] is not None and time.time() - SEM["used"] > 1800:
+        with SEM["lock"]:
+            SEM["model"] = None
+
+
+def sem_doc(t, m):
+    """What gets read for a title: the kind, name, year, genres, the description, the director and the first few of the cast"""
+    head = ("TV series. " if t["kind"] == "series" else "Film. ") + str(m.get("name") or t["guess_name"])
+    year = str(m.get("releaseInfo") or t.get("year") or "")[:4]
+    parts = [head + (f" ({year})" if year.isdigit() else "")]
+    if m.get("genres"):
+        parts.append(", ".join(str(g) for g in m["genres"][:5]))
+    if m.get("description"):
+        parts.append(str(m["description"])[:900])
+    cast, directors = people_of(m)
+    if directors:
+        parts.append("Directed by " + ", ".join(directors[:2]))
+    if cast:
+        parts.append("Starring " + ", ".join(cast[:4]))
+    return ". ".join(x.rstrip(". ") for x in parts if x)
+
+
+def sem_sync():
+    """Makes the numbers for every title that has none yet (or whose details changed), then loads them all for searching. Runs on a thread
+    after each library scan, it does nothing when nothing changed"""
+    import numpy as np
+    if not SEM_ON or not SEM["build"].acquire(blocking=False):
+        return
+    try:
+        docs = {}
+        for t in list(LIB["titles"].values()):
+            m = meta_light(t)
+            if m:
+                docs[t["key"]] = sem_doc(t, m)
+        hashes = {k: hashlib.sha1(d.encode()).hexdigest()[:16] for k, d in docs.items()}
+        have = {r["key"]: r["h"] for r in db().q("SELECT key, h FROM embeds")}
+        todo = [k for k in docs if have.get(k) != hashes[k]]
+        if not todo and SEM["mat"] is not None and set(SEM["keys"]) == set(docs):
+            return
+        SEM.update(state="indexing", done=0, total=len(todo), error=None)
+        if todo:
+            model = sem_model()
+            for i in range(0, len(todo), 32):
+                chunk = todo[i:i + 32]
+                vecs = list(model.passage_embed([docs[k] for k in chunk]))
+                db().many("INSERT OR REPLACE INTO embeds VALUES (?,?,?,?)",
+                          [(k, hashes[k], np.asarray(v, dtype="float32").tobytes(), time.time()) for k, v in zip(chunk, vecs)])
+                SEM["done"] += len(chunk)
+                time.sleep(0.05)  # leaves room for streams and conversions
+        rows = [r for r in db().q("SELECT key, vec FROM embeds") if r["key"] in docs]
+        if rows:
+            mat = np.vstack([np.frombuffer(r["vec"], dtype="float32") for r in rows])
+            mat = mat / np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9)
+            SEM.update(keys=[r["key"] for r in rows], mat=mat)
+        SEM["state"] = "ready"
+    except Exception as e:
+        SEM.update(state="error", error=str(e)[:200])
+        log.warning("search by idea could not index: %s", e)
+    finally:
+        SEM["build"].release()
+
+
+def sem_query(q, k=40):
+    """[(title key, how close 0 to 1)] best first, or None when there is nothing to search yet"""
+    import numpy as np
+    mat = SEM["mat"]
+    if mat is None or not len(SEM["keys"]):
+        return None
+    v = np.asarray(next(iter(sem_model().query_embed([q]))), dtype="float32")
+    v = v / max(float(np.linalg.norm(v)), 1e-9)
+    sims = mat @ v
+    top = np.argsort(-sims)[:k]
+    return [(SEM["keys"][i], float(sims[i])) for i in top]
+
+
+@app.get("/api/search/ideas")
+async def search_ideas(q: str, p=Depends(current_profile)):
+    """Library titles that fit an idea in words (not a name), see the comment above. Kids profiles only get what they may watch"""
+    q = " ".join(q.split())[:200]
+    state = {"state": SEM["state"] if SEM_ON else "off", "done": SEM["done"], "total": SEM["total"]}
+    if not SEM_ON or len(q) < 4:
+        return {"titles": [], **state}
+    try:
+        import fastembed  # noqa: F401
+    except ImportError:
+        return {"titles": [], **{**state, "state": "off"}}
+    try:
+        hits = await asyncio.to_thread(sem_query, q, 40)
+    except Exception as e:
+        log.warning("search by idea failed: %s", e)
+        return {"titles": [], **{**state, "state": "error"}}
+    if not hits:
+        return {"titles": [], **state}
+    summ, _, _ = all_summaries(p["id"])
+    by_tid = {s["id"]: s for s in summ}
+    key_tid = {t["key"]: t["id"] for t in LIB["titles"].values()}
+    out = []
+    best = hits[0][1]
+    for key, sc in hits:
+        # Only what is close to the best answer and close enough in itself, there is no use filling a row with the next best of nothing
+        if sc < SEM_MIN or sc < best - SEM_BAND:
+            continue
+        s = by_tid.get(key_tid.get(key))
+        if s:
+            out.append({**s, "idea": round(sc, 3)})
+    return {"titles": out[:24], **state}
 
 
 @app.get("/api/person")

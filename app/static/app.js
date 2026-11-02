@@ -1766,12 +1766,17 @@
         return;
       }
       if (my !== seq || n !== ROUTE_N || !$("#sres")) return;
-      let ext = [], extDone = false, vids = [], vidsDone = !HAS_VIDEO_ADDON;
+      let ext = [], extDone = false, vids = [], vidsDone = !HAS_VIDEO_ADDON, ideas = [], ideaNote = "";
       const draw = () => {
         const all = r.titles.concat(ext).sort((a, b) => (b.score || 0) - (a.score || 0));
         const movies = all.filter((x) => x.kind === "movie"), shows = all.filter((x) => x.kind === "series");
         // Movies always first, then TV Shows, like the sidebar
         const rows = [searchRow("movies", "Movies", movies), searchRow("shows", "TV Shows", shows)];
+        // Titles that fit what was described (not named), not repeating the ones the name search already has
+        const have = new Set(all.map((x) => x.id));
+        const idea = searchRow("ideas", "Matches Your Idea", ideas.filter((x) => !have.has(x.id)));
+        // A sentence that finds no name puts its matches first, a name that finds titles keeps them first
+        if (idea) rows.splice(all.length ? rows.length : 0, 0, idea);
         // When the addon results land the page redraws, focus and how far each row was scrolled stay put
         const k = focusKey(document.activeElement), keep = {};
         $$(".srow", box).forEach((sec) => (keep[sec.dataset.srow] = $(".row", sec).scrollLeft));
@@ -1783,7 +1788,7 @@
         SEARCH_EMBEDS = r.embeds || [];
         const liveRow = searchRow("live", "Live TV", [...(r.channels || []), ...SEARCH_EMBEDS, ...ext.filter((x) => x.kind === "live")], "live");
         box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + liveRow + searchRow("eps", "Episodes", r.episodes, "wide") + vrows
-          + (!extDone || !vidsDone ? `<div class="s-more"><span class="spin small"></span>${!extDone ? "Looking in your addons" : "Still looking for videos"}</div>` : ""))
+          + (ideaNote && !idea ? `<p class="secondary s-note">${esc(ideaNote)}</p>` : "") + (!extDone || !vidsDone ? `<div class="s-more"><span class="spin small"></span>${!extDone ? "Looking in your addons" : "Still looking for videos"}</div>` : ""))
           || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor, director or genre.</p></div>`;
         growRows(box);
         enhanceRows(box);
@@ -1791,6 +1796,13 @@
         refocus(k);
       };
       draw();
+      // Search by idea: a few words describing what you feel like (not a title) finds matches by what the titles are about
+      if (q.split(/\s+/).length >= 3 || !r.titles.length) api("/api/search/ideas?q=" + encodeURIComponent(q)).then((x) => {
+        if (my !== seq || !$("#sres")) return;
+        ideas = x.titles || [];
+        ideaNote = !ideas.length && x.state === "indexing" ? `Still reading your library for ideas (${x.done} of ${x.total}), try again in a minute.` : "";
+        if (ideas.length || ideaNote) draw();
+      }).catch(() => {});
       api("/api/search/addons?q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; ext = x.external; extDone = true; draw(); })
         .catch(() => { extDone = true; if (my === seq && $("#sres")) draw(); });
       if (HAS_VIDEO_ADDON) api("/api/search/addons?videos=1&q=" + encodeURIComponent(q)).then((x) => { if (my !== seq || !$("#sres")) return; vids = x.external; vidsDone = true; if (x.none) HAS_VIDEO_ADDON = false; draw(); })

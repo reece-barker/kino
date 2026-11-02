@@ -3818,6 +3818,7 @@
         <div class="list">${r.unmatched.map((u) => `<div class="li"><span class="grow" style="display:block;white-space:normal;overflow:visible;overflow-wrap:anywhere"><b>${link(u.id, u.name + (u.year ? ` (${u.year})` : ""))}</b><br><span class="secondary mono">${esc(u.example)}</span></span><span class="r">${u.files} file${u.files === 1 ? "" : "s"}</span></div>`).join("")}</div></section>` : ""}
       ${r.same_show.length ? `<section class="card set-card"><h2 class="set-title">Same Show Twice</h2><p class="secondary set-hint">These library titles were matched to the same show, so something is probably named differently between them.</p>
         <div class="list">${r.same_show.map((g) => `<div class="li"><span class="grow" style="display:block;white-space:normal;overflow:visible;overflow-wrap:anywhere"><b>${esc(g.matched || "")}</b><br>${g.titles.map((t) => `${link(t.id, t.name)} <span class="secondary">${t.files} file${t.files === 1 ? "" : "s"}</span>`).join("<br>")}</span></div>`).join("")}</div></section>` : ""}`;
+  }
 
   // ---- alerts: new episodes and new seasons of shows this profile follows
   const ALERTS = { n: 0 };

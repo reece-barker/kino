@@ -1737,10 +1737,13 @@
   const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" decoding="async" src="${img(p.poster, 0, PW())}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
       <div class="cap">${esc(p.name)}</div><div class="sub">${esc(p.role)} · ${p.count} title${p.count === 1 ? "" : "s"}</div></a>`;
 
-  // Every word typed is the start of a word in the name, so "bat", "the dark kni" and "friends" all hit their titles
+  // What is typed is the start of the title (not just words somewhere in it), so "bat", "the dark kni" and "friends" are title searches, but
+  // "something funny" is not one just because a film is called Say Something Funny. A leading The, A or An in the title can be left out
   function nameHit(q, name) {
-    const qw = norm(q).split(" ").filter(Boolean), nw = norm(name).split(" ").filter(Boolean);
-    return qw.length > 0 && qw.every((w) => nw.some((x) => x.startsWith(w)));
+    const art = ["the", "a", "an"], qw = norm(q).split(" ").filter(Boolean);
+    let nw = norm(name).split(" ").filter(Boolean);
+    if (nw.length > 1 && art.includes(nw[0]) && !art.includes(qw[0])) nw = nw.slice(1);
+    return qw.length > 0 && qw.length <= nw.length && qw.every((w, i) => (i === qw.length - 1 ? nw[i].startsWith(w) : nw[i] === w));
   }
   async function pageSearch() {
     const n = ROUTE_N;
@@ -1780,11 +1783,14 @@
         // Movies always first, then TV Shows, like the sidebar
         const rows = [searchRow("movies", "Movies", movies), searchRow("shows", "TV Shows", shows)];
         // Titles that fit what was described (not named), not repeating the ones the name search already has
-        const have = new Set(all.map((x) => x.id));
+        // What the name search already has (an addon title has no id, so it is told apart by its link or name, not by id)
+        const keyOf = (x) => x.id || x.ext || x.imdb || x.name;
+        const have = new Set(all.map(keyOf));
         // Typing a title, or the start of one (movie or show, in the library or from an addon), or a person is a name search: just those, no ideas
         const named = personFound || all.some((x) => nameHit(q, x.name)) || (r.people || []).length > 0;
-        const idea = named ? "" : searchRow("ideas", "Matches Your Idea", ideas.filter((x) => !have.has(x.id)));
-        if (idea) rows.unshift(idea);
+        const idea = named ? "" : searchRow("ideas", "Matches Your Idea", ideas.filter((x) => !have.has(keyOf(x))));
+        // Words that only half match a name go below its results, an idea that matches no name goes first
+        if (idea) rows.splice((all[0] && (all[0].score || 0) >= 60) ? rows.length : 0, 0, idea);
         // When the addon results land the page redraws, focus and how far each row was scrolled stay put
         const k = focusKey(document.activeElement), keep = {};
         $$(".srow", box).forEach((sec) => (keep[sec.dataset.srow] = $(".row", sec).scrollLeft));

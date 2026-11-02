@@ -4439,7 +4439,7 @@
     const au = (pl.info.audio || []).find((x) => x.n === pl.audio);
     loadNote([au && au.label, vc.dovi ? "Dolby Vision to HDR" : "", t > 1 ? `from ${clock(t)}` : ""].filter(Boolean).join(" · "));
     try {
-      r = await api(`/api/${pl.cookieless ? "cast" : "play"}/${pl.info.id}`, { t, audio: pl.audio, hevc: pl.cookieless ? false : codecOk("hevc"), ad: pl.ad || 0 });
+      r = await api(`/api/${pl.cookieless ? "cast" : "play"}/${pl.info.id}`, { t, audio: pl.audio, hevc: codecOk("hevc"), ad: pl.ad || 0 });
       if (pl.cookieless) r.url = location.origin + r.url;  // for AirPlay, a link that works without this page's login
     } catch (e) {
       if (my !== PLAY_N || !pl.info || mine !== pl.hlsSeq) return;
@@ -4560,7 +4560,7 @@
   // ---- casting to a TV or speaker (Chromecast, Google TV and anything else that works with Google Cast), in Chrome and Edge
   // The video goes to the TV as its own converted stream with a signed link, so the TV needs no login. While casting this page is the remote control:
   // a bar with play and pause, 10 seconds back and on, a position slider and Stop. A jump starts a new stream at that spot, and what is watched is saved
-  const CAST = { ready: false, loading: false, waiters: [], fid: null, sid: null, offset: 0, dur: 0, meta: {}, info: null, audio: 0, timer: null };
+  const CAST = { ready: false, loading: false, waiters: [], fid: null, sid: null, offset: 0, dur: 0, meta: {}, info: null, audio: 0, timer: null, gen: 0, target: 0, err: "" };
   const castOk = () => !TV && !window.KinoAndroid && /Chrome\/|Edg\//.test(navigator.userAgent) && !/CriOS|OPR\//.test(navigator.userAgent);
   function castEnsure(then) {
     // Google's sender script is only loaded once someone opens a title or the player, and only in a browser that can use it
@@ -4588,7 +4588,7 @@
       CAST.waiters.splice(0).forEach((f) => { try { f(); } catch (_) {} });
     } catch (e) { CAST.loading = false; console.warn("Cast isn't available:", e && e.message); }
   }
-  const castPos = () => Math.max(0, CAST.offset + ((CAST.player && CAST.player.currentTime) || 0));
+  const castPos = () => CAST.loadingNow ? CAST.target : Math.max(0, CAST.offset + ((CAST.player && CAST.player.currentTime) || 0));  // while a jump loads, the place being jumped to
   function castBar() {
     let bar = $("#castBar");
     if (bar) return bar;
@@ -4613,7 +4613,7 @@
     const dev = (ses.getCastDevice && ses.getCastDevice().friendlyName) || "the TV";
     bar.hidden = false;
     $("#cbTitle").textContent = CAST.meta.title || "Casting";
-    $("#cbSub").textContent = `${CAST.loadingNow ? "Getting it ready for " : "Casting to "}${dev}${CAST.meta.sub ? ` · ${CAST.meta.sub}` : ""}`;
+    $("#cbSub").textContent = CAST.err ? CAST.err : `${CAST.loadingNow ? "Getting it ready for " : "Casting to "}${dev}${CAST.meta.sub ? ` · ${CAST.meta.sub}` : ""}`;
     const pos = castPos();
     if (!CAST.drag) { $("#cbPos").textContent = clock(pos); $("#cbSeek").value = CAST.dur ? Math.min(1000, Math.round((pos / CAST.dur) * 1000)) : 0; }
     $("#cbDur").textContent = clock(CAST.dur);
@@ -4635,11 +4635,20 @@
   async function castLoad(fid, start) {
     const ses = cast.framework.CastContext.getInstance().getCurrentSession();
     if (!ses) return;
-    CAST.fid = fid; CAST.loadingNow = true; castSync();
+    const gen = ++CAST.gen;  // a newer load, or Stop, makes this one stand down (and stop the stream it started)
+    const had = !!CAST.sid && CAST.fid === fid;  // a jump, as opposed to the first start
+    CAST.fid = fid; CAST.loadingNow = true; CAST.target = start || 0; CAST.err = "";
+    clearInterval(CAST.timer);
+    castSync();
+    let sid = null;
+    const drop = () => { if (sid) api(`/api/play/${sid}/stop`, {}).catch(() => {}); };
     try {
       CAST.info = CAST.info && CAST.info.id === fid ? CAST.info : await api(`/api/file/${fid}`);
+      if (gen !== CAST.gen) return;
       const r = await api(`/api/cast/${fid}`, { t: Math.max(0, start || 0), audio: CAST.audio || 0, hevc: false });
-      CAST.sid = r.sid; CAST.offset = r.offset || start || 0; CAST.dur = CAST.info.duration || 0;
+      sid = r.sid;
+      if (gen !== CAST.gen) return drop();
+      CAST.sid = r.sid; CAST.offset = r.offset ?? start ?? 0; CAST.dur = CAST.info.duration || 0;
       const mi = new chrome.cast.media.MediaInfo(location.origin + r.url, "application/x-mpegURL");
       mi.streamType = chrome.cast.media.StreamType.BUFFERED;
       mi.hlsSegmentFormat = chrome.cast.media.HlsSegmentFormat.FMP4;
@@ -4651,14 +4660,18 @@
       const rq = new chrome.cast.media.LoadRequest(mi);
       rq.autoplay = true;
       const err = await ses.loadMedia(rq);
+      if (gen !== CAST.gen) return drop();
       if (err) throw new Error("The TV couldn't play that");
-      clearInterval(CAST.timer);
       CAST.timer = setInterval(castSave, 10000);  // what is watched is saved, and it keeps the stream going while the TV is paused
     } catch (e) {
-      toast((e && e.message) || "Casting didn't start", 5000);
-      CAST.fid = null;
+      if (gen !== CAST.gen) return drop();
+      CAST.err = (e && e.message) || "Casting didn't start";
+      toast(CAST.err, 5000);
+      // The first start failing ends it. A jump failing keeps the bar, so it can be tried again or stopped
+      if (!had) { drop(); CAST.fid = CAST.sid = null; }
     }
-    CAST.loadingNow = false; castSync();
+    CAST.loadingNow = false;
+    castSync();
   }
   function castSeek(t) {
     CAST.drag = false;
@@ -4666,11 +4679,12 @@
     castLoad(CAST.fid, Math.max(0, Math.min(t, (CAST.dur || t) - 5)));
   }
   function castSave() {
-    if (!CAST.fid || !CAST.player || !CAST.player.isConnected) return;
+    if (!CAST.fid || !CAST.player || !CAST.player.isConnected || CAST.loadingNow) return;
     api("/api/progress", { file_id: CAST.fid, pos: castPos(), dur: CAST.dur }).catch(() => {});
   }
   function castEnded() {
     clearInterval(CAST.timer);
+    CAST.gen++; CAST.loadingNow = false; CAST.err = "";  // anything still loading stops itself and its stream
     if (CAST.fid && CAST.player) castSave();
     if (CAST.sid) api(`/api/play/${CAST.sid}/stop`, {}).catch(() => {});
     CAST.fid = CAST.sid = null;
@@ -4697,6 +4711,8 @@
       air.onclick = async () => {
         try { if (pl.info && !pl.info.live && !pl.cookieless && (pl.mode === "hls" || pl.mode === "direct")) { pl.cookieless = true; await startHls(pos()); } } catch (_) {}
         if (pl.v.webkitShowPlaybackTargetPicker) pl.v.webkitShowPlaybackTargetPicker();
+        // Backing out of the list leaves the film on this screen, so the later jumps go back to the normal stream
+        setTimeout(() => { if (!pl.v.webkitCurrentPlaybackTargetIsWireless) pl.cookieless = false; }, 60000);
       };
     }
     const canPip = (document.pictureInPictureEnabled && !pl.v.disablePictureInPicture) || (pl.v.webkitSupportsPresentationMode && pl.v.webkitSupportsPresentationMode("picture-in-picture"));

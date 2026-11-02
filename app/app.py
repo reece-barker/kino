@@ -3734,6 +3734,8 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     device = browser_key(request)
     if device.startswith("|"):
         device = client_ip(request) + device  # no device cookie (an allow listed network), the address tells them apart
+    if getattr(request.state, "cast_device", False):
+        device += "|cast"
     for sid, s in list(SESS.items()):
         if s["owner"] == owner and s.get("device") == device:
             kill_session(sid)
@@ -3881,6 +3883,7 @@ async def hls_serve(s, name, headers=None):
 # A TV or speaker fetches the video itself and has no login cookie, so a cast gets its own converted stream with a signed link (good for 12 hours) instead.
 # The link only works for that one stream, and the address of the TV still has to be on the allowed networks, like any other request to Kino
 CAST_HOURS = 12
+CAST_LOCKS = {}
 CAST_CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Range, Content-Type", "Access-Control-Expose-Headers": "Content-Length, Content-Range, Content-Type"}
 
 
@@ -3892,17 +3895,22 @@ def cast_token(sid, exp=None):
 @app.post("/api/cast/{fid}")
 async def cast_start(fid: str, request: Request, p=Depends(current_profile)):
     """Starts a stream for a TV like /api/play does (same body: t, audio, hevc, ad) and gives back a link that needs no login"""
-    r = await play_start(fid, request, p)
+    request.state.cast_device = True  # a cast is its own "device", so playing here does not kill the stream on the TV, or the other way round
+    lock = CAST_LOCKS.setdefault((p["id"], tok_hash(browser_key(request))[:16]), asyncio.Lock())
+    async with lock:  # two jumps at once would both get past the one player per device rule before either had started
+        r = await play_start(fid, request, p)
     SESS[r["sid"]]["cast"] = True  # a TV that is paused stops fetching, so it gets longer than a normal player before the stream is cleaned up
     return {**r, "url": f"/api/c/{r['sid']}/{cast_token(r['sid'])}/index.m3u8"}
 
 
-@app.api_route("/api/c/{sid}/{tok}/{name}", methods=["GET", "OPTIONS"])
+@app.api_route("/api/c/{sid}/{tok}/{name}", methods=["GET", "HEAD", "OPTIONS"])
 async def cast_file(sid: str, tok: str, name: str, request: Request):
     if request.method == "OPTIONS":
         return Response(status_code=204, headers=CAST_CORS)
+    if not re.fullmatch(r"\d{1,12}\.[0-9a-f]{32}", tok):
+        raise HTTPException(403, "This cast link isn't right")
     exp, _, sig = tok.partition(".")
-    if not exp.isdigit() or int(exp) < time.time() or not hmac.compare_digest(sig, sign("cast", sid, int(exp))[:32]):
+    if int(exp) < time.time() or not hmac.compare_digest(sig, sign("cast", sid, int(exp))[:32]):
         raise HTTPException(403, "This cast link has run out")
     s = SESS.get(sid)
     if not s or not HLS_NAME.match(name):

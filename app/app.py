@@ -2683,9 +2683,6 @@ async def home(request: Request, p=Depends(current_profile)):
         if len(items) >= 3:
             rows += 1
             shelves.append({"id": "int-" + norm(i["name"]).replace(" ", "-"), "title": f"Because You Like {i['name']}", "style": "poster", "items": items})
-    fam = family_liked(p, summ)
-    if fam:
-        shelves.append({"id": "family", "title": "Loved by the Family", "style": "poster", "items": fam})
     shelves.append({"id": "recent", "title": "Recently Added", "style": "wide", "items": recent})
 
     # Because you watched, based on the last thing they finished or loved
@@ -2704,6 +2701,10 @@ async def home(request: Request, p=Depends(current_profile)):
         shelves.append({"id": "movies", "title": "Movies", "style": "poster", "items": movies, "more": "#/movies"})
     if shows:
         shelves.append({"id": "shows", "title": "TV Shows", "style": "poster", "items": shows, "more": "#/shows"})
+    # The family's favourites sit under the Movies and TV Shows rows
+    fam = family_liked(p, summ)
+    if fam:
+        shelves.append({"id": "family", "title": "Loved by the Family", "style": "poster", "items": fam})
 
     rated = sorted([s for s in visible + pool if imdb_score(s) >= 7.5 and s["rating"]], key=imdb_score, reverse=True)
     if len(rated) >= 3:

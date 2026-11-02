@@ -1411,6 +1411,7 @@ async def lifespan(app):
     STATIC_VERSION["v"] = h.hexdigest()[:10]
 
     async def scanner():
+        await asyncio.to_thread(purge_notices)
         while True:
             await rescan()
             if SEM_ON:
@@ -5547,14 +5548,56 @@ NOTICE_WEAK = re.compile(r"unauthori[sz]ed|access denied|forbidden|subscription 
 HIDE_TITLES = [norm(x) for x in env("HIDE_ADDON_TITLES", "").split(",") if norm(x)]
 
 
+def notice_name(name):
+    """True when a name alone says it is a notice and not a title (rate limit, missing key...), or it is one of the words in HIDE_ADDON_TITLES"""
+    name = str(name or "")
+    return bool(NOTICE_STRONG.search(name)) or any(h in norm(name) for h in HIDE_TITLES)
+
+
 def addon_notice(m):
     if not isinstance(m, dict):
         return False
     name = str(m.get("name") or m.get("title") or "")
-    n = norm(name)
-    if NOTICE_STRONG.search(name) or any(h in n for h in HIDE_TITLES):
+    if notice_name(name):
         return True
     return bool(NOTICE_WEAK.search(name)) and not (m.get("releaseInfo") or m.get("year") or m.get("genres") or m.get("genre"))
+
+
+def purge_notices():
+    """Takes the notices that were saved before they were recognised out of what Kino keeps: recent searches, My List, saved addon sources, the
+    details cache and the search by idea index. Runs at start and after the addon lists are read"""
+    gone = 0
+    for table, key in (("search_recent", "rowid"), ("mylist", "rowid"), ("streams", "id")):
+        try:
+            for r in db().q(f"SELECT {key} AS k, name FROM {table}"):
+                if notice_name(r["name"]):
+                    db().q(f"DELETE FROM {table} WHERE {key} = ?", (r["k"],))
+                    gone += 1
+        except Exception:
+            log.exception("clearing notices from %s", table)
+    try:
+        for r in db().q("SELECT key, data FROM meta WHERE key LIKE 'ext:%'"):
+            try:
+                nm = (json.loads(r["data"]) or {}).get("name")
+            except ValueError:
+                continue
+            if notice_name(nm):
+                db().q("DELETE FROM meta WHERE key = ?", (r["key"],))
+                meta_drop(r["key"])
+                gone += 1
+        for r in db().q("SELECT key, data FROM ext_meta"):
+            try:
+                nm = (json.loads(r["data"]) or {}).get("name")
+            except ValueError:
+                continue
+            if notice_name(nm):
+                db().q("DELETE FROM ext_meta WHERE key = ?", (r["key"],))
+                db().q("DELETE FROM embeds WHERE key = ?", (r["key"],))
+                gone += 1
+    except Exception:
+        log.exception("clearing notices from the details")
+    if gone:
+        log.info("removed %d saved addon notices", gone)
 
 
 async def fetch_json(url, ttl=3600, timeout=12):
@@ -5790,6 +5833,7 @@ async def refresh_catalogs():
                     CAT_ERR[u] = "Took too long to answer" if isinstance(e, httpx.TimeoutException) else f"Failed: {str(e)[:80] or type(e).__name__}"
                     log.info("catalog %s/%s failed: %s", a["m"].get("name"), c.get("id"), e)
         await asyncio.gather(*(one(a, c) for a, c in home_catalogs()))
+        await asyncio.to_thread(purge_notices)
     finally:
         CAT_STATE["refreshing"] = False
 
@@ -6161,7 +6205,7 @@ async def external_title(kind: str, mid: str, stay: int = 0, name: str = "", p=D
         # when cinemeta's name has nothing in common with the tile that was clicked the addons own details win
         log.info("meta for %s is %r but the tile said %r, using the addon's details", mid, m.get("name"), name)
         m = await addon_meta(kind, mid, skip_cinemeta=True) or listed_meta(mid, name, kind) or m
-    if not m:
+    if not m or notice_name(m.get("name")) or notice_name(name):
         raise HTTPException(404, "Couldn't find details for that title")
     if p.get("kids") and not kids_ok(m.get("genres"), mid):
         raise HTTPException(404, "That title isn't available on this profile")
@@ -7346,6 +7390,8 @@ async def mylist_add(request: Request, p=Depends(current_profile)):
             raise HTTPException(400, "Unknown title")
         m = await meta_lookup(kind, mid) or {}
         key, tid, name, poster = mid, None, m.get("name") or mid, m.get("poster")
+    if notice_name(name):
+        raise HTTPException(404, "That isn't a title")
     now = time.time()
     db().q("INSERT OR IGNORE INTO mylist VALUES (?,?,?,?,?,?,?,?)", (p["id"], key, kind, tid, name, poster, now, now))
     return {"ok": True, "key": key}
@@ -7649,7 +7695,7 @@ def resolve_saved(p, rows, summ):
         s = by_meta.get(r["key"]) or by_id.get(r["title_id"] or (r["key"][4:] if r["key"].startswith("lib:") else ""))
         if s:
             out.append(s)
-        elif not r["key"].startswith("lib:") and not r["title_id"]:
+        elif not r["key"].startswith("lib:") and not r["title_id"] and not notice_name(r["name"]):
             item = ext_preview({"id": r["key"], "name": r["name"], "poster": r["poster"]}, r["kind"])
             if not p.get("kids") or kids_ok(item["genres"], r["key"]):
                 out.append(item)
@@ -7670,6 +7716,8 @@ async def search_recent_add(request: Request, p=Depends(current_profile)):
         if not kind_ok(kind) or not mid:
             raise HTTPException(400, "Unknown title")
         row = (mid, kind, None, str(b.get("name") or mid)[:120], b.get("poster"))
+    if notice_name(row[3]):
+        return {"ok": True}  # a notice from an addon, not a title, is not remembered
     db().q("INSERT OR REPLACE INTO search_recent VALUES (?,?,?,?,?,?,?)", (p["id"], *row, time.time()))
     db().q("DELETE FROM search_recent WHERE profile_id = ? AND key NOT IN (SELECT key FROM search_recent WHERE profile_id = ? "
            "ORDER BY at DESC LIMIT 18)", (p["id"], p["id"]))

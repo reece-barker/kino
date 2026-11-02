@@ -2773,6 +2773,7 @@ async def home(request: Request, p=Depends(current_profile)):
             shelves.append({"id": "picks", "title": f"Top Picks for {p['name']}", "style": "poster", "items": picks})
     if mine:
         shelves.append({"id": "mylist", "title": "My List", "style": "poster", "items": mine})
+    shelves += season_shelf(summ, p.get("kids"))
     # A row for each of the newest two interests that has enough titles to fill one
     rows = 0
     for i in sorted(ints, key=lambda x: -(x.get("at") or 0)):
@@ -3412,6 +3413,297 @@ async def uk_items(rid, summ, kids, skip, take):
     if kids:
         items = [i for i in items if not i.get("external") or kids_ok(i["genres"], i["imdb"])]
     return items
+
+
+# ---- seasonal row on Home
+# Around Halloween, Christmas, Valentine's Day and Easter Home gets a row of the popular films and shows for it. What the library has comes first
+# (the well known ones in list order, then anything else that fits by its name, description or genre), then the rest of the list from the addons.
+# HOME_SEASON in kino.env can force one (christmas, halloween, valentines, easter) or turn the row off (off)
+SEASON_TITLES = {
+    "christmas": [
+        ("tt0319343", "m", "Elf"),
+        ("tt0099785", "m", "Home Alone"),
+        ("tt0104431", "m", "Home Alone 2: Lost in New York"),
+        ("tt3850590", "m", "Krampus"),
+        ("tt0338348", "m", "The Polar Express"),
+        ("tt0170016", "m", "How the Grinch Stole Christmas"),
+        ("tt2709692", "m", "The Grinch"),
+        ("tt1067106", "m", "A Christmas Carol"),
+        ("tt0104940", "m", "The Muppet Christmas Carol"),
+        ("tt0038650", "m", "It's a Wonderful Life"),
+        ("tt0314331", "m", "Love Actually"),
+        ("tt0457939", "m", "The Holiday"),
+        ("tt0095016", "m", "Die Hard"),
+        ("tt0116705", "m", "Jingle All the Way"),
+        ("tt0111070", "m", "The Santa Clause"),
+        ("tt0307987", "m", "Bad Santa"),
+        ("tt1430607", "m", "Arthur Christmas"),
+        ("tt4729430", "m", "Klaus"),
+        ("tt0097958", "m", "National Lampoon's Christmas Vacation"),
+        ("tt0096061", "m", "Scrooged"),
+        ("tt0107688", "m", "The Nightmare Before Christmas"),
+        ("tt0110527", "m", "Miracle on 34th Street"),
+        ("tt0047673", "m", "White Christmas"),
+        ("tt0087363", "m", "Gremlins"),
+        ("tt12003946", "m", "Violent Night"),
+        ("tt8623904", "m", "Last Christmas"),
+        ("tt0085334", "m", "A Christmas Story"),
+        ("tt0486583", "m", "Fred Claus"),
+        ("tt0369436", "m", "Four Christmases"),
+        ("tt0790604", "m", "Deck the Halls"),
+        ("tt2990140", "m", "The Christmas Chronicles"),
+        ("tt1446192", "m", "Rise of the Guardians"),
+        ("tt5097410", "m", "Noelle"),
+        ("tt0119303", "m", "Home Alone 3"),
+        ("tt0388419", "m", "Christmas with the Kranks"),
+        ("tt0356680", "m", "The Family Stone"),
+        ("tt0098115", "m", "Prancer"),
+        ("tt0089961", "m", "Santa Claus"),
+        ("tt0058536", "m", "Rudolph the Red-Nosed Reindeer"),
+        ("tt8522006", "m", "Happiest Season"),
+        ("tt8954732", "m", "The Princess Switch"),
+        ("tt14315756", "m", "Single All the Way"),
+        ("tt10999120", "m", "Spirited"),
+        ("tt14948432", "m", "Red One"),
+        ("tt6225520", "m", "The Man Who Invented Christmas"),
+        ("tt0252028", "m", "Surviving Christmas"),
+        ("tt4147830", "m", "Elf: Buddy's Musical Christmas"),
+        ("tt0071222", "m", "Black Christmas"),
+        ("tt11628854", "m", "Silent Night"),
+        ("tt3703148", "m", "Christmas Eve"),
+        ("tt4443658", "m", "Better Watch Out"),
+        ("tt1268799", "m", "A Very Harold & Kumar Christmas"),
+        ("tt3530002", "m", "The Night Before"),
+        ("tt1711525", "m", "Office Christmas Party"),
+        ("tt1242447", "m", "Nativity!"),
+    ],
+    "halloween": [
+        ("tt0077651", "m", "Halloween"),
+        ("tt1502407", "m", "Halloween"),
+        ("tt0117571", "m", "Scream"),
+        ("tt0087800", "m", "A Nightmare on Elm Street"),
+        ("tt0080761", "m", "Friday the 13th"),
+        ("tt0070047", "m", "The Exorcist"),
+        ("tt0107120", "m", "Hocus Pocus"),
+        ("tt0094721", "m", "Beetlejuice"),
+        ("tt0087332", "m", "Ghostbusters"),
+        ("tt0327597", "m", "Coraline"),
+        ("tt1623288", "m", "ParaNorman"),
+        ("tt0112642", "m", "Casper"),
+        ("tt0101272", "m", "The Addams Family"),
+        ("tt0385880", "m", "Monster House"),
+        ("tt0121164", "m", "Corpse Bride"),
+        ("tt1396484", "m", "It"),
+        ("tt5052448", "m", "Get Out"),
+        ("tt6644200", "m", "A Quiet Place"),
+        ("tt7784604", "m", "Hereditary"),
+        ("tt1591095", "m", "Insidious"),
+        ("tt1922777", "m", "Sinister"),
+        ("tt0081505", "m", "The Shining"),
+        ("tt0054215", "m", "Psycho"),
+        ("tt1457767", "m", "The Conjuring"),
+        ("tt0084516", "m", "Poltergeist"),
+        ("tt0298130", "m", "The Ring"),
+        ("tt1179904", "m", "Paranormal Activity"),
+        ("tt0387564", "m", "Saw"),
+        ("tt15474916", "m", "Smile"),
+        ("tt15791034", "m", "Barbarian"),
+        ("tt10638522", "m", "Talk to Me"),
+        ("tt4281724", "m", "Terrifier"),
+        ("tt0072271", "m", "The Texas Chain Saw Massacre"),
+        ("tt0078748", "m", "Alien"),
+        ("tt0084787", "m", "The Thing"),
+        ("tt3850590", "m", "Krampus"),
+        ("tt0862856", "m", "Trick 'r Treat"),
+        ("tt0087363", "m", "Gremlins"),
+        ("tt0365748", "m", "Shaun of the Dead"),
+        ("tt1156398", "m", "Zombieland"),
+        ("tt1468737", "m", "Stranger Things"),
+        ("tt13443470", "s", "Wednesday"),
+        ("tt1051904", "m", "Goosebumps"),
+        ("tt0107688", "m", "The Nightmare Before Christmas"),
+        ("tt0837562", "m", "Hotel Transylvania"),
+        ("tt1142977", "m", "Frankenweenie"),
+        ("tt0100944", "m", "The Witches"),
+        ("tt0120791", "m", "Practical Magic"),
+        ("tt31434030", "m", "Dracula"),
+        ("tt5040012", "m", "Nosferatu"),
+        ("tt0110148", "m", "Interview with the Vampire: The Vampire Chronicles"),
+        ("tt0093437", "m", "The Lost Boys"),
+        ("tt0195714", "m", "Final Destination"),
+        ("tt4045450", "m", "I Know What You Did Last Summer"),
+        ("tt0185937", "m", "The Blair Witch Project"),
+        ("tt0289043", "m", "28 Days Later"),
+        ("tt5700672", "m", "Train to Busan"),
+        ("tt8772262", "m", "Midsommar"),
+        ("tt4263482", "m", "The Witch"),
+        ("tt6857112", "m", "Us"),
+        ("tt10954984", "m", "Nope"),
+    ],
+    "valentines": [
+        ("tt0332280", "m", "The Notebook"),
+        ("tt0120338", "m", "Titanic"),
+        ("tt0314331", "m", "Love Actually"),
+        ("tt0100405", "m", "Pretty Woman"),
+        ("tt0098635", "m", "When Harry Met Sally..."),
+        ("tt3783958", "m", "La La Land"),
+        ("tt0147800", "m", "10 Things I Hate About You"),
+        ("tt0414387", "m", "Pride & Prejudice"),
+        ("tt2194499", "m", "About Time"),
+        ("tt0093779", "m", "The Princess Bride"),
+        ("tt0092890", "m", "Dirty Dancing"),
+        ("tt0125439", "m", "Notting Hill"),
+        ("tt0343660", "m", "50 First Dates"),
+        ("tt0034583", "m", "Casablanca"),
+        ("tt0099653", "m", "Ghost"),
+        ("tt0108160", "m", "Sleepless in Seattle"),
+        ("tt0117509", "m", "Romeo + Juliet"),
+        ("tt1570728", "m", "Crazy, Stupid, Love."),
+        ("tt0457939", "m", "The Holiday"),
+        ("tt0338013", "m", "Eternal Sunshine of the Spotless Mind"),
+        ("tt1045658", "m", "Silver Linings Playbook"),
+        ("tt0203009", "m", "Moulin Rouge!"),
+        ("tt0281358", "m", "A Walk to Remember"),
+        ("tt0112471", "m", "Before Sunrise"),
+        ("tt1798709", "m", "Her"),
+        ("tt0211915", "m", "Am\u00e9lie"),
+        ("tt0101414", "m", "Beauty and the Beast"),
+        ("tt0461770", "m", "Enchanted"),
+        ("tt0112697", "m", "Clueless"),
+        ("tt0795421", "m", "Mamma Mia!"),
+        ("tt3104988", "m", "Crazy Rich Asians"),
+        ("tt26047818", "m", "Anyone But You"),
+        ("tt3846674", "m", "To All the Boys I've Loved Before"),
+        ("tt2582846", "m", "The Fault in Our Stars"),
+        ("tt2674426", "m", "Me Before You"),
+        ("tt0252076", "m", "Maid in Manhattan"),
+        ("tt0251127", "m", "How to Lose a Guy in 10 Days"),
+        ("tt0109831", "m", "Four Weddings and a Funeral"),
+        ("tt1041829", "m", "The Proposal"),
+    ],
+    "easter": [
+        ("tt1411704", "m", "Hop"),
+        ("tt1446192", "m", "Rise of the Guardians"),
+        ("tt5117670", "m", "Peter Rabbit"),
+        ("tt0049833", "m", "The Ten Commandments"),
+        ("tt0120630", "m", "Chicken Run"),
+        ("tt0367594", "m", "Charlie and the Chocolate Factory"),
+        ("tt0312004", "m", "Wallace & Gromit: The Curse of the Were-Rabbit"),
+        ("tt2872750", "m", "Shaun the Sheep Movie"),
+        ("tt2948356", "m", "Zootopia"),
+        ("tt0034492", "m", "Bambi"),
+        ("tt1449283", "m", "Winnie the Pooh"),
+        ("tt1436562", "m", "Rio"),
+        ("tt0268380", "m", "Ice Age"),
+        ("tt0112431", "m", "Babe"),
+        ("tt0078480", "m", "Watership Down"),
+        ("tt0120794", "m", "The Prince of Egypt"),
+        ("tt0070239", "m", "Jesus Christ Superstar"),
+        ("tt0102798", "m", "Robin Hood: Prince of Thieves"),
+        ("tt0246578", "m", "Donnie Darko"),
+        ("tt0432283", "m", "Fantastic Mr. Fox"),
+        ("tt0058331", "m", "Mary Poppins"),
+        ("tt0059742", "m", "The Sound of Music"),
+        ("tt0413895", "m", "Charlotte's Web"),
+        ("tt1109624", "m", "Paddington"),
+        ("tt4468740", "m", "Paddington 2"),
+        ("tt3470600", "m", "Sing"),
+        ("tt2709768", "m", "The Secret Life of Pets"),
+        ("tt0227538", "m", "Spy Kids"),
+        ("tt0106965", "m", "Free Willy"),
+        ("tt0117008", "m", "Matilda"),
+    ],
+}
+SEASON_NAMES = {"christmas": "Christmas Time", "halloween": "Halloween Nights", "valentines": "Valentine's Day", "easter": "Easter"}
+SEASON_WORDS = {
+    "christmas": re.compile(r"\b(christmas|xmas|santa|krampus|grinch|reindeer|noel)\b", re.I),
+    "halloween": re.compile(r"\b(halloween|haunted|haunting|witch|witches|vampire|ghost|ghosts)\b", re.I),
+    "valentines": re.compile(r"\bvalentines?\b", re.I),
+    "easter": re.compile(r"\b(easter|bunny)\b", re.I),
+}
+SEASON_GENRES = {"halloween": {"horror"}}
+SEASON = {"key": None, "t": 0.0, "busy": False, "ext": []}
+
+
+def easter_day(y):
+    a, b, c = y % 19, y // 100, y % 100
+    d, e = b // 4, b % 4
+    g = (8 * b + 13) // 25
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 19 * l) // 433
+    n = (h + l - 7 * m + 90) // 25
+    return datetime.date(y, n, (h + l - 7 * m + 33 * n + 19) % 32)
+
+
+def season_key(today=None):
+    force = env("HOME_SEASON", "auto").strip().lower()
+    if force == "off":
+        return None
+    if force in SEASON_TITLES:
+        return force
+    d = today or datetime.date.today()
+    md = (d.month, d.day)
+    if (9, 28) <= md <= (11, 1):
+        return "halloween"
+    if md >= (11, 15) or md <= (1, 6):
+        return "christmas"
+    if (2, 1) <= md <= (2, 14):
+        return "valentines"
+    e = easter_day(d.year)
+    if e - datetime.timedelta(days=14) <= d <= e + datetime.timedelta(days=1):
+        return "easter"
+    return None
+
+
+async def season_refresh(key):
+    """Looks up the details of the list for this season (kept for days by the meta cache), in the background so Home never waits for it"""
+    SEASON["busy"] = True
+    try:
+        sem = asyncio.Semaphore(6)
+
+        async def one(imdb, kind, name):
+            kind = "series" if kind == "s" else "movie"
+            async with sem:
+                try:
+                    m = await asyncio.wait_for(meta_lookup(kind, imdb), timeout=12)
+                except Exception:
+                    return None
+            if not m:
+                return None
+            return ext_preview({"id": imdb, "type": kind, "name": m.get("name") or name, "poster": m.get("poster"), "background": m.get("background"), "logo": m.get("logo"),
+                                "genres": m.get("genres"), "releaseInfo": m.get("releaseInfo"), "imdbRating": m.get("rating"), "description": m.get("description")}, kind)
+        res = await asyncio.gather(*(one(*x) for x in SEASON_TITLES[key]))
+        SEASON.update(key=key, t=time.time(), ext=[x for x in res if x])
+    except Exception:
+        log.exception("seasonal row")
+    finally:
+        SEASON["busy"] = False
+
+
+def season_shelf(summ, kids=False):
+    key = season_key()
+    if not key:
+        return []
+    if (SEASON["key"] != key or time.time() - SEASON["t"] > 12 * 3600) and not SEASON["busy"]:
+        asyncio.create_task(season_refresh(key))
+    order = {imdb: i for i, (imdb, _, _) in enumerate(SEASON_TITLES[key])}
+    rx, genres = SEASON_WORDS[key], SEASON_GENRES.get(key, set())
+    known = sorted([s for s in summ if s.get("imdb") in order], key=lambda s: order[s["imdb"]])
+    got = {s["id"] for s in known}
+    extra = [s for s in summ if s["id"] not in got and (rx.search(s["name"] or "") or (key == "christmas" and rx.search(s.get("description") or ""))
+                                                       or (genres and {str(g).lower() for g in s["genres"]} & genres))]
+    extra.sort(key=imdb_score, reverse=True)
+    lib = known + extra[:24]
+    have = lib_by_meta_id(summ)
+    mine = {s.get("imdb") for s in lib}
+    ext = [x for x in (SEASON["ext"] if SEASON["key"] == key else []) if x["imdb"] not in have and x["imdb"] not in mine]
+    ext = drop_empty(ext, empty_ids())
+    if kids:
+        ext = [x for x in ext if kids_ok(x["genres"], x["imdb"])]
+    items = lib + ext
+    return [{"id": "season-" + key, "title": SEASON_NAMES[key], "style": "poster", "items": items}] if len(items) >= 4 else []
 
 
 async def uk_shelves(summ, kids=False):

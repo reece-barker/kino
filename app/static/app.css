@@ -358,6 +358,14 @@ select.plain { background: var(--fill); border: 0; border-radius: 10px; height: 
 
 /* ---------- toast */
 .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 100; padding: 12px 18px; border-radius: 14px; font-size: 15px; max-width: min(520px, calc(100vw - 32px)); }
+/* the card that offers to carry on from another device, above the page and the tab bar, below sheets */
+.hand { position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 90; display: grid; gap: 12px; width: min(460px, calc(100vw - 32px)); padding: 14px 16px; border-radius: 18px; }
+.hand .hand-t { display: grid; gap: 4px; font-size: 15px; }
+.hand .hand-t span { color: var(--label-2); font-size: 14px; }
+.hand .actions { display: flex; gap: 8px; justify-content: flex-end; }
+@media (max-width: 760px) { .hand { bottom: calc(86px + env(safe-area-inset-bottom)); } }
+body.with-side .hand { left: calc(50% + var(--side) / 2); }
+body.tv .hand { bottom: 36px; }
 
 /* ---------- player */
 .player { position: fixed; inset: 0; z-index: 90; background: #000; }

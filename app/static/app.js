@@ -223,6 +223,45 @@
     toastT = setTimeout(() => (t.hidden = true), ms);
   }
 
+  // ---- carry on from another device
+  // The server knows when this profile is playing on another device (the player reports its place every few seconds). This offers to carry on here.
+  // Not Now is remembered for that viewing, so it does not nag, and the card goes away by itself when the other player stops
+  const deviceName = (f) => {
+    const [b, o] = String(f || "").split("/");
+    const br = { chrome: "Chrome", safari: "Safari", firefox: "Firefox", edge: "Edge", opera: "Opera", brave: "Brave", samsung: "Samsung Internet", silk: "Silk", kinoapp: "the Kino app" }[b] || "a browser";
+    const os = { mac: "Mac", windows: "Windows", android: "Android", ios: "an iPhone or iPad", linux: "Linux", chromeos: "a Chromebook" }[o];
+    return os ? `${br} on ${os}` : br;
+  };
+  const handSeen = () => { try { return JSON.parse(sessionStorage.getItem("kinoHandOff") || "[]"); } catch (_) { return []; } };
+  const handKey = (x) => `${x.fid}|${Math.round(x.started)}`;
+  function handHide() { const el = $("#handOff"); if (el) el.remove(); }
+  async function handCheck() {
+    if (!ME.profile || document.hidden || !pl.el.hidden) return;
+    let r;
+    try { r = await api("/api/nowplaying"); } catch (_) { return; }
+    const x = r && r.playing, el = $("#handOff");
+    if (!x || handSeen().includes(handKey(x))) { if (el) handHide(); return; }
+    if (el && el.dataset.k === handKey(x)) return;
+    handHide();
+    const card = document.createElement("div");
+    card.id = "handOff"; card.className = "hand glass"; card.dataset.k = handKey(x); card.setAttribute("role", "alertdialog"); card.setAttribute("aria-label", "Continue on this device?");
+    card.innerHTML = `<div class="hand-t"><b>Continue on this device?</b><span>${esc(x.name)}${x.sub ? ` · ${esc(x.sub)}` : ""} is playing on ${esc(deviceName(x.device))}, at ${clock(x.pos)}.</span></div>
+      <div class="actions"><button class="btn primary small" id="handGo">Continue Here</button><button class="btn secondary small" id="handNo">Not Now</button></div>`;
+    document.body.appendChild(card);
+    const no = () => { try { sessionStorage.setItem("kinoHandOff", JSON.stringify([...handSeen(), handKey(x)].slice(-20))); } catch (_) {} handHide(); };
+    $("#handNo", card).onclick = no;
+    card.addEventListener("keydown", (e) => { if (e.key === "Escape" || e.key === "Backspace") { e.preventDefault(); e.stopPropagation(); no(); } });
+    $("#handGo", card).onclick = async () => {
+      no();
+      if (x.tid) {
+        location.hash = "#/title/" + x.tid;
+        for (let i = 0; i < 24; i++) { await new Promise((r) => setTimeout(r, 250)); const b = $("#playMain"); if (b) { b.click(); return; } }
+      }
+      playFile(x.fid, { name: x.name });
+    };
+    if (TV) $("#handGo", card).focus({ preventScroll: true });  // a remote cannot reach a card that floats over the page, so it takes the focus
+  }
+
   // Gives up after 20 seconds so a stalled connection cant leave a page on its skeleton for ever, sig is an optional abort from the caller
   async function api(url, body, method, sig) {
     const opt = { method: method || (body !== undefined ? "POST" : "GET"), headers: { "X-Kino": "1" }, credentials: "same-origin" };
@@ -5595,6 +5634,9 @@
   }
   window.addEventListener("hashchange", route);
   route();
+  setInterval(handCheck, 20000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) handCheck(); });
+  setTimeout(handCheck, 4000);
 
   // Installable app, the service worker only caches the app shell, never videos or api calls
   if ("serviceWorker" in navigator && location.protocol === "https:") {

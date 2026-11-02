@@ -4065,6 +4065,7 @@ async def progress(request: Request, p=Depends(current_profile)):
         db().q("INSERT INTO stream_health (id, good, bad) VALUES (?, ?, 0) ON CONFLICT(id) DO UPDATE SET good = excluded.good", (fid, time.time()))
     done = 1 if dur and pos / dur > 0.93 else 0
     put_watch(p["id"], fid, pos, dur, done)
+    note_playing(p["id"], fid, pos, dur, done, request)
     # A paused player stops fetching segments, but the progress still comes in, so that keeps its converted stream from being
     # reaped after 90 seconds (it used to die and the movie broke a minute after pressing resume)
     owner = f"p{p['id']}"
@@ -4072,6 +4073,54 @@ async def progress(request: Request, p=Depends(current_profile)):
         if s["owner"] == owner and s.get("fid") == fid:
             s["last"] = time.time()
     return {"ok": True}
+
+
+# ---- playing on another device
+# The player reports its position every few seconds (also while paused), so the last report per profile says where it is being watched right now.
+# Another device that opens the same profile asks about it and offers to carry on from there. Nothing is stored on disk, it is only about right now
+NOW_PLAYING = {}
+NOW_PLAYING_SECS = 45  # a player that has not reported for this long is closed or gone
+
+
+def note_playing(pid, fid, pos, dur, done, request):
+    if done or not (pos > 5):
+        NOW_PLAYING.pop(pid, None)  # finished, or just opened
+        return
+    dev = tok_hash(browser_key(request))[:16]
+    old = NOW_PLAYING.get(pid)
+    same = old and old["fid"] == fid and old["dev"] == dev and time.time() - old["updated"] < 5 * 60
+    NOW_PLAYING[pid] = {"fid": fid, "dev": dev, "label": ua_family(request.headers.get("user-agent")), "pos": pos, "dur": dur, "updated": time.time(),
+                        "started": old["started"] if same else time.time()}
+
+
+@app.get("/api/nowplaying")
+async def nowplaying(request: Request, p=Depends(current_profile)):
+    """Something this profile is watching right now on a different device, or null"""
+    e = NOW_PLAYING.get(p["id"])
+    if not e or time.time() - e["updated"] > NOW_PLAYING_SECS or e["dev"] == tok_hash(browser_key(request))[:16]:
+        return {"playing": None}
+    fid, name, tid, sub = e["fid"], "", None, ""
+    if fid in LIB["files"]:
+        f = LIB["files"][fid]
+        t = LIB["titles"].get(f["title_id"])
+        if t:
+            m = meta_light(t)
+            name, tid = (m or {}).get("name") or t["guess_name"], t["id"]
+            if p.get("kids") and not kids_ok((m or {}).get("genres"), kid_key((m or {}).get("id"), t["id"])):
+                return {"playing": None}
+        if f.get("season") is not None and f.get("episode") is not None:
+            sub = f"Season {f['season']}, episode {f['episode']}"
+    elif fid.startswith("s"):
+        rows = db().q("SELECT name FROM streams WHERE id = ?", (fid,))
+        if not rows:
+            return {"playing": None}
+        name = rows[0]["name"] or "a video"
+        if p.get("kids"):
+            return {"playing": None}  # kids profiles are not offered addon sources this way
+    else:
+        return {"playing": None}
+    return {"playing": {"fid": fid, "tid": tid, "name": name, "sub": sub, "pos": e["pos"], "dur": e["dur"], "device": e["label"], "started": e["started"],
+                        "ago": int(time.time() - e["updated"])}}
 
 
 # ---- images

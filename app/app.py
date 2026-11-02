@@ -6255,6 +6255,9 @@ async def search_start(p=Depends(current_profile)):
 # before it looks at public domain copies. Only files from your own account, found through the torbox api
 TORBOX_KEY = env("TORBOX_API_KEY", "")
 TORBOX_API = env("TORBOX_API", "https://api.torbox.app/v1/api")
+if urlparse(TORBOX_API).scheme != "https" and (urlparse(TORBOX_API).hostname or "") not in ("127.0.0.1", "localhost", "::1"):
+    log.warning("TORBOX_API isnt https, using the normal address instead so the key is never sent in the clear")
+    TORBOX_API = "https://api.torbox.app/v1/api"
 TB_KINDS = [("torrents", "torrent_id"), ("webdl", "web_id"), ("usenet", "usenet_id")]
 TB_CACHE = {"at": 0, "files": [], "lock": None}
 TB_LINKS = {}   # (kind, item, file) -> (time, url)

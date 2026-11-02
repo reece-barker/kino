@@ -41,6 +41,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -730,36 +731,49 @@ async def cinemeta_meta(client, kind, imdb_id):
 NAME_STOP = {"the", "a", "an", "of", "and"}
 
 
+def fold(s):
+    """Lower case words with the accents taken off (Amélie is amelie), anything that is not a letter or number is a gap"""
+    t = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
 def initials_of(name):
     """Every run of 2 to 6 words in a name as its initials, so "Law & Order: Special Victims Unit" has "svu" in it (and so does CSI: Miami for "csi")"""
-    w = [x for x in norm(name).split() if x]
+    w = [x for x in fold(name).split() if x]
     return {"".join(x[0] for x in w[i:i + n]) for n in range(2, 7) for i in range(0, len(w) - n + 1)}
 
 
-def fit_score(query, cand):
-    """How well a search result's name fits what was searched for, 0 to 1 or a bit over. An abbreviation in the search (SVU, CSI, TNG) counts as
-    matched when it is the initials of a run of words in the name, and an exact name beats a partial one. Ties keep the order Cinemeta gave"""
-    qs = [x for x in norm(query).split() if x not in NAME_STOP]
-    cs = [x for x in norm(cand).split() if x not in NAME_STOP]
+def fit_parts(query, cand):
+    """(how much of what was searched is in the name, 0 to 1) and (that, minus a little for extra words, plus a bonus for the exact name).
+    An abbreviation in the search (SVU, CSI, TNG) counts as found when it is the initials of a run of words in the name"""
+    qs = [x for x in fold(query).split() if x not in NAME_STOP]
+    cs = [x for x in fold(cand).split() if x not in NAME_STOP]
     if not qs or not cs:
-        return 0.0
+        return 0.0, 0.0
     ini = initials_of(cand)
-    hit = sum(1 for q in qs if q in cs or (len(q) >= 2 and q in ini))
-    score = hit / len(qs)
-    return score + (1.0 if norm(query) == norm(cand) else 0.0)
+    recall = sum(1 for q in qs if q in cs or (len(q) >= 2 and q in ini)) / len(qs)
+    return recall, recall - 0.05 * min(6, max(0, len(cs) - len(qs))) + (1.0 if fold(query) == fold(cand) else 0.0)
 
 
 def best_meta(metas, name, year):
-    """The search result that fits best. Cinemeta's first result is often a popular show with a similar name (Law and Order SVU came back as Law & Order),
-    so the name decides, and a year narrows it down when there is one. The first result still wins ties and when nothing fits at all"""
+    """The search result to use. Cinemeta's own order is trusted, a later result only wins when the first one has some of the words of the search but not all of
+    them and the later one has every word (Law and Order SVU came back as Law & Order, Blade Runner 2049 as Blade Runner). A first result with all the words stays
+    (Gone Fishing is Mortimer & Whitehouse: Gone Fishing), and so does one with none of them (Se7en is found as Seven, Spiderman as Spider-Man), that is
+    Cinemeta matching on something else. A year narrows the list when there is one"""
     pool = metas
     if year:
         near = [m for m in metas if str(m.get("releaseInfo") or "")[:4].isdigit() and abs(int(str(m.get("releaseInfo"))[:4]) - int(year)) <= 1]
         pool = near or metas
     if not pool:
         return None
-    best = max(enumerate(pool), key=lambda im: (round(fit_score(name, im[1].get("name") or ""), 3), -im[0]))[1]
-    return best
+    parts = [fit_parts(name, m.get("name") or "") for m in pool]
+    if parts[0][0] <= 0 or parts[0][0] >= 1:
+        return pool[0]
+    full = [i for i in range(len(pool)) if parts[i][0] >= 1]
+    if not full:
+        return pool[0]
+    best = max(full, key=lambda i: (round(parts[i][1], 3), -i))
+    return pool[best] if parts[best][1] >= parts[0][1] + 0.2 else pool[0]
 
 
 async def cinemeta_lookup(client, kind, name, year):

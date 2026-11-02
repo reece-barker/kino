@@ -5481,7 +5481,7 @@
       else if (page === "server" && isAdmin()) await pageServer();
       else if (page && page !== "home") {
         // An address that is not a page (a typo, an old link), or an admin page for someone who isnt admin. It used to just show Home, which looked like the link worked
-        app.innerHTML = topbar("") + `<main class="page"><div class="empty"><h2>That page isn't here</h2><p>The link may be old or mistyped${page === "sync" || page === "server" ? ", or it is only for the admin" : ""}.</p>
+        app.innerHTML = topbar("") + `<main class="page"><div class="empty"><h2>That page isn't here</h2><p>The link may be old or mistyped${page === "sync" || page === "server" || page === "health" ? ", or it is only for the admin" : ""}.</p>
           <a class="btn secondary small" href="#/home">Go Home</a></div></main>`;
         wireTopbar();
       } else await pageHome();

@@ -942,6 +942,10 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 /* the number on the Alerts item and on the profile button of the phone tab bar */
 .alert-dot { font-style: normal; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #ff453a; color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; box-shadow: 0 0 0 2px var(--page-bg); }
 .alert-dot[hidden] { display: none; }
+/* the unread count sits on the profile picture of the profile button, and Alerts is the first thing in its menu */
+.side-av { position: relative; flex: none; display: inline-flex; }
+.side-av-dot { position: absolute; top: -6px; right: -8px; z-index: 2; box-shadow: 0 0 0 2px var(--bg-2, #1c1c1e); pointer-events: none; }
+.mi-badge { margin-left: auto; display: inline-flex; }
 .tb-item { position: relative; }
 .tb-alert { position: absolute; top: 4px; right: calc(50% - 22px); }
 .side-item[aria-current="page"] .alert-dot { box-shadow: 0 0 0 2px #fff; }

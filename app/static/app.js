@@ -4685,7 +4685,7 @@
     const l = $("#subsLayer"), look = pl.subLook = { size: o.sub_size || o.size || "m", color: o.sub_color || o.color || "white", bg: o.sub_bg || o.bg || "box", pos: o.sub_pos || o.pos || "low" };
     l.dataset.size = look.size; l.dataset.color = look.color; l.dataset.bg = look.bg; l.dataset.pos = look.pos;
   };
-  const subDelayGet = (fid) => { try { return Number(localStorage.getItem("kinoSubDelay:" + fid)) || 0; } catch (_) { return 0; } };
+  const subDelayGet = (fid) => { try { const v = Number(localStorage.getItem("kinoSubDelay:" + fid)); return Number.isFinite(v) ? Math.max(-30, Math.min(30, v)) : 0; } catch (_) { return 0; } };
   const subDelaySet = (fid, v) => { try { v ? localStorage.setItem("kinoSubDelay:" + fid, String(v)) : localStorage.removeItem("kinoSubDelay:" + fid); } catch (_) {} };
   let subSaveT;
   function subLookChange(key, dir) {
@@ -4696,12 +4696,14 @@
     subSaveT = setTimeout(() => api("/api/profile", { prefs: { sub_size: pl.subLook.size, sub_color: pl.subLook.color, sub_bg: pl.subLook.bg, sub_pos: pl.subLook.pos } }, "PUT")
       .then((r) => { if (r && r.profile) ME.profile = r.profile; }).catch(() => {}), 600);
     buildMenus();
+    const again = $(`#mSubs [data-sl="${key}"]`); if (again) again.focus();  // the menu was drawn again, so the remote would otherwise lose its place
   }
   function subDelayChange(d) {
-    pl.subDelay = d === 0 ? 0 : Math.round(((pl.subDelay || 0) + d) * 10) / 10;
+    pl.subDelay = d === 0 ? 0 : Math.max(-30, Math.min(30, Math.round(((pl.subDelay || 0) + d) * 10) / 10));
     subDelaySet(pl.info.id, pl.subDelay);
     renderSubs(true);
     buildMenus();
+    const again = $(`#mSubs [data-sd="${d}"]`) || $('#mSubs [data-sd="0.5"]'); if (again) again.focus();
   }
   const subMenuExtras = () => {
     const name = (k) => (SUB_OPTS[k].find(([v]) => v === (pl.subLook || {})[k]) || SUB_OPTS[k][0])[1];

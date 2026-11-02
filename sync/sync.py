@@ -30,6 +30,9 @@ STATUS = Path(os.environ.get("SYNC_STATUS", "/var/lib/torbox-sync/status.json"))
 PAUSE = Path(os.environ.get("PAUSE_FILE", "/var/lib/kino/pause.json"))
 DELETED = Path(os.environ.get("DELETED_FILE", "/var/lib/kino/deleted.json"))  # written by the dashboard when the admin deletes media
 REQUIRE_MOUNT = os.environ.get("REQUIRE_MOUNT", "1") == "1"
+# Off by default. When on, saved files get plain "Title (Year)" names in Movies and TV Shows folders (no release names or torbox folders) and
+# have their embedded tags stripped. Kino reads the clean names fine, it matches by title and year or season and episode
+CLEAN = os.environ.get("CLEAN_FILES", "0") == "1"
 MIN_FREE = 20 * 1024**3  # Keeps 20gb free so the storage box dosent fill up compleatly
 
 # Kind of download and the name of the id param that requestdl wants for it
@@ -85,6 +88,28 @@ def media_key(name):
     return ("movie", title, first(g.get("year")) or 0), res
 
 
+HEIGHTS = DEST / ".heights.json"  # remembers each file's picture height, clean names dont say the quality and ffprobe on the whole box every run is slow
+HEIGHT_CACHE = {}
+
+
+def load_heights():
+    try:
+        HEIGHT_CACHE.update(json.loads(HEIGHTS.read_text()))
+    except Exception:
+        pass
+
+
+def save_heights():
+    if not HEIGHT_CACHE:
+        return
+    try:
+        tmp = HEIGHTS.with_name(".heights.tmp")
+        tmp.write_text(json.dumps(HEIGHT_CACHE))
+        tmp.replace(HEIGHTS)
+    except OSError:
+        pass
+
+
 def probe_height(path):
     try:
         out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height",
@@ -108,10 +133,80 @@ def existing_library():
             if not key:
                 continue
             if not res:
-                res = probe_height(p)  # Name doesnt say the quality, so ffprobe reads it from the file
+                ck = f"{p.relative_to(DEST)}|{p.stat().st_size}"
+                if ck not in HEIGHT_CACHE:
+                    HEIGHT_CACHE[ck] = probe_height(p)  # Name doesnt say the quality, so ffprobe reads it from the file
+                res = HEIGHT_CACHE[ck]
             if res >= have.get(key, (-1, ""))[0]:
                 have[key] = (res, n)
     return have
+
+
+def safe_name(x):
+    return re.sub(r"\s+", " ", re.sub(r'[\\/:*?"<>|]+', " ", str(x))).strip(" .")
+
+
+def clean_rel(name):
+    """Plain path for a file, like Movies/Heat (1995)/Heat (1995).mkv or TV Shows/Fargo/Season 02/Fargo - S02E03.mkv. None means it
+    couldnt be worked out, and then the file keeps its normal name"""
+    if not guessit:
+        return None
+    try:
+        g = guessit(name)
+    except Exception:
+        return None
+    title = safe_name(first(g.get("title")) or "")
+    if not title:
+        return None
+    ext = Path(name).suffix.lower()
+    lang = ""
+    if ext in SUB_EXT:
+        try:
+            lang = "." + first(g.get("subtitle_language")).alpha2
+        except Exception:
+            lang = ""
+    if g.get("type") == "episode":
+        se, ep = first(g.get("season")), first(g.get("episode"))
+        if se is None or ep is None:
+            return None
+        return f"TV Shows/{title}/Season {int(se):02d}/{title} - S{int(se):02d}E{int(ep):02d}{lang}{ext}"
+    year = first(g.get("year"))
+    base = f"{title} ({year})" if year else title
+    return f"Movies/{base}/{base}{lang}{ext}"
+
+
+def strip_tags(path):
+    """Remuxes a video without any of its tags (title, release name, encoder, chapter names, cover art). Language and default flags stay so the
+    audio and subtitle pickers still work. Any problem and the file is left exactly as it was"""
+    tmp = path.with_name(".clean-" + path.name)
+    try:
+        pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=index,codec_type:stream_tags=language:stream_disposition=attached_pic",
+                             "-of", "json", str(path)], capture_output=True, text=True, timeout=300)
+        streams = json.loads(pr.stdout).get("streams") or []
+        cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(path)]
+        langs, count = [], {"video": 0, "audio": 0, "subtitle": 0}
+        for st in streams:
+            t = st.get("codec_type")
+            if t not in count or (st.get("disposition") or {}).get("attached_pic"):
+                continue
+            cmd += ["-map", f"0:{st['index']}"]
+            lg = (st.get("tags") or {}).get("language")
+            if lg and lg != "und":
+                langs += [f"-metadata:s:{t[0]}:{count[t]}", f"language={lg}"]
+            count[t] += 1
+        if not count["video"]:
+            return False
+        cmd += ["-c", "copy", "-map_metadata", "-1", "-map_chapters", "-1", "-map_metadata:s:v", "-1", "-map_metadata:s:a", "-1",
+                "-map_metadata:s:s", "-1", "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact", *langs, str(tmp)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size < path.stat().st_size * 0.9:
+            raise RuntimeError((r.stderr or "ffmpeg failed")[-200:])
+        tmp.replace(path)
+        return True
+    except Exception as e:
+        print(f"couldnt strip tags from {path.name}, left as it was: {e}", flush=True)
+        tmp.unlink(missing_ok=True)
+        return False
 
 
 def is_junk(name, size):
@@ -280,8 +375,11 @@ def main():
     blocked, allow = load_deleted()
 
     # Builds the full todo list first so the dashboard can show "3 of 12"
+    load_heights()
     have = existing_library() if guessit else {}
+    save_heights()
     skipped_deleted = []
+    used = set()
     cands = []  # (kind, id_param, item_id, file, key, target, media_key, res)
     for kind, id_param in KINDS:
         for item in list_items(kind):
@@ -300,6 +398,15 @@ def main():
                 if is_junk(name, f.get("size", 0)):
                     continue
                 target = (DEST / kind / name.lstrip("/")).resolve()
+                if CLEAN:
+                    cr = clean_rel(name)
+                    if cr:
+                        target = (DEST / cr).resolve()
+                        n, root = 2, target
+                        while (target.exists() or target in used) and n < 50:  # two copies that end up with the same name, the second gets (2)
+                            target = root.with_name(f"{root.stem} ({n}){root.suffix}")
+                            n += 1
+                        used.add(target)
                 # Makes sure a weird filename cant write outside of the dest folder
                 if DEST not in target.parents:
                     print(f"skipping suspicious path: {name}")
@@ -359,9 +466,16 @@ def main():
             print(f"downloading {target}", flush=True)
             url = get_link(kind, id_param, item_id, f["id"])
             download(url, target, f.get("size", 0), rel)
+            if CLEAN and target.suffix.lower() in VIDEO_EXT:
+                status["message"] = "Removing tags"
+                write_status()
+                strip_tags(target)
+                status["message"] = None
             # Which TorBox item it came from and when, so the dashboard can show where a file came from and the delete list can
             # tell a new download from an old one
-            state[key] = {"path": str(target), "size": f.get("size", 0), "at": time.time(), "item": f.get("_item"), "kind": kind}
+            state[key] = {"path": str(target), "size": f.get("size", 0), "at": time.time()}
+            if not CLEAN:  # clean mode keeps the TorBox name and kind off the box, the key is all kino needs
+                state[key].update(item=f.get("_item"), kind=kind)
             save_state(state)  # Saved after every file so a crash dosent lose progress
             status["new"] += 1
             status["recent"] = ([{"name": target.name, "rel": rel, "size": f.get("size", 0), "at": time.time()}]

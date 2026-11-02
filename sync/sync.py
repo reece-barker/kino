@@ -25,6 +25,17 @@ except ImportError:  # Without guessit the duplicate check is off, everything el
     guessit = None
 
 API = os.environ.get("TORBOX_API", "https://api.torbox.app/v1/api")  # Only changed for testing
+LOOPBACK = ("127.0.0.1", "localhost", "::1")  # the one place plain http is fine, a test server on this machine
+
+
+def https_or_local(u):
+    from urllib.parse import urlparse
+    p = urlparse(str(u))
+    return p.scheme == "https" or (p.scheme == "http" and (p.hostname or "") in LOOPBACK)
+
+
+if not https_or_local(API):
+    sys.exit("TORBOX_API has to be an https address, the API key goes in it")
 KEY = os.environ["TORBOX_API_KEY"]
 DEST = Path(os.environ.get("TORBOX_DEST", "/srv/torbox")).resolve()
 STATE = DEST / ".state.json"
@@ -398,7 +409,10 @@ def get_link(kind, id_param, item_id, file_id):
     r = s.get(f"{API}/{kind}/requestdl",
               params={"token": KEY, id_param: item_id, "file_id": file_id}, timeout=60)
     r.raise_for_status()
-    return r.json()["data"]
+    link = r.json()["data"]
+    if not https_or_local(link):
+        raise RuntimeError("TorBox sent a link that isnt https, not downloading it")
+    return link
 
 
 def download(url, target, size, rel):

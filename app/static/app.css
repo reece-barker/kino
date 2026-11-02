@@ -903,6 +903,16 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 .side-sub { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.45s var(--spring), opacity 0.3s ease; opacity: 0; }
 .side-sub-in { min-height: 0; overflow: hidden; padding-top: 6px; }
 .side-group.open .side-sub { grid-template-rows: 1fr; opacity: 1; }
+/* the number on the Alerts item and on the profile button of the phone tab bar */
+.alert-dot { font-style: normal; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #ff453a; color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; box-shadow: 0 0 0 2px var(--page-bg); }
+.alert-dot[hidden] { display: none; }
+.tb-item { position: relative; }
+.tb-alert { position: absolute; top: 4px; right: calc(50% - 22px); }
+.side-item[aria-current="page"] .alert-dot { box-shadow: 0 0 0 2px #fff; }
+.al-item { align-items: center; }
+.al-item.unread { background: rgba(10, 132, 255, 0.08); border-radius: 12px; padding-left: 10px; padding-right: 10px; }
+.al-art { flex: none; width: 46px; height: 68px; border-radius: 8px; overflow: hidden; background: var(--fill); }
+.al-art img { width: 100%; height: 100%; object-fit: cover; }
 .side-badge { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--label-2); padding-right: 6px; }
 .side-item[aria-current="page"] .side-badge { color: rgba(0, 0, 0, 0.5); }
 .side-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: transparent; }

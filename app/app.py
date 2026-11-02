@@ -172,6 +172,9 @@ CREATE TABLE IF NOT EXISTS mylist (profile_id INTEGER, key TEXT, kind TEXT, titl
     added REAL, checked REAL, PRIMARY KEY (profile_id, key));
 CREATE TABLE IF NOT EXISTS kids_rules (key TEXT PRIMARY KEY, allow INTEGER);
 CREATE TABLE IF NOT EXISTS cont_hidden (profile_id INTEGER, key TEXT, at REAL, PRIMARY KEY (profile_id, key));
+CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, title_id TEXT, kind TEXT, season INTEGER, episode INTEGER, file_id TEXT, at REAL,
+    read INTEGER DEFAULT 0, dismissed INTEGER DEFAULT 0, UNIQUE (profile_id, title_id, season, episode));
+CREATE TABLE IF NOT EXISTS alert_follow (profile_id INTEGER, title_id TEXT, since REAL, max_season INTEGER, PRIMARY KEY (profile_id, title_id));
 CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, code TEXT, name TEXT, ua TEXT, ip TEXT, status TEXT,
     created REAL, last_seen REAL);
 CREATE TABLE IF NOT EXISTS search_recent (profile_id INTEGER, key TEXT, kind TEXT, title_id TEXT, name TEXT, poster TEXT,
@@ -1346,6 +1349,10 @@ async def lifespan(app):
     async def scanner():
         while True:
             await rescan()
+            try:
+                make_alerts()
+            except Exception:
+                log.exception("making alerts failed")  # never lets alerts stop the library scan
             await asyncio.sleep(RESCAN_MINUTES * 60)
 
     tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker, rec_worker)]
@@ -6034,6 +6041,102 @@ def in_list(pid, key):
     return bool(db().q(f"SELECT 1 FROM mylist WHERE profile_id IN ({ids_sql(ids)}) AND key = ?", (*ids, key)))
 
 
+# ---------------------------------------------------------------- alerts: new episodes and new seasons
+# A profile follows a show when it is on its list or it has watched something from it. When a file for a followed show arrives (after the profile started
+# following it, so nothing floods when this first runs) there is an alert. The first file of a season that was not there before is a "new season" alert.
+def followed_series(pid):
+    out = set()
+    lib_imdb = {}
+    for t in LIB["titles"].values():
+        if t["kind"] == "series":
+            m = meta_light(t)
+            if m:
+                lib_imdb[m["id"]] = t["id"]
+    for r in db().q("SELECT key, title_id FROM mylist WHERE profile_id = ?", (pid,)):
+        tid = r["title_id"] or (r["key"][4:] if r["key"].startswith("lib:") else lib_imdb.get(r["key"]))
+        if tid:
+            out.add(tid)
+    for r in db().q("SELECT file_id FROM watch WHERE profile_id = ?", (pid,)):
+        f = LIB["files"].get(r["file_id"])
+        if f:
+            out.add(f["title_id"])
+    return {tid for tid in out if tid in LIB["titles"] and LIB["titles"][tid]["kind"] == "series"}
+
+
+def make_alerts():
+    now = time.time()
+    for prof in db().q("SELECT id FROM profiles WHERE pending = 0 AND (members IS NULL OR members = '')"):
+        pid = prof["id"]
+        wm = watch_map(pid)
+        for tid in followed_series(pid):
+            t = LIB["titles"][tid]
+            files = [LIB["files"][f] for f in t["files"] if f in LIB["files"]]
+            seasons = [f["season"] for f in files if f.get("season") is not None]
+            row = db().q("SELECT since, max_season FROM alert_follow WHERE profile_id = ? AND title_id = ?", (pid, tid))
+            if not row:
+                db().q("INSERT OR IGNORE INTO alert_follow VALUES (?,?,?,?)", (pid, tid, now, max(seasons) if seasons else 0))
+                continue  # first time this show is seen for the profile, what is there now is not news
+            since, top = row[0]["since"], row[0]["max_season"] or 0
+            new = [f for f in files if f["mtime"] > since and f.get("season") is not None and f.get("episode") is not None and not (wm.get(f["id"]) or {}).get("watched")]
+            for f in sorted(new, key=lambda f: (f["season"], f["episode"])):
+                kind = "season" if f["season"] > top else "episode"
+                top = max(top, f["season"])
+                db().q("INSERT OR IGNORE INTO alerts (profile_id, title_id, kind, season, episode, file_id, at) VALUES (?,?,?,?,?,?,?)",
+                       (pid, tid, kind, f["season"], f["episode"], f["id"], now))
+            if top != (row[0]["max_season"] or 0):
+                db().q("UPDATE alert_follow SET max_season = ? WHERE profile_id = ? AND title_id = ?", (top, pid, tid))
+
+
+@app.get("/api/alerts")
+async def alerts_get(p=Depends(current_profile)):
+    wm = watch_map(p["id"])
+    groups = {}
+    for r in db().q("SELECT * FROM alerts WHERE profile_id = ? AND dismissed = 0 ORDER BY at DESC, id DESC", (p["id"],)):
+        t = LIB["titles"].get(r["title_id"])
+        f = LIB["files"].get(r["file_id"])
+        if not t or not f or (wm.get(f["id"]) or {}).get("watched"):
+            continue  # the file is gone, or it has been watched since, nothing to tell
+        m = meta_light(t) or {}
+        if p.get("kids") and not kids_ok(m.get("genres"), kid_key(m.get("id"), t["id"])):
+            continue
+        g = groups.setdefault(r["title_id"], {"title_id": r["title_id"], "name": m.get("name") or t["guess_name"], "poster": m.get("poster"), "kind": "episode", "count": 0,
+                                              "unread": 0, "at": r["at"], "eps": []})
+        g["count"] += 1
+        g["unread"] += 0 if r["read"] else 1
+        if r["kind"] == "season":
+            g["kind"] = "season"
+        g["eps"].append({"season": r["season"], "episode": r["episode"], "file_id": r["file_id"]})
+    items = []
+    for g in groups.values():
+        first = min(g["eps"], key=lambda e: (e["season"], e["episode"]))
+        t = LIB["titles"][g["title_id"]]
+        ep = next((v for v in ((meta_for(t) or {}).get("videos") or []) if v.get("season") == first["season"] and v.get("episode") == first["episode"]), {})
+        g.update(season=first["season"], episode=first["episode"], file_id=first["file_id"], ep_name=ep.get("name"))
+        del g["eps"]
+        items.append(g)
+    return {"unread": sum(g["unread"] for g in items), "items": items}
+
+
+@app.post("/api/alerts/read")
+async def alerts_read(request: Request, p=Depends(current_profile)):
+    b = await json_obj(request)
+    if b.get("title_id"):
+        db().q("UPDATE alerts SET read = 1 WHERE profile_id = ? AND title_id = ?", (p["id"], str(b["title_id"])))
+    else:
+        db().q("UPDATE alerts SET read = 1 WHERE profile_id = ?", (p["id"],))
+    return {"ok": True}
+
+
+@app.post("/api/alerts/dismiss")
+async def alerts_dismiss(request: Request, p=Depends(current_profile)):
+    b = await json_obj(request)
+    if b.get("title_id"):
+        db().q("UPDATE alerts SET dismissed = 1, read = 1 WHERE profile_id = ? AND title_id = ?", (p["id"], str(b["title_id"])))
+    else:
+        db().q("UPDATE alerts SET dismissed = 1, read = 1 WHERE profile_id = ?", (p["id"],))
+    return {"ok": True}
+
+
 @app.post("/api/mylist")
 async def mylist_add(request: Request, p=Depends(current_profile)):
     b = await json_obj(request)
@@ -6656,6 +6759,65 @@ async def intro_clear(tid: str, season: int, admin=Depends(require_admin)):
 async def library_rescan(admin=Depends(require_admin)):
     asyncio.create_task(rescan())
     return {"ok": True}
+
+
+def aired(released):
+    """True if an episode's air date (an ISO date or time from the metadata) has passed. No date counts as aired, most old episodes have none"""
+    try:
+        return datetime.datetime.fromisoformat(str(released).replace("Z", "+00:00")).timestamp() <= time.time()
+    except (TypeError, ValueError):
+        return True
+
+
+def ranges(nums):
+    """[1, 2, 3, 5, 7, 8] as "1-3, 5, 7-8" """
+    out, nums = [], sorted(set(nums))
+    i = 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append(str(nums[i]) if i == j else f"{nums[i]}-{nums[j]}")
+        i = j + 1
+    return ", ".join(out)
+
+
+@app.get("/api/admin/library-health")
+async def library_health(admin=Depends(require_admin)):
+    """What is worth a look in the library: titles Kino could not match, shows that are missing seasons or episodes that have aired (checked against what
+    the metadata says exists), and two library titles that turned out to be the same show. Only reads what is cached, it never asks the internet"""
+    unmatched, gaps, same, pending, checked = [], [], {}, 0, 0
+    for t in list(LIB["titles"].values()):
+        files = [LIB["files"][f] for f in t["files"] if f in LIB["files"]]
+        m, _ = cached_meta(t["key"])
+        checked += 1
+        if m is None:
+            pending += 1  # not looked up yet, the background job gets to it
+            continue
+        if not m.get("id"):
+            unmatched.append({"id": t["id"], "name": t["guess_name"], "year": t.get("year"), "kind": t["kind"], "files": len(files), "example": files[0]["name"] if files else ""})
+            continue
+        same.setdefault(m["id"], []).append({"id": t["id"], "name": t["guess_name"], "matched": m.get("name"), "files": len(files)})
+        if t["kind"] != "series":
+            continue
+        have = {}
+        for f in files:
+            if f.get("season") is not None and f.get("episode") is not None:
+                have.setdefault(int(f["season"]), set()).add(int(f["episode"]))
+        want = {}
+        for v in m.get("videos") or []:
+            if v.get("season") and v.get("episode") and aired(v.get("released")):
+                want.setdefault(int(v["season"]), set()).add(int(v["episode"]))
+        seasons = []
+        for sn in sorted(want):
+            miss = want[sn] - have.get(sn, set())
+            if miss:
+                seasons.append({"season": sn, "have": len(want[sn]) - len(miss), "of": len(want[sn]), "missing": ranges(miss) if have.get(sn) else "all"})
+        if seasons:
+            gaps.append({"id": t["id"], "name": m.get("name") or t["guess_name"], "seasons": seasons})
+    return {"checked": checked, "pending": pending, "unmatched": sorted(unmatched, key=lambda x: x["name"].lower()),
+            "series_gaps": sorted(gaps, key=lambda x: x["name"].lower()),
+            "same_show": [{"matched": v[0]["matched"], "titles": v} for v in same.values() if len(v) > 1]}
 
 
 # ---- admin: ip allow list

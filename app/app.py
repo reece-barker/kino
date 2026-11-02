@@ -910,6 +910,100 @@ def override_for(key):
     return dict(rows[0]) if rows else None
 
 
+# Cinemeta mostly knows English names, so a Russian, Japanese, Korean, Turkish or German film often finds nothing and shows with its file name. Wikidata
+# has the names of films and shows in nearly every language and their imdb ids, so a title nothing else found is looked up there, in the languages that
+# fit the letters of the name (and a few common ones for names in latin letters)
+WD_SCRIPTS = [(r"[\u0400-\u04FF]", ["ru", "uk", "bg", "sr"]), (r"[\u0370-\u03FF]", ["el"]), (r"[\u3040-\u30FF]", ["ja"]), (r"[\uAC00-\uD7AF]", ["ko"]),
+              (r"[\u4E00-\u9FFF]", ["zh", "ja"]), (r"[\u0600-\u06FF]", ["ar", "fa"]), (r"[\u0590-\u05FF]", ["he"]), (r"[\u0E00-\u0E7F]", ["th"]), (r"[\u0900-\u097F]", ["hi"])]
+WD_HDR = {"User-Agent": "Kino/1.0 (self-hosted media dashboard)", "Accept": "application/json"}  # Wikimedia refuses requests without an Accept like this
+WD_LATIN = ["de", "fr", "es", "it", "pt", "pl", "tr", "nl", "sv", "cs"]
+WD_FILM = re.compile(r"\b(film|movie|animated|feature)\b", re.I)
+WD_SERIES = re.compile(r"television series|tv series|\bseries\b|miniseries|anime|telenovela|sitcom", re.I)
+
+
+WD = {"last": 0.0, "pause": 0.0}
+
+
+async def wd_get(client, params):
+    """One Wikidata api question. About one every 1.5 seconds (it refuses bursts and says how long to wait, which is waited and tried once more), and
+    after a second refusal or a block none for five minutes. None when it can't be asked"""
+    if time.time() < WD["pause"]:
+        return None
+    for attempt in (0, 1):
+        gap = WD["last"] + 1.5 - time.time()
+        WD["last"] = max(time.time(), WD["last"]) + (1.5 if gap > 0 else 0)  # taken before waiting, so several callers queue up instead of all firing
+        if gap > 0:
+            await asyncio.sleep(gap)
+        try:
+            r = await client.get("https://www.wikidata.org/w/api.php", params=params, headers=WD_HDR, timeout=15)
+        except Exception:
+            return None
+        if r.status_code == 429 and attempt == 0:
+            try:
+                wait = min(10.0, float(r.headers.get("retry-after") or 3))
+            except ValueError:
+                wait = 3.0
+            await asyncio.sleep(wait)
+            continue
+        if r.status_code in (403, 429):
+            WD["pause"] = time.time() + 300
+            return None
+        try:
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return None
+    return None
+
+
+JUNK_NAME = re.compile(r"^(vid|img|mov|mvi|dsc|pxl|dji|gopr|video|clip|rec|screen[\s_-]*(recording|shot)|untitled|new[\s_-]*project)[\s_.-]*\d|^(vid|img|mov|mvi|dsc|pxl|dji|gopr)$", re.I)
+
+
+def junk_name(name):
+    """A name a phone or camera gives a file, or that is mostly numbers"""
+    n = str(name or "").strip()
+    digits = sum(c.isdigit() for c in n)
+    return bool(JUNK_NAME.match(n)) or (len(n) >= 6 and digits / len(n) > 0.6)
+
+
+def wd_words(x):
+    return re.sub(r"[\W_]+", " ", str(x).casefold()).strip()
+
+
+async def wikidata_title(client, name, year, kind):
+    """The imdb id of the film or show with this name in any language (and this year when there is one), or None. A candidate needs a description that
+    says it is a film or a show, a name that is the same as the one searched (not just a near one), and the same year when its description has one"""
+    langs = next((l for rx, l in WD_SCRIPTS if re.search(rx, name)), WD_LATIN)
+    want = WD_FILM if kind == "movie" else WD_SERIES
+    n = wd_words(name)
+    for lg in langs:
+        j = await wd_get(client, {"action": "wbsearchentities", "search": name, "language": lg, "uselang": "en", "type": "item", "limit": 8, "format": "json"})
+        if j is None:
+            return None
+        found = j.get("search") or []
+        for x in found:
+            d = x.get("description") or ""
+            if not want.search(d) or not re.fullmatch(r"Q\d{1,12}", x.get("id", "")):
+                continue
+            seen = wd_words((x.get("match") or {}).get("text") or x.get("label") or "")
+            if seen != n:
+                continue
+            yr = re.search(r"\b(1[89]\d\d|20\d\d)\b", d)
+            if year and yr and abs(int(yr.group(1)) - int(year)) > 1:
+                continue
+            if not year and not yr and lg == langs[0] and len(found) > 1 and sum(1 for y in found if wd_words(y.get("label")) == n and want.search(y.get("description") or "")) > 1:
+                continue  # several things with this name and nothing to tell them apart
+            j2 = await wd_get(client, {"action": "wbgetentities", "ids": x["id"], "props": "claims", "format": "json"})
+            if j2 is None:
+                return None
+            claims = (j2.get("entities") or {}).get(x["id"], {}).get("claims", {}).get("P345") or []
+            for c in claims:
+                v = (c.get("mainsnak") or {}).get("datavalue", {}).get("value")
+                if isinstance(v, str) and re.fullmatch(r"tt\d{5,10}", v):
+                    return v
+    return None
+
+
 async def ensure_meta(keys, force=False):
     """Looks up metadata for title keys that arent cached yet, one at a time so cinemeta isnt hammered"""
     if OFFLINE_META:
@@ -927,16 +1021,34 @@ async def ensure_meta(keys, force=False):
                     m = await cinemeta_meta(client, ov["kind"], ov["imdb_id"])
                 elif ov:
                     m = await addon_meta(ov["kind"], ov["imdb_id"])
+                elif junk_name(name):
+                    m = None  # a phone or camera file name (VID_20231105_1234), nothing to look up, it used to be matched to some random title
                 else:
                     m = await cinemeta_lookup(client, kind, name, year)
+                    if m and fit_score(name, m.get("name") or "") < 0.8:
+                        # Cinemeta guessed (Das Leben der Anderen came back as Das Leben der Philosophen), so the name in its own language is tried on
+                        # Wikidata too, and what that finds wins
+                        imdb = await wikidata_title(client, name, year, kind)
+                        better = await cinemeta_meta(client, kind, imdb) if imdb and imdb != m.get("id") else None
+                        if better:
+                            m = better
+                        elif m and fit_score(name, m.get("name") or "") == 0 and year and str(m.get("releaseInfo") or "")[:4].isdigit() \
+                                and abs(int(str(m["releaseInfo"])[:4]) - int(year)) > 1:
+                            m = None  # nothing in common with the name and a different year, a guess at nothing
                     if not m:
                         # Cinemeta only knows imdb titles, so anime and the like get a go through the installed addons
                         hits = [x for x in await addon_search(kind, name, limit_per=3) if x[2].get("id")]
                         if hits:
                             m = await addon_meta(kind, hits[0][2]["id"]) or slim_meta(hits[0][2], kind)
+                    if not m:
+                        imdb = await wikidata_title(client, name, year, kind)  # the name in another language
+                        if imdb:
+                            m = await cinemeta_meta(client, kind, imdb)
             except Exception as e:
                 log.warning("cinemeta lookup failed for %s: %s", name, e)
                 continue
+            if time.time() < WD["pause"] and not junk_name(name) and not ov and (not m or fit_score(name, m.get("name") or "") < 0.8):
+                continue  # Wikidata couldn't be asked just now, so this isn't saved as a guess or as not found, the next scan tries it again
             meta_put(key, m)
             await asyncio.sleep(0.3)
 

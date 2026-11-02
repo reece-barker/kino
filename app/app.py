@@ -576,7 +576,13 @@ def guess_uncached(rel):
 
 
 def title_key(kind, name, year):
-    k = f"{kind}:{norm(name)}"
+    n = norm(name)
+    # A name in another alphabet (Russian, Greek, Japanese and so on) has no a-z in it, so it came out empty or as just its digits and every film
+    # from the same year was merged into one title. Those names are compared by their own letters instead. Names that are Latin (with or
+    # without accents) keep exactly the key they had, so nobody's ratings or lists move
+    if any(c.isalpha() and ord(c) > 0x24F for c in str(name)):
+        n = re.sub(r"[\W_]+", " ", str(name).casefold()).strip()
+    k = f"{kind}:{n}"
     if kind == "movie" and year:
         k += f":{year}"
     return k

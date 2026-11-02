@@ -341,6 +341,18 @@ def client_ip(request):
     return request.headers.get("x-real-ip") or (request.client.host if request.client else "?")
 
 
+async def json_obj(request):
+    """The JSON body of a request, and it has to be an object ({...}). A body that is broken, empty or a list or a number used to get as far as
+    b.get(...) and come back as a 500, now it is a 400 that says what is wrong. The places that wrap this in try and carry on with {} still do"""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "The request didn't have a valid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "The request body has to be a JSON object")
+    return body
+
+
 def sign(*parts):
     return hmac.new(SECRET, ":".join(str(p) for p in parts).encode(), hashlib.sha256).hexdigest()
 
@@ -1304,6 +1316,12 @@ async def unexpected_error(request: Request, exc: Exception):
     more = f"{type(exc).__name__}: {str(exc)[:160]}" if admin_user(request) else type(exc).__name__
     return JSONResponse({"detail": f"Something went wrong on the server ({more})"}, status_code=500)
 
+@app.exception_handler(OverflowError)
+async def too_big(request: Request, exc: OverflowError):
+    # An id like 99999999999999999999999999 doesnt fit in the database, so it cant be one that exists
+    return JSONResponse({"detail": "That doesn't exist"}, status_code=404)
+
+
 CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: https:; style-src 'self' 'unsafe-inline'; "
        "script-src 'self'; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-src https:; frame-ancestors 'none'; "
        "base-uri 'none'; form-action 'self'")
@@ -1633,7 +1651,7 @@ async def profile_select(pid: int, request: Request):
         raise HTTPException(404, "That profile doesn't exist anymore")
     if p["locked"]:
         try:
-            b = await request.json()
+            b = await json_obj(request)
         except Exception:
             b = {}
         keys = pin_guard(request, pid)
@@ -1655,7 +1673,7 @@ PIN_TRIES = {}
 @app.post("/api/profile/pin")
 async def profile_pin(request: Request, p=Depends(current_profile)):
     """Sets, changes or removes this profile's 4 digit code. Changing or removing it needs the old one"""
-    b = await request.json()
+    b = await json_obj(request)
     if p.get("members"):
         raise HTTPException(400, "A joint profile uses the codes of the people in it, change those instead")
     new, old = str(b.get("pin") or ""), str(b.get("old") or "")
@@ -1686,7 +1704,7 @@ async def profile_pin_reset(pid: int, admin=Depends(require_admin)):
 @app.post("/api/profiles/request")
 async def profile_request(request: Request):
     """Someone asks for there own profile, it shows up for the admin to approve"""
-    b = await request.json()
+    b = await json_obj(request)
     if db().q("SELECT COUNT(*) AS n FROM profiles WHERE pending = 1")[0]["n"] >= 5:
         raise HTTPException(429, "There are already a few profiles waiting, ask the admin to look at them")
     if db().q("SELECT COUNT(*) AS n FROM profiles WHERE members IS NULL OR members = ''")[0]["n"] >= 12:
@@ -1748,7 +1766,7 @@ def clean_icon(i):
 
 @app.put("/api/profile")
 async def profile_update(request: Request, p=Depends(current_profile)):
-    b = await request.json()
+    b = await json_obj(request)
     name = clean_name(b.get("name", p["name"]))
     icon = clean_icon(b.get("icon", p["icon"])) if not p.get("members") else p["icon"]
     image = clean_image(b.get("image", p.get("image"))) if not p.get("members") else ""
@@ -1770,7 +1788,7 @@ async def profile_update(request: Request, p=Depends(current_profile)):
 
 @app.post("/api/admin/profiles")
 async def profile_add(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     if db().q("SELECT COUNT(*) AS n FROM profiles WHERE members IS NULL OR members = ''")[0]["n"] >= 12:
         raise HTTPException(400, "That's the maximum of 12 profiles")
     db().q("INSERT INTO profiles (name, icon, prefs, created, kids, image, folder) VALUES (?,?,?,?,?,?,?)",
@@ -1782,7 +1800,7 @@ async def profile_add(request: Request, admin=Depends(require_admin)):
 
 @app.put("/api/admin/profiles/{pid}")
 async def profile_admin_edit(pid: int, request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     if not profile_row(pid):
         raise HTTPException(404, "That profile doesn't exist")
     cur = db().q("SELECT icon, members FROM profiles WHERE id = ?", (pid,))[0]
@@ -1828,7 +1846,7 @@ def drop_profile(pid):
 
 @app.put("/api/admin/folders")
 async def folder_rename(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     old, new = clean_folder(b.get("old")), clean_folder(b.get("new"))
     if not old:
         raise HTTPException(400, "Pick a folder to rename")
@@ -1842,7 +1860,7 @@ async def folder_rename(request: Request, admin=Depends(require_admin)):
 
 @app.post("/api/profiles/joint")
 async def joint_create(request: Request):
-    b = await request.json()
+    b = await json_obj(request)
     try:
         a, c = int(b.get("a")), int(b.get("b"))
     except (TypeError, ValueError):
@@ -1889,7 +1907,7 @@ async def joint_create(request: Request):
 @app.post("/api/profiles/{pid}/check-pin")
 async def profile_check_pin(pid: int, request: Request):
     """Checks someones code without switching to there profile, used when two people join there profiles"""
-    b = await request.json()
+    b = await json_obj(request)
     keys = pin_guard(request, pid)
     code = str(b.get("pin") or "")
     if not re.fullmatch(r"\d{4}", code) or not await asyncio.to_thread(pin_ok, pid, code):
@@ -1906,7 +1924,7 @@ async def joint_split(jid: int, request: Request):
     if not r or not members_of(r[0]):
         raise HTTPException(404, "That isn't a joint profile")
     try:
-        b = await request.json()
+        b = await json_obj(request)
     except Exception:
         b = {}
     if not admin_user(request) and prof_public(r[0])["locked"]:
@@ -2006,7 +2024,7 @@ async def admin_login(request: Request):
     if too_many_fails(ip):
         log.warning("kino login blocked ip=%s", ip)
         raise HTTPException(429, "Too many attempts. Try again in 15 minutes.")
-    body = await request.json()
+    body = await json_obj(request)
     user = str(body.get("username", "")).strip().lower()[:64]
     pw = str(body.get("password", ""))[:256]
     rows = db().q("SELECT pw FROM users WHERE username = ? AND role = 'admin'", (user,))
@@ -2255,7 +2273,7 @@ def continue_list(summ, wm, pid=None):
 
 @app.post("/api/continue/hide")
 async def continue_hide(request: Request, p=Depends(current_profile)):
-    b = await request.json()
+    b = await json_obj(request)
     fid = str(b.get("file_id") or "")
     if fid.startswith("s"):
         key = show_of(stream_row(fid)["video_id"])
@@ -2402,7 +2420,7 @@ async def interests_get(p=Depends(current_profile)):
 
 @app.post("/api/interests")
 async def interests_add(request: Request, p=Depends(current_profile)):
-    b = await request.json()
+    b = await json_obj(request)
     name = re.sub(r"\s+", " ", str(b.get("name") or "")).strip()[:40]
     if len(name) < 2:
         raise HTTPException(400, "Type what you're into, like Heist, Quentin Tarantino or Space")
@@ -3463,7 +3481,7 @@ def set_watched(pid, fids, watched):
 
 @app.post("/api/watched")
 async def watched(request: Request, p=Depends(current_profile)):
-    b = await request.json()
+    b = await json_obj(request)
     if b.get("title_id"):
         t = LIB["titles"].get(b["title_id"])
         if not t:
@@ -3494,8 +3512,11 @@ EXT_RATE_RX = re.compile(r"ext:(movie|series)/(tt\d{5,10})")
 
 @app.post("/api/rate")
 async def rate(request: Request, p=Depends(current_profile)):
-    b = await request.json()
-    tid, v = b.get("title_id"), int(b.get("value") or 0)
+    b = await json_obj(request)
+    try:
+        tid, v = b.get("title_id"), int(b.get("value") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "The rating has to be a number")
     # A title in the library, or one from an addon (kept as ext:movie/tt1234567)
     ext = EXT_RATE_RX.fullmatch(str(tid))
     if (tid not in LIB["titles"] and not ext) or v not in (-1, 0, 1, 2):
@@ -3671,9 +3692,12 @@ async def download(fid: str, u: str, exp: int, sig: str, request: Request):
 
 @app.post("/api/play/{fid}")
 async def play_start(fid: str, request: Request, p=Depends(current_profile)):
-    body = await request.json()
-    t = max(0.0, float(body.get("t") or 0))
-    a = int(body.get("audio") or 0)
+    body = await json_obj(request)
+    try:
+        t = max(0.0, float(body.get("t") or 0))
+        a = int(body.get("audio") or 0)
+    except (TypeError, ValueError, OverflowError):
+        raise HTTPException(400, "The start time and audio track have to be numbers")
     # Audio sync: aresample keeps the sound matched to the video's timestamps (files with gaps or drift go out of
     # sync slowly otherwise), and the player's Audio Sync setting can shift it by hand, positive is later. The filter
     # itself gets made further down once we know where the video starts
@@ -3937,7 +3961,7 @@ async def stream_bad(sid: str, p=Depends(current_profile)):
 
 @app.post("/api/progress")
 async def progress(request: Request, p=Depends(current_profile)):
-    b = await request.json()
+    b = await json_obj(request)
     fid = str(b.get("file_id", ""))
     if fid not in LIB["files"] and not (fid.startswith("s") and db().q("SELECT 1 FROM streams WHERE id = ?", (fid,))):
         raise HTTPException(404, "Unknown file")
@@ -4727,7 +4751,7 @@ async def addons_list(admin=Depends(require_admin)):
 
 @app.post("/api/admin/addons")
 async def addons_add(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     url, base = addon_base(b.get("url"))
     j = await fetch_json(url, ttl=0)
     if not isinstance(j, dict) or not j.get("id") or not isinstance(j.get("resources"), list):
@@ -4744,7 +4768,7 @@ async def addons_add(request: Request, admin=Depends(require_admin)):
 
 @app.put("/api/admin/addons/{aid}")
 async def addons_edit(aid: int, request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     row = db().q("SELECT url, hidden FROM addons WHERE id = ?", (aid,))
     if not row:
         raise HTTPException(404, "That addon isn't installed")
@@ -4926,7 +4950,7 @@ async def addon_subs(fid: str, p=Depends(current_profile)):
 async def player_event(request: Request, p=Depends(current_profile)):
     if not p["prefs"].get("share_events"):
         return {"ok": True, "sent": False}
-    b = await request.json()
+    b = await json_obj(request)
     fid = str(b.get("file_id", ""))
     f = LIB["files"].get(fid)
     if not f and fid.startswith("s"):
@@ -5842,7 +5866,7 @@ async def media_list(q: str = "", sort: str = "size", skip: int = 0, admin=Depen
 
 @app.post("/api/admin/media/delete")
 async def media_delete(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     ids = [str(i) for i in (b.get("ids") or [])][:200]
     freed, done, failed = 0, 0, []
     for fid in ids:
@@ -5925,7 +5949,7 @@ def in_list(pid, key):
 
 @app.post("/api/mylist")
 async def mylist_add(request: Request, p=Depends(current_profile)):
-    b = await request.json()
+    b = await json_obj(request)
     if b.get("title_id"):
         t = LIB["titles"].get(b["title_id"])
         if not t:
@@ -5996,7 +6020,7 @@ def mylist_checked(pid, key):
 # ---------------------------------------------------------------- admin: kids rules and storage review
 @app.post("/api/admin/kids")
 async def kids_rule(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     key = str(b.get("key") or "")[:100]
     if not key:
         raise HTTPException(400, "Unknown title")
@@ -6069,7 +6093,7 @@ CLIENT_LOG = deque(maxlen=60)
 @app.post("/api/clientlog")
 async def clientlog(request: Request):
     try:
-        b = await request.json()
+        b = await json_obj(request)
     except Exception:
         b = {}
     me = cookie_profile(request)
@@ -6164,7 +6188,7 @@ async def gate_request(request: Request):
     t = device_token(request)
     if not t:
         raise HTTPException(400, "Reload the page and try again")
-    b = await request.json()
+    b = await json_obj(request)
     name = re.sub(r"\s+", " ", str(b.get("name") or "")).strip()[:40] or "Unnamed device"
     db().q("DELETE FROM devices WHERE status = 'pending' AND created < ?", (time.time() - 7 * 86400,))
     if db().q("SELECT COUNT(*) AS n FROM devices WHERE status = 'pending'")[0]["n"] >= 30:
@@ -6195,7 +6219,7 @@ async def devices_list(request: Request, admin=Depends(require_admin)):
 @app.post("/api/admin/devices")
 async def devices_approve(request: Request, admin=Depends(require_admin)):
     """Approves a device by the code it shows, or this device when this is set"""
-    b = await request.json()
+    b = await json_obj(request)
     name = str(b.get("name") or "").strip()[:40]
     if b.get("this"):
         t = device_token(request)
@@ -6216,7 +6240,7 @@ async def devices_approve(request: Request, admin=Depends(require_admin)):
 
 @app.put("/api/admin/devices/{did}")
 async def devices_edit(did: str, request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     if b.get("status") in ("allowed", "denied"):
         db().q("UPDATE devices SET status = ? WHERE id = ?", (b["status"], did))
     if b.get("name"):
@@ -6250,7 +6274,7 @@ def resolve_saved(p, rows, summ):
 
 @app.post("/api/search/recent")
 async def search_recent_add(request: Request, p=Depends(current_profile)):
-    b = await request.json()
+    b = await json_obj(request)
     if b.get("title_id"):
         t = LIB["titles"].get(b["title_id"])
         if not t:
@@ -6452,7 +6476,7 @@ async def match_search(q: str, kind: str = "movie", admin=Depends(require_admin)
 
 @app.post("/api/admin/match")
 async def match_set(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     t = LIB["titles"].get(b.get("title_id"))
     kind, imdb = b.get("kind"), str(b.get("imdb_id") or "")
     if not t or kind not in ("movie", "series") or not re.fullmatch(r"[A-Za-z0-9:_.-]{2,80}", imdb):
@@ -6526,7 +6550,7 @@ async def delete_title(tid: str, admin=Depends(require_admin)):
 
 @app.post("/api/admin/intro")
 async def intro_set(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     t = LIB["titles"].get(b.get("title_id"))
     start, end = float(b.get("start") or 0), float(b.get("end") or 0)
     if not t or b.get("season") is None or not 0 <= start < end or end - start > 300:
@@ -6563,7 +6587,7 @@ async def allowlist_get(request: Request, admin=Depends(require_admin)):
 
 @app.post("/api/admin/allowlist")
 async def allowlist_add(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     try:
         net = ipaddress.ip_network(str(b.get("cidr", "")).strip(), strict=False)
     except ValueError:
@@ -6639,7 +6663,7 @@ async def sync_status(admin=Depends(require_admin)):
 async def sync_action(action: str, request: Request, admin=Depends(require_admin)):
     body = {}
     try:
-        body = await request.json()
+        body = await json_obj(request)
     except Exception:
         pass
     if action in ("start", "retry"):
@@ -6817,7 +6841,7 @@ async def stress_run(n, secs, conv_pct):
 async def stress_start(request: Request, admin=Depends(require_admin)):
     if STRESS.get("state") == "running":
         raise HTTPException(409, "A stress test is already running")
-    b = await request.json()
+    b = await json_obj(request)
     n = max(1, min(40, int(b.get("viewers") or 20)))
     secs = max(15, min(300, int(b.get("seconds") or 60)))
     pct = max(0, min(100, int(b.get("converted") if b.get("converted") is not None else 50)))
@@ -7871,7 +7895,7 @@ async def live_filter_get(admin=Depends(require_admin)):
 
 @app.put("/api/admin/live/filter")
 async def live_filter_set(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     cats = [c for c in (b.get("cats") or []) if c in JUNK]
     words = []
     for w in (b.get("words") or [])[:50]:
@@ -8164,7 +8188,7 @@ async def rec_worker():
 async def rec_add(request: Request, p=Depends(current_profile)):
     if p.get("kids"):
         raise HTTPException(403, "Kids profiles can't record")
-    b = await request.json()
+    b = await json_obj(request)
     cid = str(b.get("cid") or "")[:40]
     if cid.startswith("c"):
         row = db().q("SELECT name FROM channels WHERE id = ?", (cid,))
@@ -8452,7 +8476,7 @@ def embed_form(b):
 async def embed_test(request: Request, admin=Depends(require_admin)):
     """Reads the list with these settings and shows what came out, without saving anything. Also shows the start of
     the JSON and the fields of the first item, so its easy to see what to put in the boxes"""
-    src = embed_form(await request.json())
+    src = embed_form(await json_obj(request))
     try:
         raw, _ = await live_get(src["url"], max_bytes=20 * 1024**2, timeout=30)
     except HTTPException:
@@ -8500,7 +8524,7 @@ async def embed_test(request: Request, admin=Depends(require_admin)):
 
 @app.post("/api/admin/embeds")
 async def embed_add(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     src = embed_form(b)
     name = str(b.get("name") or "").strip()[:60] or urlparse(src["url"]).hostname
     items = await embed_list(src, fresh=True)
@@ -8514,7 +8538,7 @@ async def embed_add(request: Request, admin=Depends(require_admin)):
 
 @app.put("/api/admin/embeds/{eid}")
 async def embed_edit(eid: int, request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     if "enabled" in b:
         db().q("UPDATE embed_sources SET enabled = ? WHERE id = ?", (1 if b["enabled"] else 0, eid))
     return {"ok": True}
@@ -8541,7 +8565,7 @@ async def live_admin(admin=Depends(require_admin)):
 
 @app.post("/api/admin/live")
 async def live_admin_add(request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     url = str(b.get("url") or "").strip()
     epg = str(b.get("epg") or "").strip() or None
     pluto = url.lower() == "pluto://gb"
@@ -8578,7 +8602,7 @@ async def live_admin_refresh(lid: int, admin=Depends(require_admin)):
 
 @app.put("/api/admin/live/{lid}")
 async def live_admin_edit(lid: int, request: Request, admin=Depends(require_admin)):
-    b = await request.json()
+    b = await json_obj(request)
     if "enabled" in b:
         db().q("UPDATE iptv_lists SET enabled = ? WHERE id = ?", (1 if b["enabled"] else 0, lid))
     if "epg" in b:

@@ -198,6 +198,9 @@ CREATE TABLE IF NOT EXISTS recordings (id INTEGER PRIMARY KEY AUTOINCREMENT, pro
 CREATE TABLE IF NOT EXISTS embed_sources (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, player TEXT, enabled INTEGER DEFAULT 1, added REAL, error TEXT);
 CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind TEXT, video_id TEXT, name TEXT, label TEXT,
     addon TEXT, poster TEXT, year TEXT, added REAL);
+CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, ref TEXT, kind TEXT, name TEXT, sub TEXT, title_id TEXT,
+  device TEXT, ip TEXT, started REAL, last REAL, secs REAL DEFAULT 0, pos REAL, dur REAL);
+CREATE INDEX IF NOT EXISTS activity_last ON activity (last);
 """
 
 
@@ -569,7 +572,10 @@ def cookie_profile(request):
     e = pin_epoch(int(pid))
     if not hmac.compare_digest(sig, sign("profile", f"{pid}:{e}" if e else int(pid), browser_key(request))[:32]):
         return None
-    return profile_row(int(pid))
+    row = profile_row(int(pid))
+    if row:
+        presence_touch(request, row["id"])
+    return row
 
 
 def current_profile(request: Request):
@@ -4115,6 +4121,7 @@ async def progress(request: Request, p=Depends(current_profile)):
     done = 1 if dur and pos / dur > 0.93 else 0
     put_watch(p["id"], fid, pos, dur, done)
     note_playing(p["id"], fid, pos, dur, done, request)
+    act_touch(p["id"], fid, request, pos, dur)
     # A paused player stops fetching segments, but the progress still comes in, so that keeps its converted stream from being
     # reaped after 90 seconds (it used to die and the movie broke a minute after pressing resume)
     owner = f"p{p['id']}"
@@ -4170,6 +4177,156 @@ async def nowplaying(request: Request, p=Depends(current_profile)):
         return {"playing": None}
     return {"playing": {"fid": fid, "tid": tid, "name": name, "sub": sub, "pos": e["pos"], "dur": e["dur"], "device": e["label"], "started": e["started"],
                         "ago": int(time.time() - e["updated"])}}
+
+
+# ---- activity (admin only)
+# Who is on Kino and what they watch. One row is one stretch of watching, the same profile, device and video, with gaps under 5 minutes joined
+# together. Time only counts while the picture is moving (the position went up, or for live tv the playlist is still being fetched)
+ACT_GAP = 5 * 60
+ACT_KEEP_DAYS = 90
+ACT_OPEN = {}  # (profile, device, ref) -> the row being added to
+PRESENCE = {}  # (profile, device) -> when this device last asked for anything, and what it is
+ACT_PURGED = [0.0]
+
+
+def act_describe(ref):
+    """(name, sub, title id, kind) for a library file, an addon stream or a live channel"""
+    if ref.startswith("live:"):
+        cid = ref[5:]
+        r = db().q("SELECT name FROM channels WHERE id = ?", (cid,)) if cid.startswith("c") else None
+        return (r[0]["name"] if r else "a live channel"), "", None, "live"
+    if ref in LIB["files"]:
+        f = LIB["files"][ref]
+        t = LIB["titles"].get(f["title_id"])
+        name, tid = "a video", None
+        if t:
+            name, tid = (meta_light(t) or {}).get("name") or t["guess_name"], t["id"]
+        ep = f.get("season") is not None and f.get("episode") is not None
+        return name, (f"Season {f['season']}, episode {f['episode']}" if ep else ""), tid, "episode" if ep else "movie"
+    r = db().q("SELECT name FROM streams WHERE id = ?", (ref,)) if ref.startswith("s") else None
+    return (r[0]["name"] if r and r[0]["name"] else "a video"), "", None, "stream"
+
+
+def act_touch(pid, ref, request, pos=None, dur=None):
+    """Called for every progress report and every live playlist fetch. Writes to the database at most every 10 seconds per stretch"""
+    now = time.time()
+    dev = tok_hash(browser_key(request))[:16]
+    key = (pid, dev, ref)
+    s = ACT_OPEN.get(key)
+    if s and now - s["last"] > ACT_GAP:
+        s = None
+    if not s:
+        name, sub, tid, kind = act_describe(ref)
+        db().q("INSERT INTO activity (profile_id, ref, kind, name, sub, title_id, device, ip, started, last, secs, pos, dur) VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?)",
+               (pid, ref, kind, name, sub, tid, ua_family(request.headers.get("user-agent")), client_ip(request), now, now, pos, dur))
+        rid = db().q("SELECT last_insert_rowid() AS i")[0]["i"]
+        s = ACT_OPEN[key] = {"id": rid, "last": now, "secs": 0.0, "pos": pos, "wrote": now, "playing": pos is None}
+        if len(ACT_OPEN) > 500:
+            for k in [k for k, v in ACT_OPEN.items() if now - v["last"] > ACT_GAP]:
+                ACT_OPEN.pop(k, None)
+    else:
+        gap = min(now - s["last"], 30.0)
+        if pos is None:
+            s["playing"] = True
+            s["secs"] += gap
+        else:
+            # A progress report is every few seconds, if the position moved forward it is playing, if not it is paused
+            s["playing"] = s["pos"] is not None and pos > s["pos"] + 0.5
+            if s["playing"]:
+                s["secs"] += gap
+            s["pos"] = pos
+        s["last"] = now
+        if now - s["wrote"] >= 10:
+            s["wrote"] = now
+            db().q("UPDATE activity SET last = ?, secs = ?, pos = ?, dur = ? WHERE id = ?", (now, s["secs"], pos, dur, s["id"]))
+    if now - ACT_PURGED[0] > 3600:
+        ACT_PURGED[0] = now
+        db().q("DELETE FROM activity WHERE last < ?", (now - ACT_KEEP_DAYS * 86400,))
+
+
+def presence_touch(request, pid):
+    now = time.time()
+    dev = tok_hash(browser_key(request))[:16]
+    PRESENCE[(pid, dev)] = {"last": now, "label": ua_family(request.headers.get("user-agent")), "ip": client_ip(request)}
+    if len(PRESENCE) > 500:
+        for k in [k for k, v in PRESENCE.items() if now - v["last"] > 3600]:
+            PRESENCE.pop(k, None)
+
+
+ACT_ACTIVE_SECS = 5 * 60  # asked for something in this long counts as on Kino right now
+ACT_WATCHING_SECS = 60  # a player reports every few seconds, longer than this and it is closed
+
+
+@app.get("/api/admin/activity")
+async def admin_activity(days: int = 7, admin=Depends(require_admin)):
+    now = time.time()
+    days = max(1, min(int(days), ACT_KEEP_DAYS))
+    names = {r["id"]: r for r in db().q("SELECT id, name, icon, kids FROM profiles")}
+    # Rows still open in memory are newer than what was last written to the database
+    live = {}
+    for (pid, dev, ref), s in ACT_OPEN.items():
+        live[s["id"]] = s
+    now_list = {}
+    for (pid, dev), v in PRESENCE.items():
+        if now - v["last"] > ACT_ACTIVE_SECS or pid not in names:
+            continue
+        e = now_list.setdefault(pid, {"id": pid, "name": names[pid]["name"], "icon": names[pid]["icon"], "kids": bool(names[pid]["kids"]),
+                                      "devices": [], "last": 0, "watching": None})
+        e["devices"].append({"label": v["label"], "ip": v["ip"], "last": v["last"]})
+        e["last"] = max(e["last"], v["last"])
+    for (pid, dev, ref), s in ACT_OPEN.items():
+        if now - s["last"] > ACT_WATCHING_SECS or pid not in now_list:
+            continue
+        row = db().q("SELECT name, sub, kind, device, started, dur FROM activity WHERE id = ?", (s["id"],))
+        if row:
+            r = row[0]
+            w = {"name": r["name"], "sub": r["sub"], "kind": r["kind"], "device": r["device"], "started": r["started"], "secs": round(s["secs"]),
+                 "pos": s["pos"], "dur": r["dur"], "paused": not s["playing"]}
+            if not now_list[pid]["watching"] or w["started"] > now_list[pid]["watching"]["started"]:
+                now_list[pid]["watching"] = w
+    since = now - days * 86400
+    rows = [dict(r) for r in db().q("SELECT * FROM activity WHERE last >= ? ORDER BY last DESC LIMIT 2000", (since,))]
+    for r in rows:
+        s = live.get(r["id"])
+        if s:
+            r["secs"], r["last"] = s["secs"], s["last"]
+    per = {}
+    for r in rows:
+        if not r["secs"] or r["secs"] < 30:
+            continue
+        pid = r["profile_id"]
+        e = per.setdefault(pid, {"id": pid, "name": (names.get(pid) or {"name": "Removed profile"})["name"], "icon": (names.get(pid) or {"icon": 0})["icon"],
+                                 "secs": 0, "plays": 0, "last": 0, "titles": {}})
+        e["secs"] += r["secs"]
+        e["plays"] += 1
+        e["last"] = max(e["last"], r["last"])
+        e["titles"][r["name"]] = e["titles"].get(r["name"], 0) + r["secs"]
+    people = []
+    for e in sorted(per.values(), key=lambda e: -e["secs"]):
+        top = max(e["titles"].items(), key=lambda kv: kv[1])[0] if e["titles"] else ""
+        people.append({"id": e["id"], "name": e["name"], "icon": e["icon"], "secs": round(e["secs"]), "plays": e["plays"], "last": e["last"], "top": top})
+    # Watch time per day for the strip along the top, by the server's own days
+    by_day = {}
+    for r in rows:
+        if (r["secs"] or 0) < 30:
+            continue
+        d = time.strftime("%Y-%m-%d", time.localtime(r["started"]))
+        by_day[d] = by_day.get(d, 0) + (r["secs"] or 0)
+    strip = []
+    for i in range(days - 1, -1, -1):
+        d = time.strftime("%Y-%m-%d", time.localtime(now - i * 86400))
+        strip.append({"day": d, "secs": round(by_day.get(d, 0))})
+    recent = [{"profile": (names.get(r["profile_id"]) or {"name": "Removed profile"})["name"], "icon": (names.get(r["profile_id"]) or {"icon": 0})["icon"],
+               "name": r["name"], "sub": r["sub"], "kind": r["kind"], "title_id": r["title_id"], "device": r["device"], "ip": r["ip"],
+               "started": r["started"], "last": r["last"], "secs": round(r["secs"] or 0)} for r in rows if (r["secs"] or 0) >= 30][:80]
+    return {"now": sorted(now_list.values(), key=lambda e: -e["last"]), "people": people, "strip": strip, "recent": recent, "days": days, "keep_days": ACT_KEEP_DAYS}
+
+
+@app.post("/api/admin/activity/clear")
+async def admin_activity_clear(admin=Depends(require_admin)):
+    db().q("DELETE FROM activity")
+    ACT_OPEN.clear()
+    return {"ok": True}
 
 
 # ---- images
@@ -8188,6 +8345,7 @@ async def live_play(cid: str, request: Request, p=Depends(current_profile)):
     try:
         res = await live_play_inner(cid, request, p)
         await asyncio.to_thread(note_live_play, p["id"], cid)
+        await asyncio.to_thread(act_touch, p["id"], "live:" + cid, request)
         return res
     except HTTPException as e:
         LIVE_ERR[cid] = (time.time(), str(e.detail)[:200])

@@ -471,7 +471,7 @@
     const main = [["search", "Search", "search"], ["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"],
       ...(F.live ? [["live", "Live TV", "live"]] : []), ["mylist", "My List", "bookmark"], ["alerts", "Alerts", "bell"]];
     const group = [["settings", "Settings", "gear"], ["history", "History", "clock"]];
-    if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["health", "Library Health", "info"], ["server", "Server", "server"]);
+    if (isAdmin()) group.push(["sync", "Sync", "refresh"], ["health", "Library Health", "info"], ["activity", "Activity", "eye"], ["server", "Server", "server"]);
     chrome.innerHTML = `<aside class="side" id="side" aria-label="Kino">
       <span class="side-shine" aria-hidden="true"></span>
       <div class="menu-wrap side-top">
@@ -504,10 +504,10 @@
   // Moves the highlight pill to the current page with a spring, like the selection on apple tv
   function setActive(active) {
     SIDE_ACTIVE = active;
-    const inGroup = ["settings", "history", "sync", "health", "server"].includes(active);
+    const inGroup = ["settings", "history", "sync", "health", "activity", "server"].includes(active);
     if (inGroup) { const g = $("#sideGroup"); if (g && !g.classList.contains("open")) toggleGroup(true, false); }
     $$("#chrome [data-k]").forEach((a) => {
-      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "alerts", "settings", "history", "sync", "health", "server"].includes(active));
+      const on = a.dataset.k === active || (a.dataset.k === "more" && ["mylist", "alerts", "settings", "history", "sync", "health", "activity", "server"].includes(active));
       on ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
     });
     placePill();
@@ -591,7 +591,7 @@
       const row = (href, icon, label) => `<a class="more-row" href="${href}" data-close>${ic(icon)}<span>${label}</span>${ic("chevron")}</a>`;
       const sh = sheet(`<div class="more-head">${pav(p, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
         <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/alerts", "bell", "Alerts")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
-          ${isAdmin() ? row("#/sync", "refresh", "Sync") + row("#/health", "info", "Library Health") + row("#/server", "server", "Server") : ""}
+          ${isAdmin() ? row("#/sync", "refresh", "Sync") + row("#/health", "info", "Library Health") + row("#/activity", "eye", "Activity") + row("#/server", "server", "Server") : ""}
           ${row("#/profiles", "people", "Switch Profile")}</div>
         <div class="menu-label">Appearance</div>${themePicker("sheetTheme")}
         ${kidsMode() ? "" : `<div class="actions end" style="margin-top:18px">${isAdmin() ? `<button class="btn secondary small" id="mAdminOut">Sign Out of Admin</button>` : `<button class="btn secondary small" id="mAdminIn">${ic("lock")} Admin Sign In</button>`}</div>`}`);
@@ -3891,6 +3891,46 @@
         <div class="list">${r.same_show.map((g) => `<div class="li"><span class="grow" style="display:block;white-space:normal;overflow:visible;overflow-wrap:anywhere"><b>${esc(g.matched || "")}</b><br>${g.titles.map((t) => `${link(t.id, t.name)} <span class="secondary">${t.files} file${t.files === 1 ? "" : "s"}</span>`).join("<br>")}</span></div>`).join("")}</div></section>` : ""}`;
   }
 
+  // ---- activity: who is on Kino and what they are watching (admin)
+  async function pageActivity() {
+    const n = ROUTE_N;
+    let days = 7;
+    app.innerHTML = topbar("activity") + `<main class="page narrow"><h1 class="large-title">Activity</h1><div id="acBody"><div class="card skel" style="height:220px"></div></div></main>`;
+    wireTopbar();
+    const draw = async () => {
+      const r = await api("/api/admin/activity?days=" + days);
+      if (n !== ROUTE_N) return;
+      const kind = { live: "Live TV", episode: "Episode", movie: "Movie", stream: "Online source" };
+      const nameLink = (x) => x.title_id ? `<a class="plain-link" href="#/title/${esc(x.title_id)}">${esc(x.name)}</a>` : esc(x.name);
+      const peak = Math.max(1, ...r.strip.map((d) => d.secs));
+      const dayName = (d) => new Date(d + "T12:00:00").toLocaleDateString([], { weekday: "short" });
+      const body = `<div class="actions" style="margin:0 0 12px"><select class="plain" id="acDays" aria-label="Time range">${[[1, "Last 24 hours"], [7, "Last 7 days"], [30, "Last 30 days"], [r.keep_days, `Last ${r.keep_days} days`]].map(([v, l]) => `<option value="${v}" ${v === days ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        <section class="card set-card"><h2 class="set-title">On Kino Now</h2>
+          ${r.now.length ? `<div class="list">${r.now.map((x) => `<div class="li ac-li">${avatar(x.icon, "sm")}<span class="grow ac-text"><b>${esc(x.name)}</b>${x.kids ? ` <span class="secondary">Kids</span>` : ""}<br>${x.watching
+            ? `<span>${x.watching.paused ? "Paused" : "Watching"} ${esc(x.watching.name)}${x.watching.sub ? `, ${esc(x.watching.sub)}` : ""}</span><br><span class="secondary">${esc(x.watching.device.replace("/", " on "))} · for ${esc(dur(x.watching.secs))}${x.watching.dur ? ` · ${Math.min(100, Math.round(100 * x.watching.pos / x.watching.dur))}% through` : ""}</span>`
+            : `<span class="secondary">Browsing · ${esc(ago(x.last))} · ${esc(x.devices.map((d) => d.label.replace("/", " on ")).join(", "))}</span>`}</span></div>`).join("")}</div>`
+            : `<p class="secondary">Nobody is on Kino right now.</p>`}</section>
+        <section class="card set-card"><h2 class="set-title">Watch Time</h2>
+          <div class="ac-strip" role="img" aria-label="Watch time per day">${r.strip.map((d) => `<div class="ac-day" title="${esc(d.day)}: ${esc(dur(d.secs))}"><span class="ac-bar" style="height:${Math.max(2, Math.round(100 * d.secs / peak))}%"></span>${r.strip.length <= 14 ? `<span class="ac-lbl">${esc(dayName(d.day))}</span>` : ""}</div>`).join("")}</div>
+          ${r.people.length ? `<div class="list">${r.people.map((x) => `<div class="li ac-li">${avatar(x.icon, "sm")}<span class="grow ac-text"><b>${esc(x.name)}</b><br><span class="secondary">${esc(dur(x.secs))} in ${x.plays} play${x.plays === 1 ? "" : "s"}${x.top ? ` · most: ${esc(x.top)}` : ""} · last ${esc(ago(x.last))}</span></span></div>`).join("")}</div>` : `<p class="secondary">Nothing watched in this time.</p>`}</section>
+        <section class="card set-card"><h2 class="set-title">Recent Plays</h2><p class="secondary set-hint">Only plays of 30 seconds or more. Time counts while the picture is moving, not while it is paused.</p>
+          ${r.recent.length ? `<div class="list">${r.recent.map((x) => `<div class="li ac-li">${avatar(x.icon, "sm")}<span class="grow ac-text"><b>${nameLink(x)}</b>${x.sub ? ` <span class="secondary">${esc(x.sub)}</span>` : ""}<br><span class="secondary">${esc(x.profile)} · ${esc(kind[x.kind] || "")} · ${esc(dur(x.secs))} · ${esc(x.device.replace("/", " on "))} · ${esc(ago(x.last))}</span></span></div>`).join("")}</div>` : `<p class="secondary">Nothing yet.</p>`}</section>
+        <section class="card set-card"><h2 class="set-title">Privacy</h2><p class="secondary set-hint">Only admins can see this page. Plays are kept for ${r.keep_days} days, then deleted by themselves.</p>
+          <div class="actions"><button class="btn secondary small" id="acClear">Clear Activity</button></div></section>`;
+      const box = $("#acBody");
+      if (!box) return;
+      box.innerHTML = body;
+      $("#acDays").onchange = (e) => { days = +e.target.value; draw(); };
+      $("#acClear").onclick = async () => {
+        if (!(await confirmSheet("Clear activity?", "This deletes the list of who watched what. It does not touch anyone's watch history or Continue Watching.", "Clear"))) return;
+        await api("/api/admin/activity/clear", {});
+        toast("Activity cleared");
+        draw();
+      };
+    };
+    startPoll(draw, 10000);
+  }
+
   // ---- alerts: new episodes and new seasons of shows this profile follows
   const ALERTS = { n: 0 };
   async function alertsRefresh() {
@@ -5718,7 +5758,7 @@
     const row = (cls, n) => `<section class="shelf"><div class="sk sk-line" style="width:180px"></div><div class="row posters">${tiles(n, cls)}</div></section>`;
     if (page === "home" || !page) return `<div class="sk sk-hero"></div><main class="page under-hero">${row("sk-wide", 4)}${row("sk-poster", 7)}</main>`;
     if (page === "title" || page === "discover") return `<div class="sk sk-hero short"></div><main class="page under-hero">${row("sk-wide", 4)}</main>`;
-    if (page === "settings" || page === "history" || page === "alerts" || page === "sync" || page === "health" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
+    if (page === "settings" || page === "history" || page === "alerts" || page === "sync" || page === "health" || page === "activity" || page === "server") return `<main class="page narrow"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></main>`;
     if (page === "search") return `<main class="page"><div class="sk sk-search"></div><div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="grid">${tiles(12)}</div></main>`;
     return `<main class="page"><div class="sk sk-title"></div><div class="grid">${tiles(14)}</div></main>`;
   }
@@ -5775,6 +5815,7 @@
       else if (page === "alerts") await pageAlerts();
       else if (page === "settings") await pageSettings();
       else if (page === "health" && isAdmin()) await pageHealth();
+      else if (page === "activity" && isAdmin()) await pageActivity();
       else if (page === "history") await pageHistory();
       else if (page === "sync" && isAdmin()) await pageSync();
       else if (page === "server" && isAdmin()) await pageServer();

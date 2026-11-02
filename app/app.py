@@ -107,7 +107,17 @@ KIND_DIRS = {"torrents", "webdl", "usenet"}
 IMG_HOSTS = {"images.metahub.space", "episodes.metahub.space", "live.metahub.space",
              "m.media-amazon.com", "image.tmdb.org"}
 SESSION_DAYS = 30  # how long the admin cookie may stay in the browser, the sign in itself ends much sooner, see ADMIN_IDLE_HOURS
-ADMIN_IDLE_HOURS = float(env("ADMIN_IDLE_HOURS", "12"))  # an admin sign in ends this long after it was last used
+def hours_env(name, default, lo, hi):
+    """A number of hours from the environment, kept inside sensible limits. Junk (an empty line, x, nan, inf) uses the default instead of stopping Kino from starting"""
+    try:
+        v = float(env(name, str(default)))
+    except (TypeError, ValueError):
+        return float(default)
+    return float(default) if v != v or v in (float("inf"), float("-inf")) else max(lo, min(hi, v))
+
+
+ADMIN_IDLE_HOURS = hours_env("ADMIN_IDLE_HOURS", 12, 0.25, 720)  # an admin sign in ends this long after it was last used for something
+ADMIN_MAX_HOURS = hours_env("ADMIN_MAX_HOURS", 168, 1, 720)  # and never lasts longer than this in total, however much it is used
 AVATAR_COUNT = 36  # Has to match the AVATARS list in app.js
 DEFAULT_PREFS = {"audio_lang": "English", "still_watching": 0, "load_stats": True, "sub_lang": "", "sub_size": "m", "autoplay": True, "skip_intro": False, "share_events": False, "blur_watched": False, "auto_next_source": False, "live_all_countries": False, "live_english": True, "previews": True, "preview_sound": True}
 
@@ -465,7 +475,7 @@ def admin_user(request):
     tok = request.cookies.get("kino_admin")
     if not tok:
         return None
-    rows = db().q("SELECT s.username, s.expires, s.device, s.profile_id FROM sessions s JOIN users u ON u.username = s.username "
+    rows = db().q("SELECT s.username, s.expires, s.device, s.profile_id, s.created FROM sessions s JOIN users u ON u.username = s.username "
                   "WHERE s.token_hash = ? AND u.role = 'admin'", (tok_hash(tok),))
     now = time.time()
     if not rows or rows[0]["expires"] < now:
@@ -478,10 +488,11 @@ def admin_user(request):
         cur = cookie_profile(request)
         if cur and cur["id"] != rows[0]["profile_id"]:
             return None
-    # Each use pushes the end out again, so it ends after ADMIN_IDLE_HOURS of not being used, not that long after signing in
+    # Something being done (a save, a delete, any change) pushes the end out again, so it ends after ADMIN_IDLE_HOURS of not being used. Only changes count,
+    # a page left open polls in the background every few seconds (Home, Server) and that must not keep admin alive. And it has an end however much it is used
     idle = ADMIN_IDLE_HOURS * 3600
-    if rows[0]["expires"] - now < idle / 2:
-        db().q("UPDATE sessions SET expires = ? WHERE token_hash = ?", (now + idle, tok_hash(tok)))
+    if request.method != "GET" and rows[0]["expires"] - now < idle / 2:
+        db().q("UPDATE sessions SET expires = ? WHERE token_hash = ?", (min(now + idle, (rows[0]["created"] or now) + ADMIN_MAX_HOURS * 3600), tok_hash(tok)))
     return rows[0]["username"]
 
 
@@ -1677,6 +1688,10 @@ async def profile_select(pid: int, request: Request):
             pin_fail(keys)
             raise HTTPException(403, "That code isn't right")
         pin_pass(keys)
+    # An admin that signed in with no profile open (the picker) belongs to the first profile opened after that, not to every profile
+    tok = request.cookies.get("kino_admin")
+    if tok and admin_user(request):
+        db().q("UPDATE sessions SET profile_id = ? WHERE token_hash = ? AND profile_id IS NULL", (pid, tok_hash(tok)))
     resp = JSONResponse({"ok": True, "profile": p})
     set_cookie(resp, "kino_profile", profile_cookie(pid, request), 365 * 86400)
     return resp

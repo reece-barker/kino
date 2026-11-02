@@ -659,6 +659,8 @@
       } else res = await api(`/api/profiles/${p.id}/select`, {});
       closeSheet();
       ME.profile = res.profile; ME.features = null;
+      // Admin belongs to one profile, so what is admin has to be asked again after switching
+      try { ME.admin = (await api("/api/me")).admin || null; } catch (_) {}
       location.hash = "#/home";
       if (location.hash === "#/home") route();
     };

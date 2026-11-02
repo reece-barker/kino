@@ -200,6 +200,7 @@ CREATE TABLE IF NOT EXISTS streams (id TEXT PRIMARY KEY, url TEXT NOT NULL, kind
     addon TEXT, poster TEXT, year TEXT, added REAL);
 CREATE TABLE IF NOT EXISTS certs (imdb TEXT PRIMARY KEY, cert TEXT, fetched REAL);
 CREATE TABLE IF NOT EXISTS ai_usage (month TEXT PRIMARY KEY, calls INTEGER, in_tok INTEGER, out_tok INTEGER, usd REAL);
+CREATE TABLE IF NOT EXISTS ext_meta (key TEXT PRIMARY KEY, data TEXT, at REAL);
 CREATE TABLE IF NOT EXISTS embeds (key TEXT PRIMARY KEY, h TEXT, vec BLOB, at REAL);
 CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, ref TEXT, kind TEXT, name TEXT, sub TEXT, title_id TEXT,
   device TEXT, ip TEXT, started REAL, last REAL, secs REAL DEFAULT 0, pos REAL, dur REAL);
@@ -1420,7 +1421,7 @@ async def lifespan(app):
                 log.exception("making alerts failed")  # never lets alerts stop the library scan
             await asyncio.sleep(RESCAN_MINUTES * 60)
 
-    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker, rec_worker, cert_worker)]
+    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker, rec_worker, cert_worker, ext_worker)]
     yield
     for t in tasks:
         t.cancel()
@@ -3965,9 +3966,32 @@ def sem_doc(t, m):
     return ". ".join(x.rstrip(". ") for x in parts if x)
 
 
-def sem_sync():
-    """Makes the numbers for every title that has none yet (or whose details changed), then loads them all for searching. Runs on a thread
-    after each library scan, it does nothing when nothing changed"""
+def ext_doc(m):
+    """The same kind of text as sem_doc, for a title that only an addon lists (m is the details kept in ext_meta)"""
+    head = ("TV series. " if m.get("type") == "series" else "Film. ") + str(m.get("name") or "")
+    year = str(m.get("releaseInfo") or "")[:4]
+    parts = [head + (f" ({year})" if year.isdigit() else "")]
+    if m.get("genres"):
+        parts.append(", ".join(str(g) for g in m["genres"][:5]))
+    if m.get("description"):
+        parts.append(str(m["description"])[:900])
+    return ". ".join(x.rstrip(". ") for x in parts if x)
+
+
+def sem_publish(docs, hashes):
+    """Loads the saved numbers of every title in docs (made with the current model) so they can be searched"""
+    import numpy as np
+    rows = [r for r in db().q("SELECT key, h, vec FROM embeds") if r["key"] in docs and r["h"] == hashes[r["key"]]]
+    if rows:
+        mat = np.vstack([np.frombuffer(r["vec"], dtype="float32") for r in rows])
+        mat = mat / np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9)
+        SEM.update(keys=[r["key"] for r in rows], mat=mat)
+
+
+def sem_sync(fill_ext=False):
+    """Makes the numbers for every library title that has none yet (or whose details changed), then loads them all for searching. Runs on a thread
+    after each library scan, it does nothing when nothing changed. Titles that only the addons list (ext_meta) are searched too, but their numbers
+    are only made when fill_ext is set (by ext_index_refresh, it takes minutes the first time) and what is done so far can be searched meanwhile"""
     import numpy as np
     if not SEM_ON or not SEM["build"].acquire(blocking=False):
         return
@@ -3978,10 +4002,19 @@ def sem_sync():
             if m:
                 docs[t["key"]] = sem_doc(t, m)
         SEM["genres"] = {t["key"]: {str(g).lower() for g in (meta_light(t) or {}).get("genres") or []} for t in list(LIB["titles"].values())}
+        ext_keys = set()
+        for r in db().q("SELECT key, data FROM ext_meta"):
+            try:
+                m = json.loads(r["data"])
+            except ValueError:
+                continue
+            docs[r["key"]] = ext_doc(m)
+            SEM["genres"][r["key"]] = {str(g).lower() for g in m.get("genres") or []}
+            ext_keys.add(r["key"])
         hashes = {k: hashlib.sha1(f"{SEM_MODEL}|{d}".encode()).hexdigest()[:16] for k, d in docs.items()}  # the model is part of it, numbers from another model dont fit
         have = {r["key"]: r["h"] for r in db().q("SELECT key, h FROM embeds")}
-        todo = [k for k in docs if have.get(k) != hashes[k]]
-        if not todo and SEM["mat"] is not None and set(SEM["keys"]) == set(docs):
+        todo = [k for k in docs if have.get(k) != hashes[k] and (fill_ext or k not in ext_keys)]
+        if not todo and SEM["mat"] is not None and (set(SEM["keys"]) == {k for k in docs if have.get(k) == hashes[k]}):
             return
         SEM.update(state="indexing", done=0, total=len(todo), error=None)
         if todo:
@@ -3992,18 +4025,73 @@ def sem_sync():
                 db().many("INSERT OR REPLACE INTO embeds VALUES (?,?,?,?)",
                           [(k, hashes[k], np.asarray(v, dtype="float32").tobytes(), time.time()) for k, v in zip(chunk, vecs)])
                 SEM["done"] += len(chunk)
+                if SEM["done"] % 640 < 32 and SEM["done"] < len(todo):
+                    sem_publish(docs, hashes)  # what is done so far can be searched while the rest goes on
                 time.sleep(0.05)  # leaves room for streams and conversions
-        rows = [r for r in db().q("SELECT key, h, vec FROM embeds") if r["key"] in docs and r["h"] == hashes[r["key"]]]
-        if rows:
-            mat = np.vstack([np.frombuffer(r["vec"], dtype="float32") for r in rows])
-            mat = mat / np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9)
-            SEM.update(keys=[r["key"] for r in rows], mat=mat)
+        sem_publish(docs, hashes)
         SEM["state"] = "ready"
     except Exception as e:
         SEM.update(state="error", error=str(e)[:200])
         log.warning("search by idea could not index: %s", e)
     finally:
         SEM["build"].release()
+
+
+EXT = {"busy": False, "t": 0.0}
+EXT_MAX = 9000  # titles from the addons that are kept for searching
+
+
+async def ext_index_refresh():
+    """Reads what the addon catalogs list, each genre a few pages deep (Cinemeta's top lists and so on), keeps the details of every film and show
+    with a description (ext_meta) and has sem_sync make their numbers, so an idea search finds titles from the addons and not only the library"""
+    if EXT["busy"] or not SEM_ON:
+        return
+    EXT["busy"] = True
+    try:
+        found = {}
+        gate = asyncio.Semaphore(3)
+
+        async def one(a, c, genre, skip):
+            async with gate:
+                metas = await catalog_page(a, c, skip, genre)
+            for m in metas or []:
+                kind = m.get("type") if m.get("type") in ("movie", "series") else c.get("type")
+                imdb = str(m.get("id") or "")
+                if kind in ("movie", "series") and re.fullmatch(r"tt\d{5,10}", imdb) and m.get("name") and m.get("description") and len(found) < EXT_MAX:
+                    found.setdefault(f"ext:{kind}:{imdb}", {"id": imdb, "type": kind, "name": unesc(m["name"]), "description": unesc(str(m["description"]))[:900],
+                                                           "genres": unesc(m.get("genres") or m.get("genre") or [])[:6], "releaseInfo": m.get("releaseInfo") or m.get("year"),
+                                                           "poster": m.get("poster"), "imdbRating": m.get("imdbRating")})
+        jobs = []
+        for a, c in home_catalogs():
+            if c.get("type") not in ("movie", "series"):
+                continue
+            names = {e.get("name") for e in c.get("extra") or []} | set(c.get("extraSupported") or [])
+            for g in (catalog_genres(c) if "genre" in names else []) or [None]:
+                for skip in ((0, 100, 200) if "skip" in names else (0,)):
+                    if len(jobs) < 1500:
+                        jobs.append(one(a, c, g, skip))
+        await asyncio.gather(*jobs)
+        if found:
+            now = time.time()
+            await asyncio.to_thread(db().many, "INSERT OR REPLACE INTO ext_meta VALUES (?,?,?)", [(k, json.dumps(v), now) for k, v in found.items()])
+            db().q("DELETE FROM ext_meta WHERE at < ?", (now - 30 * 86400,))  # gone from every list for a month
+            db().q("DELETE FROM embeds WHERE key LIKE 'ext:%' AND key NOT IN (SELECT key FROM ext_meta)")
+        EXT["t"] = time.time()
+        await asyncio.to_thread(sem_sync, True)
+    except Exception:
+        log.exception("indexing the addons for search by idea")
+    finally:
+        EXT["busy"] = False
+
+
+async def ext_worker():
+    """First a while after start (the library goes first), then every 12 hours"""
+    if not SEM_ON:
+        return
+    await asyncio.sleep(num_env("EXT_INDEX_DELAY", 120, 0, 3600))
+    while True:
+        await ext_index_refresh()
+        await asyncio.sleep(12 * 3600)
 
 
 def sem_query(q, k=40, genres=None):
@@ -4135,7 +4223,7 @@ async def search_ideas(q: str, p=Depends(current_profile)):
         return {"titles": [], **{**state, "state": "off"}}
     ai = await ai_interpret(q, p["id"])  # None when Claude is off, over a limit or failed, then the words are used as they are
     try:
-        hits = await asyncio.to_thread(sem_query, ai["english"] if ai else q, 40, ai["genres"] if ai else None)
+        hits = await asyncio.to_thread(sem_query, ai["english"] if ai else q, 150, ai["genres"] if ai else None)  # many, a kids profile drops most of the addon ones
     except Exception as e:
         log.warning("search by idea failed: %s", e)
         return {"titles": [], **{**state, "state": "error"}}
@@ -4146,9 +4234,31 @@ async def search_ideas(q: str, p=Depends(current_profile)):
     key_tid = {t["key"]: t["id"] for t in LIB["titles"].values()}
     out = []
     best = hits[0][1]
+    have = lib_by_meta_id(summ)
+    empty = empty_ids()
+    ext = {}
+    want_ext = [k for k, sc in hits if k.startswith("ext:") and sc >= SEM_MIN and sc >= best - SEM_BAND]
+    if want_ext:
+        for r in db().q("SELECT key, data FROM ext_meta WHERE key IN (%s)" % ",".join("?" * len(want_ext)), want_ext):
+            try:
+                ext[r["key"]] = json.loads(r["data"])
+            except ValueError:
+                pass
     for key, sc in hits:
         # Only what is close to the best answer and close enough in itself, there is no use filling a row with the next best of nothing
         if sc < SEM_MIN or sc < best - SEM_BAND:
+            continue
+        if key.startswith("ext:"):
+            m = ext.get(key)
+            # A title from the addons, not shown when the library has it (its own entry is there) or when no addon has a source for it
+            if not m or m["id"] in have or m["id"] in empty:
+                continue
+            item = ext_preview({**m, "id": m["id"]}, m["type"])
+            # The addons list far more than the admin looks through, and a genre can't tell an adult cartoon from a kids one, so a kids profile only gets
+            # these when real age ratings are on (TMDB_API_KEY) and this one passes
+            if p.get("kids") and (not TMDB_KEY or not kids_ok(item["genres"], m["id"])):
+                continue
+            out.append({**item, "idea": round(sc, 3)})
             continue
         s = by_tid.get(key_tid.get(key))
         if s:

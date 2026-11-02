@@ -3510,9 +3510,34 @@ async def voice(request: Request, p=Depends(current_profile)):
 # search sentence is not saved. The numbers for each title are kept in the database and only made again when the details change
 SEM_ON = os.environ.get("SEMANTIC_SEARCH", "1") != "0"
 SEM_MODEL = "BAAI/bge-small-en-v1.5"
-SEM_MIN = 0.55  # a title has to be at least this close to the words
+SEM_MIN = 0.56  # a title has to be at least this close to the words, nonsense words score up to about 0.55
+IDEA_STOP = {"the", "a", "an", "of", "and", "or", "in", "on", "at", "to", "for", "is", "it", "i", "me", "my", "we", "you", "what", "how", "do", "does", "some", "something", "any", "anything", "show", "shows", "movie", "movies", "film", "films", "watch", "want", "with", "about"}
+SEM_BOOST = 0.06  # added for a title with a genre the words point at
 SEM_BAND = 0.12  # and within this of the closest title
-SEM = {"lock": threading.Lock(), "build": threading.Lock(), "model": None, "used": 0.0, "keys": [], "mat": None, "state": "idle", "done": 0, "total": 0, "error": None}
+SEM = {"lock": threading.Lock(), "build": threading.Lock(), "model": None, "used": 0.0, "keys": [], "mat": None, "genres": {}, "state": "idle", "done": 0, "total": 0, "error": None}
+# Short vague words (funny, feel good, for the kids) say little in a description's own words, so they also point at genres: the words add a hint
+# to the sentence and titles with one of those genres get a small boost. Patterns, genres to boost, words to add
+SEM_MOODS = [
+    (r"funny|hilarious|laugh|comed|humou?r|silly|witty|jokes?", ("comedy",), "comedy"),
+    (r"scary|spooky|creepy|frighten|terrif|horror|haunt", ("horror",), "horror"),
+    (r"\bsad\b|\bcry\b|tearjerker|emotional|heartbreak", ("drama",), "emotional drama"),
+    (r"feel[- ]?good|heartwarming|uplifting|cosy|cozy|wholesome|lighthearted", ("comedy", "family", "romance"), "heartwarming feel-good"),
+    (r"\bkids?\b|children|child|toddler|\bfamily\b", ("family", "animation"), "family friendly for children"),
+    (r"romantic|romance|love story|date night", ("romance",), "romance"),
+    (r"\baction\b|explosions|car chase|fight scenes", ("action",), "action"),
+    (r"mind[- ]?bending|plot twist|psychological|confusing", ("sci-fi", "mystery", "thriller"), "mind-bending twist"),
+    (r"true story|true events|real events|real life|biograph|based on a true", ("biography", "documentary", "history"), "based on a true story"),
+    (r"thriller|suspense|tense|edge of (my|your) seat", ("thriller",), "thriller"),
+    (r"documentar", ("documentary",), "documentary"),
+    (r"sci[- ]?fi|science fiction|\bspace\b|aliens?|futuristic", ("sci-fi",), "science fiction"),
+    (r"fantasy|\bmagic|wizard|dragon", ("fantasy",), "fantasy"),
+    (r"\bwar\b|soldiers?|military", ("war",), "war"),
+    (r"\bcrime\b|gangster|mafia|heist", ("crime",), "crime"),
+    (r"mystery|whodunit|detective", ("mystery",), "mystery"),
+    (r"western|cowboy", ("western",), "western"),
+    (r"musical|singing|\bmusic\b", ("musical", "music"), "music"),
+    (r"animated|animation|cartoon|anime", ("animation",), "animation"),
+]
 
 
 def sem_model():
@@ -3560,6 +3585,7 @@ def sem_sync():
             m = meta_light(t)
             if m:
                 docs[t["key"]] = sem_doc(t, m)
+        SEM["genres"] = {t["key"]: {str(g).lower() for g in (meta_light(t) or {}).get("genres") or []} for t in list(LIB["titles"].values())}
         hashes = {k: hashlib.sha1(d.encode()).hexdigest()[:16] for k, d in docs.items()}
         have = {r["key"]: r["h"] for r in db().q("SELECT key, h FROM embeds")}
         todo = [k for k in docs if have.get(k) != hashes[k]]
@@ -3594,9 +3620,17 @@ def sem_query(q, k=40):
     mat = SEM["mat"]
     if mat is None or not len(SEM["keys"]):
         return None
-    v = np.asarray(next(iter(sem_model().query_embed([q]))), dtype="float32")
+    want, hint = set(), []
+    for rx, genres, words in SEM_MOODS:
+        if re.search(rx, q, re.I):
+            want.update(genres)
+            hint.append(words)
+    v = np.asarray(next(iter(sem_model().query_embed([q + (". " + ", ".join(hint) if hint else "")]))), dtype="float32")
     v = v / max(float(np.linalg.norm(v)), 1e-9)
     sims = mat @ v
+    if want:
+        gen = SEM["genres"]
+        sims = sims + np.array([SEM_BOOST if gen.get(key, set()) & want else 0.0 for key in SEM["keys"]], dtype="float32")
     top = np.argsort(-sims)[:k]
     return [(SEM["keys"][i], float(sims[i])) for i in top]
 
@@ -3606,7 +3640,8 @@ async def search_ideas(q: str, p=Depends(current_profile)):
     """Library titles that fit an idea in words (not a name), see the comment above. Kids profiles only get what they may watch"""
     q = " ".join(q.split())[:200]
     state = {"state": SEM["state"] if SEM_ON else "off", "done": SEM["done"], "total": SEM["total"]}
-    if not SEM_ON or len(q) < 4:
+    # Words like "the" or "what is" say nothing about a film, a search of only those gets nothing
+    if not SEM_ON or len(q) < 3 or not [w for w in norm(q).split() if w not in IDEA_STOP]:
         return {"titles": [], **state}
     try:
         import fastembed  # noqa: F401

@@ -1737,6 +1737,11 @@
   const personTile = (p) => `<a class="tile person" href="#/person/${encodeURIComponent(p.name)}"><div class="art">${p.poster ? `<img loading="lazy" decoding="async" src="${img(p.poster, 0, PW())}" alt="" data-fallback="hide">` : ""}<span class="person-ic">${ic("person")}</span></div>
       <div class="cap">${esc(p.name)}</div><div class="sub">${esc(p.role)} · ${p.count} title${p.count === 1 ? "" : "s"}</div></a>`;
 
+  // Every word typed is the start of a word in the name, so "bat", "the dark kni" and "friends" all hit their titles
+  function nameHit(q, name) {
+    const qw = norm(q).split(" ").filter(Boolean), nw = norm(name).split(" ").filter(Boolean);
+    return qw.length > 0 && qw.every((w) => nw.some((x) => x.startsWith(w)));
+  }
   async function pageSearch() {
     const n = ROUTE_N;
     const start = safeDecode(location.hash.split("?q=")[1] || "");
@@ -1776,9 +1781,10 @@
         const rows = [searchRow("movies", "Movies", movies), searchRow("shows", "TV Shows", shows)];
         // Titles that fit what was described (not named), not repeating the ones the name search already has
         const have = new Set(all.map((x) => x.id));
-        const idea = searchRow("ideas", "Matches Your Idea", ideas.filter((x) => !have.has(x.id)));
-        // Words that only half match a name (something funny finding Funny Games) put the idea matches first, a title typed properly keeps its own first
-        if (idea) rows.splice(all.length && (all[0].score || 0) >= 100 ? rows.length : 0, 0, idea);
+        // Typing a title, or the start of one (movie or show, in the library or from an addon), or a person is a name search: just those, no ideas
+        const named = all.some((x) => nameHit(q, x.name)) || (r.people || []).length > 0;
+        const idea = named ? "" : searchRow("ideas", "Matches Your Idea", ideas.filter((x) => !have.has(x.id)));
+        if (idea) rows.unshift(idea);
         // When the addon results land the page redraws, focus and how far each row was scrolled stay put
         const k = focusKey(document.activeElement), keep = {};
         $$(".srow", box).forEach((sec) => (keep[sec.dataset.srow] = $(".row", sec).scrollLeft));
@@ -1790,7 +1796,7 @@
         SEARCH_EMBEDS = r.embeds || [];
         const liveRow = searchRow("live", "Live TV", [...(r.channels || []), ...SEARCH_EMBEDS, ...ext.filter((x) => x.kind === "live")], "live");
         box.innerHTML = ((peopleFirst ? [people, ...rows] : [...rows, people]).join("") + liveRow + searchRow("eps", "Episodes", r.episodes, "wide") + vrows
-          + (ideaNote && !idea ? `<p class="secondary s-note">${esc(ideaNote)}</p>` : "") + (!extDone || !vidsDone ? `<div class="s-more"><span class="spin small"></span>${!extDone ? "Looking in your addons" : "Still looking for videos"}</div>` : ""))
+          + (ideaNote && !idea && !named ? `<p class="secondary s-note">${esc(ideaNote)}</p>` : "") + (!extDone || !vidsDone ? `<div class="s-more"><span class="spin small"></span>${!extDone ? "Looking in your addons" : "Still looking for videos"}</div>` : ""))
           || `<div class="empty"><h2>Nothing found for “${esc(q)}”</h2><p>Check the spelling or try an actor, director or genre.</p></div>`;
         growRows(box);
         enhanceRows(box);
@@ -1799,7 +1805,7 @@
       };
       draw();
       // Search by idea: words describing what you feel like (funny, a heist with a clever team) find matches by what the titles are about, next to the ones with the words in their name
-      if (q.length >= 3) api("/api/search/ideas?q=" + encodeURIComponent(q)).then((x) => {
+      if (q.length >= 3 && !r.titles.some((x) => nameHit(q, x.name)) && !(r.people || []).length) api("/api/search/ideas?q=" + encodeURIComponent(q)).then((x) => {
         if (my !== seq || !$("#sres")) return;
         ideas = x.titles || [];
         ideaNote = !ideas.length && x.state === "indexing" ? `Still reading your library for ideas (${x.done} of ${x.total}), try again in a minute.` : "";

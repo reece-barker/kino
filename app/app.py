@@ -3509,7 +3509,8 @@ async def voice(request: Request, p=Depends(current_profile)):
 # fit the idea, like "cosy comedy about bakers by the sea". It reads the title details Kino already has, nothing is sent anywhere, and the
 # search sentence is not saved. The numbers for each title are kept in the database and only made again when the details change
 SEM_ON = os.environ.get("SEMANTIC_SEARCH", "1") != "0"
-SEM_MODEL = "BAAI/bge-small-en-v1.5"
+SEM_MODEL = env("SEMANTIC_MODEL", "BAAI/bge-small-en-v1.5")  # any model fastembed lists, changing it re-reads every title once
+SEM_THREADS = max(1, int(env("SEMANTIC_THREADS", "4") or 4))
 SEM_MIN = 0.56  # a title has to be at least this close to the words, nonsense words score up to about 0.55
 IDEA_STOP = {"the", "a", "an", "of", "and", "or", "in", "on", "at", "to", "for", "is", "it", "i", "me", "my", "we", "you", "what", "how", "do", "does", "some", "something", "any", "anything", "show", "shows", "movie", "movies", "film", "films", "watch", "want", "with", "about"}
 SEM_BOOST = 0.06  # added for a title with a genre the words point at
@@ -3544,7 +3545,7 @@ def sem_model():
     with SEM["lock"]:
         if SEM["model"] is None:
             from fastembed import TextEmbedding
-            SEM["model"] = TextEmbedding(SEM_MODEL, cache_dir=str(DATA_DIR / "models"), threads=2)
+            SEM["model"] = TextEmbedding(SEM_MODEL, cache_dir=str(DATA_DIR / "models"), threads=SEM_THREADS)
         SEM["used"] = time.time()
         return SEM["model"]
 
@@ -3586,7 +3587,7 @@ def sem_sync():
             if m:
                 docs[t["key"]] = sem_doc(t, m)
         SEM["genres"] = {t["key"]: {str(g).lower() for g in (meta_light(t) or {}).get("genres") or []} for t in list(LIB["titles"].values())}
-        hashes = {k: hashlib.sha1(d.encode()).hexdigest()[:16] for k, d in docs.items()}
+        hashes = {k: hashlib.sha1(f"{SEM_MODEL}|{d}".encode()).hexdigest()[:16] for k, d in docs.items()}  # the model is part of it, numbers from another model dont fit
         have = {r["key"]: r["h"] for r in db().q("SELECT key, h FROM embeds")}
         todo = [k for k in docs if have.get(k) != hashes[k]]
         if not todo and SEM["mat"] is not None and set(SEM["keys"]) == set(docs):
@@ -3601,7 +3602,7 @@ def sem_sync():
                           [(k, hashes[k], np.asarray(v, dtype="float32").tobytes(), time.time()) for k, v in zip(chunk, vecs)])
                 SEM["done"] += len(chunk)
                 time.sleep(0.05)  # leaves room for streams and conversions
-        rows = [r for r in db().q("SELECT key, vec FROM embeds") if r["key"] in docs]
+        rows = [r for r in db().q("SELECT key, h, vec FROM embeds") if r["key"] in docs and r["h"] == hashes[r["key"]]]
         if rows:
             mat = np.vstack([np.frombuffer(r["vec"], dtype="float32") for r in rows])
             mat = mat / np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9)

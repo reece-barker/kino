@@ -983,10 +983,12 @@
   }
 
   // Season dropdown, with how many episodes each one has
-  function seasonPick(seasons, cur, eps) {
+  function seasonPick(seasons, cur, eps, more = []) {
     const n = (s) => eps.filter((e) => (e.season ?? 0) === s).length;
+    // "more" are seasons with no file in the library, they open the all episodes page where the addons find sources
     return `<label class="season-pick"><span class="sr">Season</span><select class="plain" id="seasonPick">${seasons.map((s) =>
-      `<option value="${s}" ${s === cur ? "selected" : ""}>${s ? `Season ${s}` : "Extras"} (${n(s)} episode${n(s) === 1 ? "" : "s"})</option>`).join("")}</select></label>`;
+      `<option value="${s}" ${s === cur ? "selected" : ""}>${s ? `Season ${s}` : "Extras"} (${n(s)} episode${n(s) === 1 ? "" : "s"})</option>`).join("")}${more.map((s) =>
+      `<option value="more${s}">Season ${s} (from addons)</option>`).join("")}</select></label>`;
   }
 
   // ---------------------------------------------------------- tiles
@@ -2019,7 +2021,7 @@
       </section>
       <main class="page under-hero" style="padding-top:12px">
         ${t.kind === "series" ? `<section class="section" style="margin-top:0">
-          <div class="seasons">${seasonPick(seasons, curSeason, t.files)}</div>
+          <div class="seasons">${seasonPick(seasons, curSeason, t.files, t.pd_streams && t.imdb ? t.more_seasons || [] : [])}</div>
           <div class="episodes" id="eps"></div>
           ${t.pd_streams ? `<a class="btn secondary small pd-more" href="#/discover/series/${encodeURIComponent(t.imdb)}?all=1">${ic("globe")} More Episodes</a>` : ""}</section>` : ""}
         ${t.kind === "movie" && t.files.length > 1 ? `<section class="section"><h2 class="section-title">Versions</h2><div class="versions">${t.files.map((f) => `
@@ -2069,7 +2071,11 @@
       }));
     };
     if (t.kind === "series") {
-      $("#seasonPick").onchange = (e) => drawEps(Number(e.target.value));
+      $("#seasonPick").onchange = (e) => {
+        const v = e.target.value;
+        if (v.startsWith("more")) { location.hash = `#/discover/series/${encodeURIComponent(t.imdb)}?all=1&season=${v.slice(4)}`; return; }
+        drawEps(Number(v));
+      };
       drawEps(curSeason);
     } else wireFileButtons();
 
@@ -2190,7 +2196,10 @@
     // Carries on where the profile left off, otherwise the first episode
     const started = t.videos.filter((v) => v.progress).sort((a, b) => b.progress.updated - a.progress.updated)[0];
     let target = t.videos[0];
-    if (started) {
+    const wantSeason = Number(new URLSearchParams(location.hash.split("?")[1] || "").get("season"));
+    const wanted = wantSeason ? t.videos.find((v) => v.season === wantSeason) : null;
+    if (wanted) target = wanted;
+    else if (started) {
       const i = t.videos.indexOf(started);
       target = started.progress.watched || (started.progress.dur && started.progress.pos / started.progress.dur > 0.93) ? t.videos[i + 1] || started : started;
     }

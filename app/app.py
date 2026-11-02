@@ -616,9 +616,34 @@ def guess_uncached(rel):
     if parts and parts[0] in KIND_DIRS:
         parts = parts[1:]
     try:
-        return dict(guessit(str(Path(*parts)) if parts else rel))
+        return fix_cut_title(dict(guessit(str(Path(*parts)) if parts else rel)), rel)
     except Exception:
         return {"title": Path(rel).stem}
+
+
+EP_MARK = re.compile(r"[\s._-]+(?:S\d{1,3}[\s._-]*E\d{1,3}(?:[\s._-]*E\d{1,3})*|\d{1,2}x\d{2,3})(?![0-9a-z])", re.I)
+CUT_WORDS = {"season", "complete", "series", "bluray", "hdtv", "webrip", "webdl", "dvdrip", "uhd", "remux", "proper", "repack"}
+
+
+def fix_cut_title(g, rel):
+    """guessit reads Law & Order - Special Victims Unit - S06E03 - Name as the show Law & Order and loses the rest, so SVU episodes went into the
+    original Law & Order. For names with dashes before the episode marker, the words that guessit left out go back on the title when they are
+    plain words (no numbers, brackets or release tags)"""
+    title = g.get("title")
+    if g.get("type") != "episode" or not isinstance(title, str):
+        return g
+    stem = Path(rel).stem
+    m = EP_MARK.search(stem)
+    if not m:
+        return g
+    parts = [x.strip() for x in re.split(r"\s+[-–]\s+", stem[:m.start()]) if x.strip()]
+    if len(parts) < 2 or norm(parts[0]) != norm(title):
+        return g
+    extra = parts[1:]
+    if not all(re.fullmatch(r"[^\W\d_][^\W\d_ ']*(?: [^\W\d_][^\W\d_ ']*){0,5}", x) and not (set(norm(x).split()) & CUT_WORDS) for x in extra):
+        return g
+    g["title"] = " ".join([title] + extra)
+    return g
 
 
 def title_key(kind, name, year):
@@ -906,14 +931,42 @@ async def ensure_meta(keys, force=False):
             await asyncio.sleep(0.3)
 
 
+def merge_same_show(files, titles):
+    """Library titles that Cinemeta says are the same show or film become one title. A show downloaded as season packs often has a different
+    name on each one (Law and Order SVU, Law & Order Special Victims Unit), so every pack is its own title with its own season until they are
+    joined here. The title whose name fits best stays (so its id doesnt change when files get added), the others hand over their files"""
+    groups = {}
+    for t in titles.values():
+        m = meta_light(t)
+        if m:
+            groups.setdefault((t["kind"], m["id"]), []).append(t)
+    for (_, _), ts in groups.items():
+        if len(ts) < 2:
+            continue
+        name = meta_light(ts[0]).get("name") or ""
+        keep = max(ts, key=lambda t: (round(fit_score(name, t["guess_name"]), 3), len(t["files"]), t["id"]))
+        for t in ts:
+            if t is keep:
+                continue
+            for fid in t["files"]:
+                files[fid]["title_id"] = keep["id"]
+            keep["files"] += t["files"]
+            keep["size"] += t["size"]
+            keep["added"] = max(keep["added"], t["added"])
+            del titles[t["id"]]
+        keep["files"].sort(key=lambda f: (files[f]["season"] or 0, files[f]["episode"] or 0, files[f]["name"]))
+
+
 async def rescan():
     if LIB["scanning"]:
         return
     LIB["scanning"] = True
     try:
         files, titles = await asyncio.to_thread(scan_fs)
+        merge_same_show(files, titles)  # with what is already known, so the lists dont flicker back to separate titles on every scan
         LIB.update(files=files, titles=titles, scanned_at=time.time(), error=None)
         await ensure_meta([(t["key"], t["kind"], t["guess_name"], t["year"]) for t in titles.values()])
+        merge_same_show(LIB["files"], LIB["titles"])  # and again for titles that only just got their match
     except Exception as e:
         LIB["error"] = str(e)
         log.warning("scan failed: %s", e)
@@ -3558,9 +3611,13 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
                       "progress": {"pos": w["pos"], "dur": w["dur"], "updated": w["updated"]} if w and not w["watched"] else None,
                       "watched": bool(w and w["watched"])})
     out = title_summary(t, meta, wm, rm)
+    # Seasons that have aired but have no file here, they can still be played from the addons
+    have = {f["season"] for f in files}
+    today = time.strftime("%Y-%m-%d")
+    more = sorted({v["season"] for v in (meta or {}).get("videos", []) if v.get("season") and v["season"] not in have and str(v.get("released") or "9999")[:10] <= today}) if t["kind"] == "series" else []
     lk = list_key_for(t, meta)
     mylist_checked(p["id"], lk)
-    out.update(in_list=in_list(p["id"], lk), list_key=lk, kids_key=kid_key((meta or {}).get("id"), t["id"]),
+    out.update(more_seasons=more, in_list=in_list(p["id"], lk), list_key=lk, kids_key=kid_key((meta or {}).get("id"), t["id"]),
                kids_allowed=kids_ok((meta or {}).get("genres"), kid_key((meta or {}).get("id"), t["id"])), files=files, cast=(meta or {}).get("cast", []), director=(meta or {}).get("director"),
                guess_name=t["guess_name"], is_admin=bool(admin_user(request)),
                pd_streams=bool(meta and t["kind"] == "series" and any(supports(a["m"], "stream", "series", meta["id"] + ":1:1") for a in addon_rows())))

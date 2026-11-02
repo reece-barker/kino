@@ -3221,7 +3221,9 @@
         <h2 class="set-title">Playback</h2>
         <div class="set-row"><span><b>Audio Language</b><span class="secondary">Picked automatically when a film has more than one</span></span>${sel("pAudioL", [["", "Original"], ...LANG_OPTS.map((l) => [l, l])], pr.audio_lang)}</div>
         <div class="set-row"><span><b>Subtitles</b><span class="secondary">Turned on automatically when the language is there</span></span>${sel("pSubL", [["", "Off"], ...LANG_OPTS.map((l) => [l, l])], pr.sub_lang)}</div>
-        <div class="set-row"><span><b>Subtitle Size</b></span>${sel("pSubS", [["s", "Small"], ["m", "Medium"], ["l", "Large"]], pr.sub_size)}</div>
+        <div class="set-row"><span><b>Subtitle Size</b></span>${sel("pSubS", [["s", "Small"], ["m", "Medium"], ["l", "Large"], ["xl", "Extra Large"]], pr.sub_size)}</div>
+        <div class="set-row"><span><b>Subtitle Colour</b></span>${sel("pSubC", [["white", "White"], ["yellow", "Yellow"], ["cyan", "Cyan"], ["green", "Green"]], pr.sub_color || "white")}</div>
+        <div class="set-row"><span><b>Subtitle Background</b><span class="secondary">A box behind the words makes them easiest to read</span></span>${sel("pSubB", [["box", "Box"], ["shadow", "Shadow only"], ["none", "None"]], pr.sub_bg || "box")}</div>
         ${toggle("pAuto", pr.autoplay, "Autoplay Next Episode", "Starts the next episode after a short countdown")}
         ${toggle("pSkip", pr.skip_intro, "Skip Intros Automatically", "Only works where Kino knows the intro")}
         <div class="set-row"><span><b>Are You Still Watching?</b><span class="secondary">Pauses and asks after this long with nobody touching anything</span></span>${sel("pStill", [["0", "Never"], ["30", "30 Minutes"], ["60", "1 Hour"], ["90", "1.5 Hours"], ["120", "2 Hours"], ["180", "3 Hours"], ["240", "4 Hours"]], String(pr.still_watching || 0))}</div>
@@ -3264,14 +3266,14 @@
     wireThemePicker($("#setTheme"));
     drawInterests();
     const saveP = async () => {
-      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked, previews: $("#pPrev").checked, preview_sound: $("#pPrevSnd").checked, auto_next_source: $("#pFake").checked, live_all_countries: $("#pLiveAll").checked, live_english: $("#pLiveEng").checked };
+      const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, sub_color: $("#pSubC").value, sub_bg: $("#pSubB").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStill").value), load_stats: $("#pLoadStats").checked, previews: $("#pPrev").checked, preview_sound: $("#pPrevSnd").checked, auto_next_source: $("#pFake").checked, live_all_countries: $("#pLiveAll").checked, live_english: $("#pLiveEng").checked };
       const r = await api("/api/profile", { prefs }, "PUT");
       ME.profile = r.profile;
       applyPrefs();
       $("#prefSaved").textContent = "Saved";
       setTimeout(() => $("#prefSaved") && ($("#prefSaved").textContent = ""), 1800);
     };
-    ["pAudioL", "pSubL", "pSubS", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats", "pFake", "pPrev", "pPrevSnd", "pLiveEng", "pLiveAll"].forEach((id) => $("#" + id).addEventListener("change", saveP));
+    ["pAudioL", "pSubL", "pSubS", "pSubC", "pSubB", "pAuto", "pSkip", "pBlur", "pShare", "pStill", "pLoadStats", "pFake", "pPrev", "pPrevSnd", "pLiveEng", "pLiveAll"].forEach((id) => $("#" + id).addEventListener("change", saveP));
     const si = $("#setAdminIn"); if (si) si.onclick = () => adminLogin(() => route());
     const tn = $("#pTryNative"); if (tn) tn.onclick = () => { try { window.KinoAndroid.resetPlayer(); } catch (_) {} toast("The Kino Player is back on"); route(); };
     const pp = $("#pPlayer"); if (pp) pp.onchange = () => {
@@ -4281,7 +4283,8 @@
     pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0; pl.ad = 0;
     pl.title = opts.title || null;
     const prefs = info.prefs || {};
-    $("#subsLayer").dataset.size = prefs.sub_size || "m";
+    subLook(prefs);
+    pl.subDelay = subDelayGet(info.id);
 
     // Picks the audio and subtitles from the profile settings
     pl.audio = pickAudio(info, prefs.audio_lang);
@@ -4583,7 +4586,7 @@
     $("#pSubs").innerHTML = ic("cc");
     $("#pSubs").hidden = !info.subs.length;
     $("#mSubs").innerHTML = `<button data-s=""><span class="chk">${!pl.subId ? ic("check") : ""}</span>Off</button>` +
-      info.subs.map((s) => `<button data-s="${s.id}"><span class="chk">${s.id === pl.subId ? ic("check") : ""}</span>${esc(s.label)}${s.kind === "embedded" && !s.ready ? ' <span class="tertiary">(prepares first)</span>' : ""}${s.source ? ` <span class="tertiary src">${esc(s.source)}</span>` : ""}</button>`).join("");
+      info.subs.map((s) => `<button data-s="${s.id}"><span class="chk">${s.id === pl.subId ? ic("check") : ""}</span>${esc(s.label)}${s.kind === "embedded" && !s.ready ? ' <span class="tertiary">(prepares first)</span>' : ""}${s.source ? ` <span class="tertiary src">${esc(s.source)}</span>` : ""}</button>`).join("") + (pl.subId ? subMenuExtras() : "");
     $("#mSpeed").innerHTML = [0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => `<button data-r="${r}"><span class="chk">${r === pl.rate ? ic("check") : ""}</span>${r === 1 ? "Normal" : r + "×"}</button>`).join("");
     $("#pSpeed").innerHTML = ic("speed") + (pl.rate === 1 ? "" : `<span class="rate-badge">${pl.rate}×</span>`);
     $("#mAudio").querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => {
@@ -4591,6 +4594,8 @@
       startHls(pos());  // A different audio track needs a fresh stream from the server
     }));
     $("#mSubs").querySelectorAll("[data-s]").forEach((b) => (b.onclick = () => { hideMenus(); pl.subUserSet = true; loadSubs(b.dataset.s); }));
+    $("#mSubs").querySelectorAll("[data-sl]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); subLookChange(b.dataset.sl, 1); }));
+    $("#mSubs").querySelectorAll("[data-sd]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); subDelayChange(Number(b.dataset.sd)); }));
     const rs = $("#mAudio [data-resync]");
     if (rs) rs.onclick = () => {
       hideMenus();
@@ -4672,10 +4677,45 @@
     return cues;
   }
 
+  // Looks of the subtitles (size, colour, background, how high) come from the profile settings and can be changed from the subtitle menu while watching.
+  // The delay (subtitles later or earlier) belongs to the file and is remembered for it on this device
+  const SUB_OPTS = { size: [["s", "Small"], ["m", "Medium"], ["l", "Large"], ["xl", "Extra Large"]], color: [["white", "White"], ["yellow", "Yellow"], ["cyan", "Cyan"], ["green", "Green"]],
+    bg: [["box", "Box"], ["shadow", "Shadow"], ["none", "None"]], pos: [["low", "Low"], ["high", "Higher"]] };
+  const subLook = (o) => {
+    const l = $("#subsLayer"), look = pl.subLook = { size: o.sub_size || o.size || "m", color: o.sub_color || o.color || "white", bg: o.sub_bg || o.bg || "box", pos: o.sub_pos || o.pos || "low" };
+    l.dataset.size = look.size; l.dataset.color = look.color; l.dataset.bg = look.bg; l.dataset.pos = look.pos;
+  };
+  const subDelayGet = (fid) => { try { return Number(localStorage.getItem("kinoSubDelay:" + fid)) || 0; } catch (_) { return 0; } };
+  const subDelaySet = (fid, v) => { try { v ? localStorage.setItem("kinoSubDelay:" + fid, String(v)) : localStorage.removeItem("kinoSubDelay:" + fid); } catch (_) {} };
+  let subSaveT;
+  function subLookChange(key, dir) {
+    const list = SUB_OPTS[key], cur = list.findIndex(([v]) => v === pl.subLook[key]);
+    pl.subLook[key] = list[(cur + dir + list.length) % list.length][0];
+    subLook(pl.subLook);
+    clearTimeout(subSaveT);
+    subSaveT = setTimeout(() => api("/api/profile", { prefs: { sub_size: pl.subLook.size, sub_color: pl.subLook.color, sub_bg: pl.subLook.bg, sub_pos: pl.subLook.pos } }, "PUT")
+      .then((r) => { if (r && r.profile) ME.profile = r.profile; }).catch(() => {}), 600);
+    buildMenus();
+  }
+  function subDelayChange(d) {
+    pl.subDelay = d === 0 ? 0 : Math.round(((pl.subDelay || 0) + d) * 10) / 10;
+    subDelaySet(pl.info.id, pl.subDelay);
+    renderSubs(true);
+    buildMenus();
+  }
+  const subMenuExtras = () => {
+    const name = (k) => (SUB_OPTS[k].find(([v]) => v === (pl.subLook || {})[k]) || SUB_OPTS[k][0])[1];
+    const row = (k, label) => `<button data-sl="${k}" class="sub-set"><span class="chk"></span>${label}: <b>${name(k)}</b></button>`;
+    const d = pl.subDelay || 0;
+    return `<div class="menu-sep"></div><div class="sub-delay" role="group" aria-label="Subtitle delay"><span>Delay <b>${d > 0 ? "+" : ""}${d.toFixed(1)}s</b></span>
+      <button data-sd="-0.5" aria-label="Show subtitles 0.5 seconds earlier" title="Earlier">−</button><button data-sd="0.5" aria-label="Show subtitles 0.5 seconds later" title="Later">+</button>${d ? `<button data-sd="0" aria-label="Reset the delay">Reset</button>` : ""}</div>
+      <div class="menu-sep"></div>${row("size", "Size")}${row("color", "Colour")}${row("bg", "Background")}${row("pos", "Position")}`;
+  };
+
   let lastSubText = null;
   function renderSubs(force) {
     if (!pl.cues) return;
-    const t = pos();
+    const t = pos() - (pl.subDelay || 0);
     const active = pl.cues.filter((c) => c.s <= t && c.e >= t).map((c) => c.text).join("\n");
     if (active === lastSubText && !force) return;
     lastSubText = active;

@@ -487,7 +487,7 @@
       </div>
       <div class="side-items">
         <span class="side-pill" id="sidePill" aria-hidden="true"></span>
-        <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i)).join("")}</nav>
+        <nav class="side-nav" aria-label="Sections">${main.map(([k, l, i]) => item(k, l, i, k === "live" && !isAdmin() ? `<span class="side-badge soon"><span class="txt">Soon</span></span>` : "")).join("")}</nav>
         <div class="side-group ${open ? "open" : ""}" id="sideGroup">
           <button class="side-head" id="sideHead" aria-expanded="${open}"><span class="side-lbl">Settings</span>${ic("chevron")}</button>
           <div class="side-sub"><div class="side-sub-in">${group.map(([k, l, i]) => item(k, l, i, k === "admin" ? `<span class="side-badge" id="syncChip"><span class="dot"></span><span class="txt"></span></span>` : "")).join("")}</div></div>
@@ -496,10 +496,20 @@
     </aside>
     <nav class="tabbar" aria-label="Sections">
       ${[["home", "Home", "home"], ["movies", "Movies", "film"], ["shows", "TV Shows", "tv"], ...(F.live ? [["live", "Live", "live"]] : []), ["search", "Search", "search"]].map(([k, l, i]) =>
-        `<a class="tb-item" href="#/${k}" data-k="${k}">${ic(i)}<span>${l}</span></a>`).join("")}
+        `<a class="tb-item" href="#/${k}" data-k="${k}">${ic(i)}<span>${l}</span>${k === "live" && !isAdmin() ? `<i class="tb-soon" aria-label="coming soon"></i>` : ""}</a>`).join("")}
       <button class="tb-item" id="tbMore" data-k="more">${pav(p, "xs")}<span>${esc(p.name)}</span><i class="alert-dot tb-alert" data-alertdot hidden></i></button>
     </nav>`;
     wireSide();
+  }
+
+  // Live TV isn't finished yet, so anyone who isn't an admin is told that before it opens and has to say they want to look anyway (once per visit)
+  const LIVE_OK_KEY = "kino-live-ok";
+  async function liveGate() {
+    if (isAdmin()) return true;
+    try { if (sessionStorage.getItem(LIVE_OK_KEY) === "1") return true; } catch (_) {}
+    const ok = await confirmSheet("Live TV is coming soon", "It isn't fully working yet, so channels might not play or might stop. Would you like to take a look anyway? You'd be going in at your own risk.", "Take a Look", false);
+    if (ok) { try { sessionStorage.setItem(LIVE_OK_KEY, "1"); } catch (_) {} }
+    return ok;
   }
 
   // Moves the highlight pill to the current page with a spring, like the selection on apple tv
@@ -5852,6 +5862,10 @@
       applyPrefs();
       // Which sections the sidebar has (Live TV, Videos), asked once and again after the admin changes addons or playlists
       if (!ME.features) ME.features = await api("/api/features").catch(() => ({}));
+      if (page === "live" && !isAdmin()) {
+        if (!(await liveGate())) { if (n === ROUTE_N) location.hash = LAST_PAGE && !LAST_PAGE.startsWith("#/live") ? LAST_PAGE : "#/home"; return; }
+        if (n !== ROUTE_N) return;
+      }
       // The sidebar stays and the page swaps to a skeleton straight away, so nothing jumps while it loads
       topbar(sideFor(page));
       document.body.classList.add("with-side");

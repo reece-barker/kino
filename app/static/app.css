@@ -501,7 +501,7 @@ select.plain { background: var(--fill); border: 0; border-radius: 10px; height: 
 .hero-dots button { width: 8px; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.35); transition: width 0.3s var(--ease), background 0.3s; }
 .hero-dots button[aria-selected="true"] { width: 24px; background: #fff; }
 .hero-logo { object-position: left bottom; }
-.banner { position: fixed; top: 76px; left: 50%; transform: translateX(-50%); z-index: 45; background: rgba(255, 159, 10, 0.18); color: var(--orange); padding: 10px 16px; border-radius: 12px; font-size: 14px; font-weight: 600; -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); max-width: calc(100vw - 32px); }
+.banner { position: fixed; top: 76px; left: 50%; transform: translateX(-50%); z-index: 45; background: rgba(255, 159, 10, 0.18); color: var(--orange); padding: 10px 16px; border-radius: 12px; font-size: 14px; font-weight: 600; -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); width: max-content; max-width: calc(100vw - 32px); }  /* max-content, or left: 50% leaves it only the right half of the screen to wrap in */
 
 /* tiles extras */
 .tile-check { position: absolute; top: 8px; right: 8px; z-index: 3; width: 24px; height: 24px; border-radius: 50%; background: rgba(0, 0, 0, 0.7); display: grid; place-items: center; font-size: 15px; }

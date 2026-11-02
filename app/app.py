@@ -4103,7 +4103,12 @@ async def progress(request: Request, p=Depends(current_profile)):
     fid = str(b.get("file_id", ""))
     if fid not in LIB["files"] and not (fid.startswith("s") and db().q("SELECT 1 FROM streams WHERE id = ?", (fid,))):
         raise HTTPException(404, "Unknown file")
-    pos, dur = float(b.get("pos") or 0), float(b.get("dur") or 0)
+    try:
+        pos, dur = float(b.get("pos") or 0), float(b.get("dur") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "The position has to be a number")
+    if not (math.isfinite(pos) and math.isfinite(dur)) or pos < 0 or dur < 0:
+        raise HTTPException(400, "The position has to be a real number")  # an infinite length saved here made the title page fail for that profile
     if fid.startswith("s") and pos > 60:
         # Played for a minute, so this source works and goes first next time
         db().q("INSERT INTO stream_health (id, good, bad) VALUES (?, ?, 0) ON CONFLICT(id) DO UPDATE SET good = excluded.good", (fid, time.time()))

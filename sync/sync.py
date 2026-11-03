@@ -49,6 +49,10 @@ CLEAN = os.environ.get("CLEAN_FILES", "0") == "1"
 KINO_DB = Path(os.environ.get("KINO_DB", "/var/lib/kino/kino.db"))  # only the rename-existing tool touches it
 RENAME_LOG = Path(os.environ.get("RENAME_LOG", "/var/lib/kino/rename-log.jsonl"))
 KIND_DIRS = {"torrents", "webdl", "usenet"}
+# TorBox gives an account a day of bandwidth and streaming in kino uses the same one. The sync stops for the day once it has used this much (in GB,
+# 0 turns it off), so a big download never leaves nothing for watching. It carries on the next day
+DAILY_CAP = int(float(os.environ.get("SYNC_DAILY_CAP_GB", "1000")) * 1000**3)
+DAILY = Path(os.environ.get("SYNC_DAILY_FILE", "/var/lib/torbox-sync/daily.json"))
 MIN_FREE = 20 * 1024**3  # Keeps 20gb free so the storage box dosent fill up compleatly
 
 # Kind of download and the name of the id param that requestdl wants for it
@@ -439,6 +443,22 @@ def download(url, target, size, rel):
                     write_status()
     part.rename(target)  # Only renamed at the end so half files never look finished
     status["current"] = None
+
+
+def used_today():
+    try:
+        d = json.loads(DAILY.read_text())
+        return d["bytes"] if d.get("day") == time.strftime("%Y-%m-%d", time.gmtime()) else 0
+    except Exception:
+        return 0
+
+
+def add_used(n):
+    try:
+        DAILY.parent.mkdir(parents=True, exist_ok=True)
+        DAILY.write_text(json.dumps({"day": time.strftime("%Y-%m-%d", time.gmtime()), "bytes": used_today() + max(0, int(n))}))
+    except OSError as e:
+        print(f"couldnt write the daily count: {e}")
 
 
 def finish(result, message=None):
@@ -876,10 +896,16 @@ def main():
             stopped_by_pause = True
             break
         rel = str(target.relative_to(DEST))
+        if DAILY_CAP and used_today() + f.get("size", 0) > DAILY_CAP and used_today() > 0:
+            msg = f"Daily limit reached ({used_today() / 1e9:.0f} GB of {DAILY_CAP / 1e9:.0f} GB), the rest carries on tomorrow so there is bandwidth left for watching"
+            print(msg, flush=True)
+            finish("ok", msg)
+            return
         try:
             print(f"downloading {target}", flush=True)
             url = get_link(kind, id_param, item_id, f["id"])
             download(url, target, f.get("size", 0), rel)
+            add_used(f.get("size", 0))
             if CLEAN and target.suffix.lower() in VIDEO_EXT:
                 status["message"] = "Removing tags"
                 write_status()
@@ -899,6 +925,17 @@ def main():
             print(e, flush=True)
             finish("error", str(e))
             sys.exit(1)
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 429:
+                # TorBox says too many requests or the daily bandwidth is used up: every other file would get the same answer
+                body = (e.response.text or "")[:200]
+                msg = "TorBox's daily bandwidth is used up, the sync stops until it resets" if "DAILY_BANDWIDTH" in body else "TorBox said too many requests, the sync stops and tries again next run"
+                print(msg, flush=True)
+                finish("ok", msg)
+                return
+            print(f"failed {key}: {e}", flush=True)
+            status["failed"].append({"name": target.name, "error": str(e)[:200]})
+            status["current"] = None
         except Exception as e:
             print(f"failed {key}: {e}", flush=True)  # One bad file shouldnt stop the whole run
             status["failed"].append({"name": target.name, "error": str(e)[:200]})

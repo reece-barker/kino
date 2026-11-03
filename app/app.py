@@ -206,6 +206,8 @@ CREATE TABLE IF NOT EXISTS embeds (key TEXT PRIMARY KEY, h TEXT, vec BLOB, at RE
 CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, ref TEXT, kind TEXT, name TEXT, sub TEXT, title_id TEXT,
   device TEXT, ip TEXT, started REAL, last REAL, secs REAL DEFAULT 0, pos REAL, dur REAL);
 CREATE INDEX IF NOT EXISTS activity_last ON activity (last);
+CREATE TABLE IF NOT EXISTS wrapped_cache (profile_id INTEGER, period TEXT, data TEXT, at REAL, PRIMARY KEY (profile_id, period));
+CREATE TABLE IF NOT EXISTS wrapped_shares (code TEXT PRIMARY KEY, profile_id INTEGER, period TEXT, data TEXT, hide_name INTEGER DEFAULT 0, created REAL, views INTEGER DEFAULT 0, revoked INTEGER DEFAULT 0);
 """
 
 
@@ -8764,6 +8766,438 @@ async def service_worker():
 @app.get("/manifest.webmanifest")
 async def manifest():
     return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json")
+
+
+# ---------------------------------------------------------------- Kino Wrapped
+# A monthly look back for each profile: what they watched, when, how much, with a personality card written by Claude (when a key is set, a plain
+# one when not). Only ever about the profile asking, never the others. A person can share theirs as a link with a short code, anyone with the link
+# sees what was in the snapshot taken when they shared it (nothing live, no profile id), and they can stop sharing again
+try:
+    from zoneinfo import ZoneInfo
+    WRAP_TZ = ZoneInfo(env("WRAPPED_TZ", "Europe/London"))
+except Exception:
+    WRAP_TZ = datetime.timezone.utc
+WRAP_ALPHA = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"  # no 0, O, 1, I or L, it gets read out and typed on a tv
+WRAP_CODE_RX = re.compile(r"[A-Za-z0-9-]{4,20}")
+WRAP_MIN_SECS = 30 * 60  # under half an hour in a month isn't enough for a wrapped
+WRAP_LOCKS = {}
+WRAP_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+WRAP_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
+
+def wrap_bounds(period):
+    y, m = int(period[:4]), int(period[5:7])
+    start = datetime.datetime(y, m, 1, tzinfo=WRAP_TZ)
+    end = datetime.datetime(y + (m == 12), m % 12 + 1, 1, tzinfo=WRAP_TZ)
+    return start.timestamp(), end.timestamp()
+
+
+def wrap_now_period():
+    return datetime.datetime.now(WRAP_TZ).strftime("%Y-%m")
+
+
+def wrap_prev(period):
+    y, m = int(period[:4]), int(period[5:7])
+    return f"{y - (m == 1)}-{(m - 2) % 12 + 1:02d}"
+
+
+def wrap_label(period):
+    return f"{WRAP_MONTHS[int(period[5:7]) - 1]} {period[:4]}"
+
+
+def wrap_events(pid, start, end):
+    """One entry per stretch of watching in the month: name, episode, title, seconds, when. From the activity log, and for what was watched before
+    that log existed (or wasn't logged) from the watch history, which only knows the last time and how far"""
+    ev, seen = [], set()
+    for r in db().q("SELECT ref, kind, name, sub, title_id, device, started, last, secs FROM activity WHERE profile_id = ? AND last >= ? AND started < ? "
+                    "AND kind != 'live' AND secs >= 60", (pid, start, end)):
+        ev.append({"ref": r["ref"], "kind": r["kind"], "name": r["name"] or "a video", "sub": r["sub"] or "", "tid": r["title_id"], "dev": r["device"],
+                   "ts": r["started"], "secs": float(r["secs"] or 0)})
+        seen.add(r["ref"])
+    for r in db().q("SELECT file_id, pos, dur, watched, updated FROM watch WHERE profile_id = ? AND updated >= ? AND updated < ?", (pid, start, end)):
+        if r["file_id"] in seen or not r["dur"]:
+            continue
+        secs = float(r["dur"] if r["watched"] else min(r["pos"] or 0, r["dur"]))
+        if secs < 120:
+            continue
+        name, sub, tid, kind = act_describe(r["file_id"])
+        ev.append({"ref": r["file_id"], "kind": kind, "name": name, "sub": sub, "tid": tid, "dev": None, "ts": r["updated"] - secs, "secs": secs})
+    return ev
+
+
+def wrap_title_info(e):
+    """(key, genres, poster) of what an event was"""
+    t = LIB["titles"].get(e["tid"]) if e["tid"] else None
+    if t:
+        m = meta_light(t) or {}
+        return f"lib:{t['id']}", m.get("genres") or m.get("genre") or [], poster_for(m) if m.get("id") else m.get("poster")
+    if e["ref"].startswith("s"):
+        r = db().q("SELECT kind, video_id, poster FROM streams WHERE id = ?", (e["ref"],))
+        if r and r[0]["video_id"]:
+            sid = show_of(r[0]["video_id"])
+            m = meta_lite(f"ext:{r[0]['kind']}:{sid}") or {}
+            return f"ext:{sid}", m.get("genres") or m.get("genre") or [], poster_for(m) if m.get("id") else r[0]["poster"]
+    return "name:" + norm(e["name"]), [], None
+
+
+def wrap_words(secs):
+    h, m = int(secs // 3600), int(secs % 3600 // 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m"
+
+
+def wrap_compute(pid, period, prof):
+    start, end = wrap_bounds(period)
+    ev = wrap_events(pid, start, end)
+    total = sum(e["secs"] for e in ev)
+    if total < WRAP_MIN_SECS:
+        return None
+    ev.sort(key=lambda e: e["ts"])
+    titles, gen = {}, {}
+    for e in ev:
+        key, genres, poster = wrap_title_info(e)
+        e["key"] = key
+        shows = bool(e["sub"]) or e["kind"] == "episode"
+        t = titles.setdefault(key, {"name": e["name"], "kind": "show" if shows else "movie" if e["kind"] in ("movie", "stream") else "other", "secs": 0.0, "poster": poster,
+                                    "days": set()})
+        t["secs"] += e["secs"]
+        t["poster"] = t["poster"] or poster
+        t["days"].add(datetime.datetime.fromtimestamp(e["ts"], WRAP_TZ).date())
+        for g in genres[:4]:
+            gen[g] = gen.get(g, 0) + e["secs"]
+    top = sorted(titles.values(), key=lambda t: -t["secs"])[:5]
+    gtot = sum(gen.values()) or 1
+    genres = [{"name": g, "pct": round(100 * s / gtot)} for g, s in sorted(gen.items(), key=lambda x: -x[1])[:5]]
+    wd, part, perday, devs = [0.0] * 7, {"morning": 0.0, "afternoon": 0.0, "evening": 0.0, "night": 0.0}, {}, {}
+    for e in ev:
+        d = datetime.datetime.fromtimestamp(e["ts"], WRAP_TZ)
+        wd[d.weekday()] += e["secs"]
+        part["morning" if 5 <= d.hour < 12 else "afternoon" if 12 <= d.hour < 18 else "evening" if 18 <= d.hour < 23 else "night"] += e["secs"]
+        perday[d.date()] = perday.get(d.date(), 0) + e["secs"]
+        if e["dev"]:
+            devs[e["dev"]] = devs.get(e["dev"], 0) + e["secs"]
+    busiest = max(range(7), key=lambda i: wd[i])
+    big = max(perday.items(), key=lambda x: x[1])
+    # The longest sitting (breaks of up to 45 minutes don't end it) and the most episodes of one show in a day
+    sit, cur, last_end = 0.0, 0.0, 0.0
+    for e in ev:
+        if e["ts"] - last_end > 45 * 60:
+            cur = 0.0
+        cur += e["secs"]
+        last_end = e["ts"] + e["secs"]
+        sit = max(sit, cur)
+    bday = {}
+    for e in ev:
+        if e["sub"]:
+            b = bday.setdefault((e["key"], datetime.datetime.fromtimestamp(e["ts"], WRAP_TZ).date()), {"name": e["name"], "refs": set()})
+            b["refs"].add(e["ref"])
+    binge = max(((len(b["refs"]), k[1], b["name"]) for k, b in bday.items()), default=None)
+    days = sorted(perday)
+    streak, run = 0, 0
+    for i, d in enumerate(days):
+        run = run + 1 if i and (d - days[i - 1]).days == 1 else 1
+        streak = max(streak, run)
+    rew = max(((len(t["days"]), t["name"]) for t in titles.values() if len(t["days"]) >= 3), default=None)
+    movie_s = sum(t["secs"] for t in titles.values() if t["kind"] == "movie")
+    show_s = sum(t["secs"] for t in titles.values() if t["kind"] == "show")
+    mpct = round(100 * movie_s / ((movie_s + show_s) or 1))
+    eps = len({e["ref"] for e in ev if e["sub"]})
+    mov = len({e["ref"] for e in ev if e["kind"] == "movie"})
+    prev = None
+    p0, p1 = wrap_bounds(wrap_prev(period))
+    pt = sum(e["secs"] for e in wrap_events(pid, p0, p1))
+    if pt >= 600:
+        prev = {"hours": round(pt / 3600, 1), "pct": round(100 * (total - pt) / pt)}
+    loved = db().q("SELECT COUNT(*) AS c FROM ratings WHERE profile_id = ? AND value = 2 AND updated >= ? AND updated < ?", (pid, start, end))[0]["c"]
+    hours = total / 3600
+    fun = []
+    if hours >= 1:
+        fun.append({"icon": "ring", "text": f"That's {hours / 11.4:.1f} trips through the extended Lord of the Rings trilogy"})
+        fun.append({"icon": "plane", "text": f"Long enough for {hours / 7.5:.1f} flights from London to New York"})
+    if hours >= 3:
+        fun.append({"icon": "pizza", "text": f"You could have baked roughly {int(hours * 60 / 25)} pizzas in that time"})
+    if eps >= 5:
+        fun.append({"icon": "tv", "text": f"{eps} different episodes in one month"})
+    dt = lambda x: datetime.datetime.fromtimestamp(x, WRAP_TZ).strftime("%A %-d %B")
+    st = {"period": period, "label": wrap_label(period), "month": WRAP_MONTHS[int(period[5:7]) - 1], "year": int(period[:4]), "name": prof["name"], "kids": bool(prof.get("kids")),
+          "secs": int(total), "hours": round(hours, 1), "words": wrap_words(total), "titles": len(titles), "episodes": eps, "movies": mov, "active_days": len(days),
+          "prev": prev, "mix": {"movie": mpct, "show": 100 - mpct},
+          "top": [{"name": t["name"], "kind": t["kind"], "secs": int(t["secs"]), "words": wrap_words(t["secs"]), "days": len(t["days"]), "poster": t["poster"]} for t in top],
+          "genres": genres, "weekdays": [{"day": WRAP_DAYS[i], "secs": int(wd[i])} for i in range(7)], "busiest_day": WRAP_DAYS[busiest],
+          "parts": {k: round(100 * v / total) for k, v in part.items()},
+          "big_day": {"date": big[0].strftime("%A %-d %B"), "secs": int(big[1]), "words": wrap_words(big[1])},
+          "sitting": {"secs": int(sit), "words": wrap_words(sit)},
+          "binge": {"name": binge[2], "episodes": binge[0], "date": binge[1].strftime("%A %-d %B")} if binge and binge[0] >= 2 else None,
+          "streak": streak, "first": {"name": ev[0]["name"], "date": dt(ev[0]["ts"])}, "last": {"name": ev[-1]["name"], "date": dt(ev[-1]["ts"])},
+          "rewatch": {"name": rew[1], "days": rew[0]} if rew else None,
+          "devices": [{"name": k, "pct": round(100 * v / (sum(devs.values()) or 1))} for k, v in sorted(devs.items(), key=lambda x: -x[1])[:3]] if devs else [],
+          "loved": loved, "fun": fun[:4], "generated": int(time.time())}
+    st["persona"] = wrap_persona_local(st)
+    return st
+
+
+def wrap_persona_local(st):
+    """The personality card without Claude: a title from how and what they watched, and a line to go with it"""
+    parts, g = st["parts"], [x["name"] for x in st["genres"]]
+    wk = (st["weekdays"][5]["secs"] + st["weekdays"][6]["secs"]) / (st["secs"] or 1)
+    if parts["night"] >= 35:
+        title, why = "The Night Owl", f"{parts['night']}% of your watching was late at night"
+    elif wk >= 0.55:
+        title, why = "The Weekend Warrior", f"{round(wk * 100)}% of your time was a Saturday or Sunday"
+    elif st["binge"] and st["binge"]["episodes"] >= 6:
+        title, why = "The Binge Machine", f"{st['binge']['episodes']} episodes of {st['binge']['name']} in one day"
+    elif st["mix"]["movie"] >= 80:
+        title, why = "The Film Buff", f"{st['mix']['movie']}% of your time was films"
+    elif st["mix"]["show"] >= 80:
+        title, why = "The Series Devotee", f"{st['mix']['show']}% of your time was TV shows"
+    elif any(x in g[:2] for x in ("Crime", "Mystery", "Thriller")):
+        title, why = "The Armchair Detective", "you can't resist a good whodunnit"
+    elif "Comedy" in g[:2]:
+        title, why = "The Laugh Seeker", "comedy was your top pick"
+    elif any(x in g[:2] for x in ("Animation", "Family")):
+        title, why = "The Comfort Watcher", "cosy and cheerful is your thing"
+    elif any(x in g[:2] for x in ("Sci-Fi", "Fantasy")):
+        title, why = "The Space Cadet", "other worlds were calling"
+    elif parts["morning"] >= 25:
+        title, why = "The Early Bird", f"{parts['morning']}% of your watching was before lunch"
+    else:
+        title, why = "The Steady Watcher", "a bit of everything, all month"
+    lines = [f"{st['words']} of watching across {st['active_days']} days", f"Top pick: {st['top'][0]['name']}", f"Busiest day of the week: {st['busiest_day']}"]
+    return {"title": title, "blurb": f"{st['month']} belonged to {title}: {why}.", "lines": lines, "forecast": "", "source": "local"}
+
+
+WRAP_SCHEMA = {"type": "object", "properties": {"title": {"type": "string"}, "blurb": {"type": "string"}, "lines": {"type": "array", "items": {"type": "string"}},
+                                                 "forecast": {"type": "string"}}, "required": ["title", "blurb", "lines", "forecast"], "additionalProperties": False}
+WRAP_SYSTEM = ("You write the personality card of a monthly 'Wrapped' recap for a private family movie and TV site, like Spotify Wrapped. British English, warm, "
+               "witty and affectionate, never mean or rude, always family friendly (the person may be a child, so nothing rude, no swearing, no adult jokes). "
+               "You are given a summary of ONE person's month of watching, written as JSON, and you speak to them as 'you'. Use only the facts given and "
+               "never make up shows, numbers or facts about their life. Return: title (a funny personality title, 2 to 5 words, starting with 'The', at most 32 "
+               "characters), blurb (2 sentences, at most 220 characters, explaining the title using their real numbers), lines (exactly 3 short fun observations, "
+               "each at most 90 characters, each using a different fact from the data), forecast (one playful guess what they will fancy next month based on "
+               "their genres, at most 100 characters). Do not repeat their name.")
+
+
+async def wrap_persona_ai(st):
+    """The card from Claude, or None (no key, over the spend limit, refused, failed, nonsense). Only the numbers, titles and genres go, no names"""
+    if not AI_ON or time.time() < AI["pause"] or ai_spent()["usd"] >= AI_MONTH_USD:
+        return None
+    facts = {"month": st["label"], "hours": st["hours"], "titles": st["titles"], "episodes": st["episodes"], "movies": st["movies"], "days_watched": st["active_days"],
+             "top_titles": [{"name": t["name"], "hours": round(t["secs"] / 3600, 1), "days": t["days"]} for t in st["top"]], "genres": st["genres"],
+             "share_of_time_by_part_of_day_percent": st["parts"], "busiest_weekday": st["busiest_day"], "longest_sitting": st["sitting"]["words"],
+             "binge": st["binge"] and {"show": st["binge"]["name"], "episodes_in_one_day": st["binge"]["episodes"]}, "longest_streak_days": st["streak"],
+             "movie_vs_show_percent": st["mix"], "most_rewatched": st["rewatch"], "change_from_last_month_percent": (st["prev"] or {}).get("pct"),
+             "child": st["kids"]}
+    try:
+        r = await asyncio.wait_for(ai_client().messages.create(
+            model=AI_MODEL, max_tokens=500, system=WRAP_SYSTEM, messages=[{"role": "user", "content": json.dumps(facts)}], thinking={"type": "disabled"},
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": WRAP_SCHEMA}}), timeout=25)
+    except Exception as e:
+        log.warning("kino wrapped, claude failed (%s)", type(e).__name__)
+        AI["pause"] = time.time() + 60
+        return None
+    u = r.usage
+    usd = ((u.input_tokens or 0) * AI_PRICE_IN + (u.output_tokens or 0) * AI_PRICE_OUT) / 1e6
+    db().q("INSERT INTO ai_usage VALUES (?,1,?,?,?) ON CONFLICT(month) DO UPDATE SET calls = calls + 1, in_tok = in_tok + excluded.in_tok, "
+           "out_tok = out_tok + excluded.out_tok, usd = usd + excluded.usd", (time.strftime("%Y-%m"), u.input_tokens or 0, u.output_tokens or 0, usd))
+    try:
+        if r.stop_reason == "refusal":
+            return None
+        d = json.loads(next(b.text for b in r.content if b.type == "text"))
+        title, blurb = " ".join(str(d.get("title") or "").split())[:40], " ".join(str(d.get("blurb") or "").split())[:260]
+        lines = [" ".join(str(x).split())[:110] for x in (d.get("lines") or [])[:3] if str(x).strip()]
+        if not title or not blurb or len(lines) < 2:
+            return None
+        return {"title": title, "blurb": blurb, "lines": lines, "forecast": " ".join(str(d.get("forecast") or "").split())[:120], "source": "claude"}
+    except (StopIteration, ValueError, TypeError, AttributeError):
+        return None
+
+
+async def wrap_get(pid, period, prof):
+    """The wrapped for a month: kept once the month is over (so the numbers and the card stay the same), worked out fresh while it is still going"""
+    done = period < wrap_now_period()
+    if done:
+        row = db().q("SELECT data FROM wrapped_cache WHERE profile_id = ? AND period = ?", (pid, period))
+        if row:
+            d = json.loads(row[0]["data"])
+            d["name"], d["kids"] = prof["name"], bool(prof.get("kids"))
+            return d
+    lock = WRAP_LOCKS.setdefault((pid, period), asyncio.Lock())
+    async with lock:
+        if done:  # somebody else may have finished it while this waited
+            row = db().q("SELECT data FROM wrapped_cache WHERE profile_id = ? AND period = ?", (pid, period))
+            if row:
+                return {**json.loads(row[0]["data"]), "name": prof["name"], "kids": bool(prof.get("kids"))}
+        st = await asyncio.to_thread(wrap_compute, pid, period, prof)
+        if st and done:
+            ai = await wrap_persona_ai(st)
+            if ai:
+                st["persona"] = ai
+            db().q("INSERT OR REPLACE INTO wrapped_cache VALUES (?,?,?,?)", (pid, period, json.dumps(st), time.time()))
+    if len(WRAP_LOCKS) > 200:
+        WRAP_LOCKS.clear()
+    return st
+
+
+def wrap_periods(pid):
+    """Months with enough watching, newest first (this month too, it shows as it is so far)"""
+    first = db().q("SELECT MIN(t) AS t FROM (SELECT MIN(started) AS t FROM activity WHERE profile_id = ? UNION ALL SELECT MIN(updated) FROM watch WHERE profile_id = ?)", (pid, pid))[0]["t"]
+    if not first:
+        return []
+    now = wrap_now_period()
+    p, seq = datetime.datetime.fromtimestamp(first, WRAP_TZ).strftime("%Y-%m"), []
+    while p <= now and len(seq) < 60:
+        seq.append(p)
+        y, m = int(p[:4]), int(p[5:7])
+        p = f"{y + (m == 12)}-{m % 12 + 1:02d}"
+    out = []
+    for p in reversed(seq):
+        a, b = wrap_bounds(p)
+        secs = sum(e["secs"] for e in wrap_events(pid, a, b))
+        if secs >= WRAP_MIN_SECS:
+            out.append({"period": p, "label": wrap_label(p), "hours": round(secs / 3600, 1), "done": p < now})
+    return out
+
+
+def wrap_base(request):
+    host = (request.headers.get("host") or "").lower()
+    if not INSTALL_HOST_RX.fullmatch(host):
+        host = "kino.reece.page"
+    local = host.startswith(("localhost", "127.", "192.168.", "10."))
+    return f"{'http' if local else 'https'}://{host}"
+
+
+def wrap_share_row(pid, period):
+    r = db().q("SELECT code, hide_name, views FROM wrapped_shares WHERE profile_id = ? AND period = ? AND revoked = 0", (pid, period))
+    return dict(r[0]) if r else None
+
+
+def wrap_period_ok(period):
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period or "") or not 2000 <= int(period[:4]) <= 2100:
+        raise HTTPException(400, "That isn't a month")
+
+
+@app.get("/api/wrapped")
+async def wrapped_index(p=Depends(current_profile)):
+    pers = await asyncio.to_thread(wrap_periods, p["id"])
+    pr = prof_prefs(p["id"])
+    last_done = next((x for x in pers if x["done"]), None)
+    popup = None
+    # Offered for the latest finished month only, never again once opened or dismissed, and given up on after being shown twice
+    if last_done and pr.get("wrapped_seen") != last_done["period"] and (pr.get("wrapped_shown") or {}).get(last_done["period"], 0) < 2:
+        popup = last_done
+    return {"periods": pers, "popup": popup}
+
+
+@app.post("/api/wrapped/seen")
+async def wrapped_seen(request: Request, p=Depends(current_profile)):
+    b = await json_obj(request)
+    period = str(b.get("period") or "")
+    wrap_period_ok(period)
+    pr = prof_prefs(p["id"])
+    if b.get("action") in ("open", "dismiss"):
+        pr["wrapped_seen"] = period
+    else:
+        shown = pr.setdefault("wrapped_shown", {})
+        shown[period] = shown.get(period, 0) + 1
+        for k in sorted(shown)[:-3]:
+            shown.pop(k, None)
+    save_prefs(p["id"], pr)
+    return {"ok": True}
+
+
+@app.get("/api/wrapped/{period}")
+async def wrapped_one(period: str, request: Request, p=Depends(current_profile)):
+    wrap_period_ok(period)
+    d = await wrap_get(p["id"], period, p)
+    if not d:
+        raise HTTPException(404, "Not enough watching that month for a Wrapped")
+    sh = wrap_share_row(p["id"], period)
+    return {**d, "share": {"code": sh["code"], "url": f"{wrap_base(request)}/w/{sh['code']}", "hide_name": bool(sh["hide_name"]), "views": sh["views"]} if sh else None,
+            "can_share": not p.get("kids")}
+
+
+def wrap_public(d, hide_name):
+    """What a shared link shows: the numbers and titles of the month, no profile id, and no poster addresses (they go through the share's own picture route)"""
+    o = {k: v for k, v in d.items() if k not in ("generated", "kids")}
+    o["name"] = None if hide_name else d.get("name")
+    o["top"] = [{**t, "poster": bool(t.get("poster"))} for t in d["top"]]
+    return o
+
+
+@app.post("/api/wrapped/{period}/share")
+async def wrapped_share(period: str, request: Request, p=Depends(current_profile)):
+    wrap_period_ok(period)
+    if p.get("kids"):
+        raise HTTPException(403, "Sharing isn't available on kids profiles")
+    b = await json_obj(request)
+    d = await wrap_get(p["id"], period, p)
+    if not d:
+        raise HTTPException(404, "Not enough watching that month for a Wrapped")
+    hide = 1 if b.get("hide_name") else 0
+    snap = json.dumps(d)
+    sh = wrap_share_row(p["id"], period)
+    if sh:
+        db().q("UPDATE wrapped_shares SET data = ?, hide_name = ? WHERE code = ?", (snap, hide, sh["code"]))
+        code = sh["code"]
+    else:
+        for _ in range(10):
+            code = "".join(secrets.choice(WRAP_ALPHA) for _ in range(8))
+            if not db().q("SELECT 1 FROM wrapped_shares WHERE code = ?", (code,)):
+                break
+        db().q("INSERT INTO wrapped_shares (code, profile_id, period, data, hide_name, created, views, revoked) VALUES (?,?,?,?,?,?,0,0)", (code, p["id"], period, snap, hide, time.time()))
+    return {"code": code, "url": f"{wrap_base(request)}/w/{code}", "hide_name": bool(hide)}
+
+
+@app.delete("/api/wrapped/{period}/share")
+async def wrapped_unshare(period: str, p=Depends(current_profile)):
+    wrap_period_ok(period)
+    db().q("UPDATE wrapped_shares SET revoked = 1 WHERE profile_id = ? AND period = ?", (p["id"], period))
+    return {"ok": True}
+
+
+def wrap_lookup(code):
+    c = (code or "").replace("-", "").upper()
+    if not re.fullmatch(r"[A-Z0-9]{8}", c):
+        return None
+    r = db().q("SELECT code, data, hide_name FROM wrapped_shares WHERE code = ? AND revoked = 0", (c,))
+    return r[0] if r else None
+
+
+WRAPPED_HTML = (Path(__file__).with_name("wrapped.html")).read_text()
+WRAP_HEADERS = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"}
+
+
+def wrap_page(request, title, desc, code, status=200):
+    return Response(WRAPPED_HTML.replace("__V__", STATIC_VERSION["v"]).replace("__TITLE__", html.escape(title)).replace("__DESC__", html.escape(desc))
+                    .replace("__CODE__", code).replace("__SITE__", wrap_base(request)), media_type="text/html", status_code=status, headers=WRAP_HEADERS)
+
+
+@app.api_route("/w/{code}", methods=["GET", "HEAD"])
+async def wrapped_page(code: str, request: Request):
+    if code.endswith(".json"):
+        return await wrapped_public_json(code[:-5])
+    r = wrap_lookup(code) if WRAP_CODE_RX.fullmatch(code) else None
+    if not r:
+        return wrap_page(request, "Kino Wrapped", "This link isn't active", "", 404)
+    d = json.loads(r["data"])
+    who = f"{d['name']}'s" if d.get("name") and not r["hide_name"] else "A"
+    return wrap_page(request, f"{who} {d['month']} on Kino", f"{d['persona']['title']}: {d['words']} of watching, top pick {d['top'][0]['name']}", r["code"])
+
+
+async def wrapped_public_json(code):
+    r = wrap_lookup(code)
+    if not r:
+        raise HTTPException(404, "This link isn't active")
+    db().q("UPDATE wrapped_shares SET views = views + 1 WHERE code = ?", (r["code"],))
+    return JSONResponse(wrap_public(json.loads(r["data"]), r["hide_name"]), headers=WRAP_HEADERS)
+
+
+@app.get("/w/{code}/img/{i}")
+async def wrapped_public_img(code: str, i: int):
+    r = wrap_lookup(code)
+    d = json.loads(r["data"]) if r else None
+    if not d or not 0 <= i < len(d["top"]) or not d["top"][i].get("poster"):
+        raise HTTPException(404, "No picture")
+    return await img(d["top"][i]["poster"], 0, 342)
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

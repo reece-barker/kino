@@ -53,6 +53,12 @@ KIND_DIRS = {"torrents", "webdl", "usenet"}
 # 0 turns it off), so a big download never leaves nothing for watching. It carries on the next day
 DAILY_CAP = int(float(os.environ.get("SYNC_DAILY_CAP_GB", "1000")) * 1000**3)
 DAILY = Path(os.environ.get("SYNC_DAILY_FILE", "/var/lib/torbox-sync/daily.json"))
+# The whole account's day (GB, TorBox says 1649 for this one, a bigger plan may have more) and how much of it to keep for watching. Kino writes what
+# it streamed per day, so the room the sync gets is the day's limit minus what watching used so far minus a reserve. The reserve is the most
+# anybody streamed on a day in the last week plus a quarter, and never below SYNC_RESERVE_GB
+ACCOUNT_LIMIT = float(os.environ.get("SYNC_ACCOUNT_LIMIT_GB", "1500")) * 1000**3
+RESERVE = float(os.environ.get("SYNC_RESERVE_GB", "300")) * 1000**3
+USAGE = Path(os.environ.get("USAGE_FILE", "/var/lib/kino/torbox-usage.json"))
 MIN_FREE = 20 * 1024**3  # Keeps 20gb free so the storage box dosent fill up compleatly
 
 # Kind of download and the name of the id param that requestdl wants for it
@@ -459,6 +465,31 @@ def add_used(n):
         DAILY.write_text(json.dumps({"day": time.strftime("%Y-%m-%d", time.gmtime()), "bytes": used_today() + max(0, int(n))}))
     except OSError as e:
         print(f"couldnt write the daily count: {e}")
+
+
+def kino_usage():
+    """(streamed today, the biggest day of the last week, seconds since something was last streamed) from the file kino writes"""
+    try:
+        j = json.loads(USAGE.read_text())
+        days = j.get("days") or {}
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        week = [v for d, v in sorted(days.items())[-7:]]
+        return days.get(today, 0), max(week or [0]), time.time() - (j.get("last") or 0)
+    except Exception:
+        return 0, 0, 1e9
+
+
+def room_today():
+    """Bytes the sync may still download today, None when the cap is off"""
+    if not DAILY_CAP:
+        return None
+    k_today, k_peak, _ = kino_usage()
+    reserve = max(RESERVE, k_peak * 1.25)
+    by_account = ACCOUNT_LIMIT * 0.95 - reserve - used_today() - k_today
+    by_cap = DAILY_CAP - used_today()
+    status["budget"] = {"sync_gb": round(used_today() / 1e9), "watching_gb": round(k_today / 1e9), "reserve_gb": round(reserve / 1e9),
+                        "room_gb": round(max(0, min(by_account, by_cap)) / 1e9)}
+    return max(0, min(by_account, by_cap))
 
 
 def finish(result, message=None):
@@ -896,11 +927,24 @@ def main():
             stopped_by_pause = True
             break
         rel = str(target.relative_to(DEST))
-        if DAILY_CAP and used_today() + f.get("size", 0) > DAILY_CAP and used_today() > 0:
-            msg = f"Daily limit reached ({used_today() / 1e9:.0f} GB of {DAILY_CAP / 1e9:.0f} GB), the rest carries on tomorrow so there is bandwidth left for watching"
-            print(msg, flush=True)
-            finish("ok", msg)
+        # Somebody watching comes first: wait while something was streamed in the last 5 minutes (up to 2 hours), the next run picks the rest up
+        waited = 0
+        while kino_usage()[2] < 300 and waited < 7200:
+            status["message"] = "Waiting, somebody is watching"
+            write_status()
+            time.sleep(60)
+            waited += 60
+        if kino_usage()[2] < 300:
+            finish("ok", "People were watching for a long time, the rest carries on at the next run")
             return
+        room = room_today()
+        if room is not None and f.get("size", 0) > room:
+            # Doesn't fit in what is left of today, a smaller one further down may
+            status["skipped_today"] = status.get("skipped_today", 0) + 1
+            status["message"] = f"Today's bandwidth budget is used ({status.get('budget', {}).get('room_gb', 0)} GB left), the rest carries on tomorrow"
+            status["queue_done"] += 1
+            continue
+        status["message"] = None
         try:
             print(f"downloading {target}", flush=True)
             url = get_link(kind, id_param, item_id, f["id"])
@@ -942,7 +986,8 @@ def main():
             status["current"] = None
         status["queue_done"] += 1
         write_status()
-    finish("paused" if stopped_by_pause else "ok")
+    left = status.get("skipped_today", 0)
+    finish("paused" if stopped_by_pause else "ok", f"{left} files wait for tomorrow's bandwidth, so there is room for watching" if left else None)
     print(f"done, {status['new']} new files", flush=True)
 
 

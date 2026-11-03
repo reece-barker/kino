@@ -62,6 +62,7 @@ MEDIA_DIR = Path(env("MEDIA_DIR", "/srv/torbox"))
 DATA_DIR = Path(env("DATA_DIR", "/var/lib/kino"))
 SYNC_STATUS = Path(env("SYNC_STATUS", "/var/lib/torbox-sync/status.json"))
 PAUSE_FILE = Path(env("PAUSE_FILE", str(DATA_DIR / "pause.json")))
+USAGE_FILE = Path(env("USAGE_FILE", str(DATA_DIR / "torbox-usage.json")))  # what was streamed from sources per day, the sync reads it to keep room for watching
 DELETED_FILE = Path(env("DELETED_FILE", str(DATA_DIR / "deleted.json")))  # what the admin deleted, the sync reads it so it doesnt fetch it again
 ALLOWLIST = Path(env("ALLOWLIST_FILE", str(DATA_DIR / "allowlist.json")))
 ALLOWLIST_APPLIED = Path(env("ALLOWLIST_APPLIED", str(DATA_DIR / "allowlist-applied.json")))
@@ -7337,6 +7338,29 @@ async def direct_link(r):
     return final
 
 
+BW = {"days": {}, "last": 0.0, "saved": 0.0}
+
+
+def bw_add(n):
+    """Counts bytes streamed from a source (debrid included) per UTC day. The sync reads the file so it never uses the day's bandwidth that watching needs"""
+    now = time.time()
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    BW["days"][day] = BW["days"].get(day, 0) + n
+    BW["last"] = now
+    if now - BW["saved"] > 20:
+        BW["saved"] = now
+        for d in sorted(BW["days"])[:-14]:
+            BW["days"].pop(d, None)  # two weeks is plenty
+        try:
+            USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = USAGE_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"days": BW["days"], "last": BW["last"]}))
+            tmp.chmod(0o644)
+            tmp.replace(USAGE_FILE)
+        except OSError:
+            pass
+
+
 async def stream_proxy(r, request, dl=0):
     hdr = {"Range": request.headers["range"]} if request.headers.get("range") else {}
     if r["url"].startswith("torbox:"):
@@ -7368,8 +7392,10 @@ async def stream_proxy(r, request, dl=0):
         uh.peak = max(uh.peak, uh.active)
         try:
             async for chunk in up.aiter_bytes(256 * 1024):
+                bw_add(len(chunk))
                 yield chunk
         finally:
+            bw_add(0)
             uh.active -= 1
             await up.aclose()
             await client.aclose()

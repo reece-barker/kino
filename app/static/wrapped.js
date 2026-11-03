@@ -13,7 +13,7 @@
   // Little sounds made in the browser (nothing to download): a tick, a whoosh between slides, a pop and a fanfare. Off with the speaker button, which is remembered
   const Snd = (() => {
     let ctx = null, muted = false;
-    try { muted = localStorage.getItem("kw-mute") === "1"; } catch (_) {}
+    try { muted = localStorage.getItem("kino-sound") === "off"; } catch (_) {}
     const ac = () => {
       if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { return null; } }
       if (ctx.state === "suspended") ctx.resume().catch(() => {});
@@ -37,7 +37,7 @@
     };
     return {
       get muted() { return muted; },
-      toggle() { muted = !muted; try { localStorage.setItem("kw-mute", muted ? "1" : "0"); } catch (_) {} if (!muted) this.tick(); return muted; },
+      toggle() { muted = !muted; try { localStorage.setItem("kino-sound", muted ? "off" : "on"); } catch (_) {} if (window.KinoSound) KinoSound.set(!muted); if (!muted) this.tick(); return muted; },
       wake: ac,
       tick() { tone(880, 0, 0.07, "triangle", 0.07, 1180); },
       whoosh() { noise(0, 0.38, 400, 2600, 0.07); },

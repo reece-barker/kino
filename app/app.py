@@ -7730,7 +7730,7 @@ html { -webkit-text-size-adjust: 100%; }
 .inst h1 { font-size: 27px; line-height: 1.15; margin: 14px 0 6px; letter-spacing: -0.02em; }
 .inst .lead { color: var(--label-2); margin: 0; font-size: 16px; }
 .inst-pick > input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.picker { position: sticky; top: 0; z-index: 20; margin: 0 -16px 14px; padding: 10px 16px 10px; background: var(--page-bg); background: color-mix(in srgb, var(--page-bg) 88%, transparent); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+.picker { position: sticky; top: 0; z-index: 20; margin: 0 -16px 14px; padding: 10px 16px 10px; background: var(--page-bg); background: color-mix(in srgb, var(--page-bg) 96%, transparent); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); box-shadow: 0 1px 0 var(--sep, rgba(128, 128, 128, 0.25)); }
 .pick-q { margin: 0 0 8px; text-align: center; font-size: 14px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; color: var(--label-2); }
 .pick-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .tv { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 52px; padding: 8px 10px; border-radius: 14px; background: var(--bg-2); color: var(--label); font-size: 16px; font-weight: 700; line-height: 1.15; text-align: left; cursor: pointer; box-shadow: inset 0 0 0 2px var(--label-3); transition: background 0.18s, box-shadow 0.18s, color 0.18s; -webkit-tap-highlight-color: transparent; }
@@ -7755,7 +7755,10 @@ html { -webkit-text-size-adjust: 100%; }
 .steps b { color: var(--label); font-weight: 700; }
 .addr { display: block; margin: 10px 0 8px; padding: 12px 10px; border-radius: 12px; background: var(--page-bg); box-shadow: inset 0 0 0 2px var(--blue); color: var(--label); font: 700 clamp(17px, 5.2vw, 22px)/1.2 ui-monospace, "SF Mono", Menlo, monospace; text-align: center; overflow-wrap: anywhere; user-select: all; }
 .inst details { margin-top: 10px; background: var(--page-bg); border-radius: 12px; padding: 2px 12px; }
-.inst summary { cursor: pointer; display: flex; align-items: center; min-height: 44px; font-weight: 600; font-size: 15px; }
+.inst summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; font-weight: 600; font-size: 15px; list-style: none; }
+.inst summary::-webkit-details-marker { display: none; }
+.inst summary::after { content: ""; flex: none; width: 9px; height: 9px; margin-right: 3px; border-right: 2.5px solid var(--label-2); border-bottom: 2.5px solid var(--label-2); transform: rotate(45deg) translateY(-3px); transition: transform 0.2s; }
+.inst details[open] > summary::after { transform: rotate(-135deg) translateY(-3px); }
 .inst details p { font-size: 15px; }
 .inst .done { margin-top: 12px; padding: 16px; border-radius: 18px; text-align: center; background: var(--bg-2); }
 .inst .done h2 { margin: 0 0 4px; font-size: 20px; }

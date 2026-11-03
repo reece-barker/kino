@@ -44,7 +44,7 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote, urlencode, urljoin, urlparse
+from urllib.parse import quote, unquote, urlencode, urljoin, urlparse
 
 import httpx
 import psutil
@@ -6623,6 +6623,13 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
                     dropped += 1
                 continue  # a notice with nothing to play
             # A debrid source has the torrent's hash and a url to play it, the url is what plays
+            # Some addons list every file in a torrent, so the .nfo, .txt, subtitles and pictures show up as sources and can never play
+            bh_ = st.get("behaviorHints") if isinstance(st.get("behaviorHints"), dict) else {}
+            names_ = [str(bh_.get("filename") or ""), unquote(urlparse(url).path.rsplit("/", 1)[-1])] + [ln.strip() for ln in str(st.get("title") or st.get("description") or "").splitlines()]
+            if any(NONVIDEO_RX.search(n_) for n_ in names_):
+                rep_["other"].append("not a video file") if "not a video file" not in rep_["other"] else None
+                dropped += 1
+                continue
             if PLACEHOLDER_RE.search(urlparse(url).path):
                 rep_["error"] = rep_["error"] or str(st.get("title") or st.get("description") or "the addon sent an error")[:100]
                 continue  # an addon's own error (bad key and the like) comes as a stream with a video of a message
@@ -6993,6 +7000,7 @@ async def tb_open(url, headers):
 # looked like a working source. These are the addresses those are served from (Torrentio, MediaFusion, StremThru, Jackettio)
 PLACEHOLDER_RE = re.compile(r"/(?:videos/(?:[a-z_]+_v\d+|not_ready|error|access_denied|expired_api_key|not_premium|two_factor_auth)"
                             r"|static/exceptions/[^/]+|v0/store/_/static/[^/]+)\.mp4$", re.I)
+NONVIDEO_RX = re.compile(r"\.(nfo|txt|srt|sub|idx|ass|ssa|vtt|jpe?g|png|gif|sfv|exe|url|pdf|md5|diz|rar|zip|par2|torrent)\s*$", re.I)
 TB_UNCACHED_RX = re.compile(r"\[\w+ download\]|\[\w+⬇️?\]|⏳")
 RESOLVED = {}  # source address -> (when, the address it led to)
 RESOLVED_SECS = 600

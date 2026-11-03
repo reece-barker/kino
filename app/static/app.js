@@ -2377,7 +2377,7 @@
   function nextSource(fid, from, why, loud) {
     // The server says if the source's host was just busy (429, too many requests), that isnt the source being broken so it isnt held against it,
     // and sources on that host wait while others are tried
-    api(`/api/streams/${fid}/bad`, {}).then((r) => { if (r && r.busy && SOURCES) { SOURCES.busyHosts.add(r.host); SOURCES.busy = true; } }).catch(() => {});
+    api(`/api/streams/${fid}/bad`, { why: why || "" }).then((r) => { if (r && r.busy && SOURCES) { SOURCES.busyHosts.add(r.host); SOURCES.busy = true; } }).catch(() => {});
     if (!SOURCES || !SOURCES.list.some((x) => x.id === fid)) {
       // The player gave up on a source and there is no list to carry on from: say so, instead of dropping back to the page without a word
       if (loud) toast("That source didn't play and there's no other one to try. Pick one from the Sources list.", 7000);
@@ -2389,7 +2389,7 @@
     const untried = SOURCES.list.filter((x) => !SOURCES.tried.has(x.id));
     // Sources on a host that is busy come last
     const n = untried.find((x) => !SOURCES.busyHosts.has(x.host)) || untried[0];
-    if (!n || SOURCES.skips > 8) {
+    if (!n || SOURCES.skips > 14) {
       toast(!n && SOURCES.busy ? "The source servers are busy right now (too many requests). Give it a minute and try again." : n ? "A lot of the sources aren't working right now. Try again in a bit, or pick one from the Sources list yourself." : "None of the sources for this would play. Try again later, or another player from the player's menu.", 7000);
       return false;
     }
@@ -2507,7 +2507,7 @@
           <button class="round-btn sm" data-close aria-label="Close">${ic("close")}</button></div>
         <div class="src-list">${box._r.streams.map((s, i) => {
           const p = s.progress && !s.progress.watched && s.progress.dur ? s.progress.pos / s.progress.dur : 0;
-          const meta = [s.format, s.bytes ? bytes(s.bytes) : "", s.seeders != null ? `${s.seeders} seeder${s.seeders === 1 ? "" : "s"}` : "", s.peers != null ? `${s.peers} peer${s.peers === 1 ? "" : "s"}` : "", s.addon, s.tier].filter(Boolean);
+          const meta = [s.format, s.bytes ? bytes(s.bytes) : "", s.seeders != null && !(s.tb && s.tb.cached) ? `${s.seeders} seeder${s.seeders === 1 ? "" : "s"}` : "", s.peers != null && !(s.tb && s.tb.cached) ? `${s.peers} peer${s.peers === 1 ? "" : "s"}` : "", s.addon, s.tier].filter(Boolean);
           return `<button class="src ${i === 0 ? "best" : ""} ${s.health === "dead" ? "dead" : ""}" data-src="${i}">
             <span class="src-q ${s.height >= 720 ? "hd" : ""}">${esc(s.quality)}</span>
             <span class="src-body"><b>${esc(nice(s.label))}</b>
@@ -2554,7 +2554,7 @@
       }).join("") || `<p class="secondary sr-empty">Not on the Storage Box.</p>`)
         + `<h3 class="sr-sub">From Addons</h3>` + (tooNew ? `<div class="note pd-note">${ic("info")} ${esc(tooNewText(tooNew, dayOf2))}</div>` : "") + (streams ? (streams.length ? streams.map((x, i) => {
         const p = x.progress && !x.progress.watched && x.progress.dur ? x.progress.pos / x.progress.dur : 0;
-        const meta = [x.format, x.bytes ? bytes(x.bytes) : "", x.seeders != null ? `${x.seeders} seeder${x.seeders === 1 ? "" : "s"}` : "", x.peers != null ? `${x.peers} peer${x.peers === 1 ? "" : "s"}` : "", x.addon, x.tier].filter(Boolean);
+        const meta = [x.format, x.bytes ? bytes(x.bytes) : "", x.seeders != null && !(x.tb && x.tb.cached) ? `${x.seeders} seeder${x.seeders === 1 ? "" : "s"}` : "", x.peers != null && !(x.tb && x.tb.cached) ? `${x.peers} peer${x.peers === 1 ? "" : "s"}` : "", x.addon, x.tier].filter(Boolean);
         return `<button class="src ${x.health === "dead" ? "dead" : ""}" data-str="${i}">
           <span class="src-q ${x.height >= 720 ? "hd" : ""}">${esc(x.quality)}</span>
           <span class="src-body"><b>${esc(nice(x.label))}</b><span class="src-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</span>

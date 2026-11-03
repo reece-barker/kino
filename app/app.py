@@ -2649,6 +2649,40 @@ def continue_list(summ, wm, pid=None):
     return out
 
 
+def recent_list(summ, wm, skip, limit=20):
+    """Everything this profile played lately, newest first, one tile per title (a show once, whichever episode it was). Finished things count too, unlike
+    Continue Watching, so a show can be opened from here to pick the next episode. Titles that are already in Continue Watching (skip) aren't repeated"""
+    out, seen = [], set(skip)
+    by_id = {s["id"]: s for s in summ}
+    for r in sorted(wm.values(), key=lambda r: r["updated"], reverse=True):
+        if not (r["watched"] or (r["pos"] or 0) >= 60):
+            continue  # opened and closed again
+        if r["file_id"].startswith("s"):
+            st = db().q("SELECT * FROM streams WHERE id = ?", (r["file_id"],))
+            if not st:
+                continue
+            st = dict(st[0])
+            show = show_of(st["video_id"])
+            if show in seen:
+                continue
+            seen.add(show)
+            parts = st["video_id"].split(":")
+            se = (int(parts[-2]), int(parts[-1])) if st["kind"] == "series" and len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit() else (None, None)
+            out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]), "stream": True,
+                        "last": r["updated"], "season": se[0], "episode": se[1]})
+        else:
+            f = LIB["files"].get(r["file_id"])
+            t = f and LIB["titles"].get(f["title_id"])
+            sm = f and by_id.get(f["title_id"])
+            if not t or not sm or t["id"] in seen:
+                continue
+            seen.add(t["id"])
+            out.append({**sm, "last": r["updated"], "season": f["season"], "episode": f["episode"]})
+        if len(out) >= limit:
+            break
+    return out
+
+
 @app.post("/api/continue/hide")
 async def continue_hide(request: Request, p=Depends(current_profile)):
     b = await json_obj(request)
@@ -2877,6 +2911,9 @@ async def home(request: Request, p=Depends(current_profile)):
         shelves.append({"id": "fresh", "title": "New Episodes in My List", "style": "fresh", "items": fresh})
     if cont:
         shelves.append({"id": "continue", "title": f"Continue Watching for {p['name']}", "style": "continue", "items": cont})
+    recent = recent_list(summ, wm, {c["id"] for c in cont if c.get("id")})
+    if recent:
+        shelves.append({"id": "recent", "title": "Recently Watched", "style": "recent", "items": recent})
     if has_signal:
         picks = [s for s in by_score if not s["watched"]][:13]
         # Every few picks is something well rated from outside what they usually watch, so there's always room for

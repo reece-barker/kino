@@ -17,7 +17,7 @@
     toggle() { if (!KS()) return true; KS().set(!KS().on); if (KS().on) { KS().play("tick"); KS().music.start(); } else KS().music.stop(0.3); return !KS().on; },
     wake() { if (KS()) KS().wake(); },
     tick() { KS() && KS().play("tick"); }, whoosh() { KS() && KS().play("whoosh"); }, pop() { KS() && KS().play("pop"); },
-    chime() { KS() && KS().play("chime"); }, fanfare() { KS() && KS().play("fanfare"); },
+    chime() { KS() && KS().play("chime"); }, fanfare() { KS() && KS().play("fanfare"); }, cheer() { KS() && KS().play("cheer"); },
     music(v) { const k = KS(); if (!k) return; if (v && k.on) k.music.start(); else k.music.stop(); },
   };
 
@@ -215,29 +215,49 @@
       else { const g = x.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2); g.addColorStop(0, c1); g.addColorStop(1, c2); x.fillStyle = g; x.fillRect(-w / 2, -h / 2, w, h); x.fillStyle = "#fff"; x.font = `800 26px ${FONT}`; x.textAlign = "center"; x.fillText(((d.top[i] || {}).name || "").slice(0, 18), 0, 8); }
       x.restore(); x.lineWidth = 2; x.strokeStyle = "rgba(255,255,255,0.22)"; rr(-w / 2, -h / 2, w, h, 18); x.stroke(); x.restore();
     });
-    // Left: who, which month, the personality, the numbers
+    // A few quiet shapes and dots behind the text
+    x.save(); x.globalAlpha = 0.07; x.fillStyle = "#fff";
+    for (let gx = 40; gx < W; gx += 44) for (let gy = 40; gy < H; gy += 44) { x.beginPath(); x.arc(gx, gy, 1.6, 0, Math.PI * 2); x.fill(); }
+    x.restore();
     x.textAlign = "left"; x.textBaseline = "alphabetic";
-    const fit = (txt, px, weight, maxW) => { let f = px; do { x.font = `${weight} ${f}px ${FONT}`; f -= 2; } while (x.measureText(txt).width > maxW && f > 18); };
-    let top = 64;
-    if (d.name || av) {
-      if (av) {
-        const ar = 46, ax = 70 + ar, ay = 66 + ar;
-        x.save(); x.beginPath(); x.arc(ax, ay, ar, 0, Math.PI * 2); x.clip();
-        const a = o.avatar || {}, g = x.createLinearGradient(ax - ar, ay - ar, ax + ar, ay + ar); g.addColorStop(0, a.a || a.bg || c1); g.addColorStop(1, a.b || a.bg || c2); x.fillStyle = g; x.fillRect(ax - ar, ay - ar, ar * 2, ar * 2);
-        const sc = a.svg ? 1.5 : 1.7, sw = ar * sc, sh = (av.height / (av.width || 1)) * sw; x.drawImage(av, ax - (a.svg ? ar : sw / 2), ay - (a.svg ? ar : sh / 2), a.svg ? ar * 2 : sw, a.svg ? ar * 2 : sh);
-        x.restore(); x.lineWidth = 3; x.strokeStyle = "rgba(255,255,255,0.5)"; x.beginPath(); x.arc(ax, ay, ar, 0, Math.PI * 2); x.stroke();
-      }
-      x.fillStyle = "#fff"; fit(d.name ? `${d.name}'s` : "", 40, 800, 420); x.fillText(d.name ? `${d.name}'s` : "", av ? 190 : 70, 66 + 40);
-      x.fillStyle = "rgba(255,255,255,0.7)"; x.font = `800 22px ${FONT}`; if ("letterSpacing" in x) x.letterSpacing = "4px"; x.fillText("KINO WRAPPED", av ? 190 : 70, 66 + 78); if ("letterSpacing" in x) x.letterSpacing = "0px";
-      top = 190;
-    } else { x.fillStyle = "rgba(255,255,255,0.7)"; x.font = `800 24px ${FONT}`; if ("letterSpacing" in x) x.letterSpacing = "4px"; x.fillText("KINO WRAPPED", 70, 100); if ("letterSpacing" in x) x.letterSpacing = "0px"; top = 150; }
-    x.fillStyle = "#fff"; fit(d.month, 150, 850, 560); x.fillText(d.month, 66, top + 130);
-    x.fillStyle = "rgba(255,255,255,0.85)"; x.font = `800 52px ${FONT}`; x.fillText(String(d.year), 72, top + 190);
-    const gr = x.createLinearGradient(70, 0, 640, 0); gr.addColorStop(0, "#fff"); gr.addColorStop(1, "#ffd1e8");
-    x.fillStyle = gr; fit(d.persona.title, 62, 850, 580); x.fillText(d.persona.title, 70, top + 280);
-    x.fillStyle = "rgba(255,255,255,0.9)"; x.font = `700 32px ${FONT}`;
-    x.fillText(`${Math.round(d.hours)} hours  ·  ${d.active_days} days  ·  ${d.titles} titles`, 70, top + 335);
-    x.fillStyle = "rgba(255,255,255,0.55)"; x.font = `800 26px ${FONT}`; x.fillText("Kino", 70, H - 36);
+    const spaced = (txt, px, py, sp) => { if ("letterSpacing" in x) { x.letterSpacing = sp + "px"; x.fillText(txt, px, py); x.letterSpacing = "0px"; } else x.fillText(txt, px, py); };
+    const fit = (txt, px, weight, maxW) => { let f = px; do { x.font = `${weight} ${f}px ${FONT}`; f -= 2; } while (x.measureText(txt).width > maxW && f > 18); return f + 2; };
+    const L = 70;
+    // Who it is: the picture, the name, and the "Kino Wrapped" tag
+    let y0 = 58;
+    if (av) {
+      const ar = 40, ax = L + ar, ay = y0 + ar;
+      x.save(); x.beginPath(); x.arc(ax, ay, ar, 0, Math.PI * 2); x.clip();
+      const a = o.avatar || {}, g = x.createLinearGradient(ax - ar, ay - ar, ax + ar, ay + ar); g.addColorStop(0, a.a || a.bg || c1); g.addColorStop(1, a.b || a.bg || c2); x.fillStyle = g; x.fillRect(ax - ar, ay - ar, ar * 2, ar * 2);
+      if (a.svg) x.drawImage(av, ax - ar, ay - ar, ar * 2, ar * 2); else { const sw = ar * 1.7, sh = (av.height / (av.width || 1)) * sw; x.drawImage(av, ax - sw / 2, ay - sh / 2, sw, sh); }
+      x.restore(); x.lineWidth = 3; x.strokeStyle = "rgba(255,255,255,0.55)"; x.beginPath(); x.arc(ax, ay, ar, 0, Math.PI * 2); x.stroke();
+    }
+    const nx = av ? L + 100 : L;
+    if (d.name) { x.fillStyle = "#fff"; fit(`${d.name}'s`, 40, 800, 300); x.fillText(`${d.name}'s`, nx, y0 + 36); }
+    // the tag: a rounded outline with spaced capitals
+    x.font = `800 17px ${FONT}`; const tag = "KINO WRAPPED " + d.year, tw = x.measureText(tag).width + tag.length * 3.2 + 28, ty = d.name ? y0 + 50 : y0 + 12;
+    x.lineWidth = 2; x.strokeStyle = "rgba(255,255,255,0.6)"; rr(nx, ty, tw, 32, 16); x.stroke(); x.fillStyle = "#fff"; spaced(tag, nx + 14, ty + 22, 3.2);
+    // The month, as big as the space allows
+    const my = 318;
+    fit(d.month, 190, 900, 560);
+    x.save(); x.shadowColor = "rgba(0,0,0,0.35)"; x.shadowBlur = 30; x.shadowOffsetY = 8; x.fillStyle = "#fff"; x.fillText(d.month, L - 4, my); x.restore();
+    // The personality as a white sticker, a touch off level
+    const pf = fit(d.persona.title, 50, 850, 520), pw = x.measureText(d.persona.title).width + 52;
+    x.save(); x.translate(L, my + 36); x.rotate(-0.03); x.shadowColor = "rgba(0,0,0,0.35)"; x.shadowBlur = 22; x.shadowOffsetY = 8;
+    x.fillStyle = "#fff"; rr(0, 0, pw, 70, 16); x.fill(); x.shadowColor = "transparent";
+    x.font = `850 ${pf}px ${FONT}`; const sg = x.createLinearGradient(0, 0, pw, 0); sg.addColorStop(0, c1); sg.addColorStop(1, c2); x.fillStyle = sg; x.fillText(d.persona.title, 26, 35 + pf * 0.35); x.restore();
+    // Three numbers
+    const stats = [[Math.round(d.hours), d.hours === 1 ? "hour" : "hours"], [d.active_days, d.active_days === 1 ? "day" : "days"], [d.titles, d.titles === 1 ? "title" : "titles"]];
+    const sy = 536;
+    stats.forEach(([n, lab], i) => {
+      const sx = L + i * 190;
+      x.fillStyle = "#fff"; x.font = `850 64px ${FONT}`; x.fillText(String(n), sx, sy);
+      x.fillStyle = "rgba(255,255,255,0.7)"; x.font = `700 22px ${FONT}`; x.fillText(lab, sx + 2, sy + 30);
+      if (i < 2) { x.fillStyle = "rgba(255,255,255,0.25)"; x.fillRect(sx + 160, sy - 50, 2, 80); }
+    });
+    x.fillStyle = "rgba(255,255,255,0.5)"; x.font = `800 22px ${FONT}`; spaced("KINO", W - 120, H - 28, 4);
+    // the number one badge on the middle poster
+    if (posters[0]) { x.save(); x.translate(905 - 125 + 14, 330 - 187 + 14); x.fillStyle = "#fff"; x.beginPath(); x.arc(30, 30, 30, 0, Math.PI * 2); x.fill(); x.fillStyle = "#08080d"; x.font = `850 28px ${FONT}`; x.textAlign = "center"; x.fillText("#1", 30, 40); x.restore(); }
     return new Promise((ok, no) => cv.toBlob((b) => (b ? ok(b) : no(new Error("no picture"))), "image/jpeg", 0.88));
   }
 
@@ -277,13 +297,14 @@
         first[p] = 1;
         if (p === "persona") { Snd.fanfare(); fx.cannons(70); setTimeout(() => fx.rain(60), 500); }
         else if (p === "top") Snd.chime();
-        else if (p === "intro") { fx.rain(40); Snd.chime(); }
+        else if (p === "intro") { fx.rain(40); Snd.cheer(); }
       }
     }), { root: track, threshold: 0.55 });
     // The slides start animating once the person has tapped to open (see the gate below), so the intro isn't spent behind it
     const begin = () => { started = true; secs.forEach((s) => io.observe(s)); Snd.music(true); };
-    document.addEventListener("visibilitychange", () => { if (document.hidden) Snd.music(false); else if (started) Snd.music(true); });
-    let started = false;
+    let started = false, gone = false;
+    const vis = () => { if (gone) return; if (document.hidden) Snd.music(false); else if (started) Snd.music(true); };
+    document.addEventListener("visibilitychange", vis);
     const sync = () => { const i = Math.round(track.scrollTop / (track.clientHeight || 1)); if (i === cur) return; cur = i; Snd.whoosh(); segs.forEach((s, k) => s.classList.toggle("on", k <= i)); next.hidden = i >= secs.length - 1; };
     track.addEventListener("scroll", sync, { passive: true });
     segs.forEach((s) => (s.onclick = () => go(Number(s.dataset.i))));
@@ -334,7 +355,7 @@
       if (o.tv) next.focus({ preventScroll: true }); else track.focus({ preventScroll: true });
     }
     sync();
-    return { destroy() { Snd.music(false); fx.stop(); removeEventListener("resize", fitMonth); document.removeEventListener("keydown", key, true); io.disconnect(); root.innerHTML = ""; }, go };
+    return { destroy() { gone = true; started = false; document.removeEventListener("visibilitychange", vis); Snd.music(false); fx.stop(); removeEventListener("resize", fitMonth); document.removeEventListener("keydown", key, true); io.disconnect(); root.innerHTML = ""; }, go };
   }
 
   window.KinoWrapped = { mount, card };

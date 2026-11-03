@@ -8781,6 +8781,7 @@ WRAP_ALPHA = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"  # no 0, O, 1, I or L, it gets re
 WRAP_CODE_RX = re.compile(r"[A-Za-z0-9-]{4,20}")
 WRAP_MIN_SECS = 30 * 60  # under half an hour in a month isn't enough for a wrapped
 WRAP_LOCKS = {}
+WRAP_WARM = set()  # profiles whose finished month has been started in the background (once each per run)
 WRAP_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 WRAP_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
@@ -9080,6 +9081,10 @@ async def wrapped_index(p=Depends(current_profile)):
     pers = await asyncio.to_thread(wrap_periods, p["id"])
     pr = prof_prefs(p["id"])
     last_done = next((x for x in pers if x["done"]), None)
+    # The finished month is made now (and the Claude card written) so it is ready by the time somebody opens it
+    if last_done and (p["id"], last_done["period"]) not in WRAP_WARM:
+        WRAP_WARM.add((p["id"], last_done["period"]))
+        asyncio.create_task(wrap_get(p["id"], last_done["period"], p))
     popup = None
     # Offered for the latest finished month only, never again once opened or dismissed, and given up on after being shown twice
     if last_done and pr.get("wrapped_seen") != last_done["period"] and (pr.get("wrapped_shown") or {}).get(last_done["period"], 0) < 2:

@@ -3419,6 +3419,7 @@
         <h2 class="set-title">Appearance</h2>
         <div class="set-row"><span><b>Theme</b><span class="secondary">Automatic follows this device's light or dark setting</span></span>${themePicker("setTheme")}</div>
         ${toggle("setSound", window.KinoSound ? KinoSound.on : false, "Interface Sounds", "Soft clicks and chimes as you move around Kino, and in Kino Wrapped. This device only, and never while a video is playing")}
+        <div class="set-row"><span><b>Test Sound</b><span class="secondary" id="setSoundMsg">Plays a short chime. If you hear nothing, check the volume and the silent switch on this device</span></span><button class="btn secondary small" id="setSoundTest">Play</button></div>
       </section>
       <section class="card set-card">
         <h2 class="set-title">Android App</h2>
@@ -3477,6 +3478,11 @@
     if (pc) pc.onclick = () => setPin(false);
     if (po) po.onclick = () => setPin(true);
     wireThemePicker($("#setTheme"));
+    const st = $("#setSoundTest"); if (st) st.onclick = () => {
+      const r = window.KinoSound ? KinoSound.test() : "none";
+      $("#setSoundMsg").textContent = r === "running" ? "It played. If you still hear nothing, turn the volume up or switch off silent mode on this device"
+        : r === "suspended" ? "This browser is holding the sound back until you tap something, press Play again" : "This browser can't play sounds here";
+    };
     const snd = $("#setSound"); if (snd) snd.onchange = () => { if (window.KinoSound) { KinoSound.set(snd.checked); if (snd.checked) KinoSound.play("on"); } };
     drawInterests();
     const saveP = async () => {
@@ -5981,8 +5987,23 @@
     if (!d || !window.KinoWrapped) { host.remove(); history.length > 1 ? history.back() : (location.hash = "#/home"); return; }
     api("/api/wrapped/seen", { period: per, action: "open" }).catch(() => {});
     host.removeAttribute("style");
-    const share = { can: d.can_share, state: d.share, create: async (hide) => { const r = await api(`/api/wrapped/${per}/share`, { hide_name: !!hide }); return { ...r, views: (share.state || {}).views || 0 }; },
+    // The picture the link shows in WhatsApp and the like: your profile picture, name, month, personality and top posters, drawn here and sent up
+    const avatarFor = (pr) => {
+      const v = (pr && pr.image) || "";
+      if (v.startsWith("logo|")) { const [, slug, hx] = v.split("|"); return { img: img(LOGO_BASE + slug + ".svg"), bg: "#" + hx }; }
+      if (v.startsWith("img|")) return { img: img(v.slice(4), 0, 240) };
+      const a = AV[pr ? pr.icon : 0] || AV[0];
+      return { svg: a[3], a: a[1], b: a[2] };
+    };
+    const sendCard = async (hide) => {
+      try {
+        const blob = await Promise.race([KinoWrapped.card({ ...d, name: hide ? null : d.name }, { avatar: hide ? null : avatarFor(ME.profile), img: (t) => img(t.poster, 0, 342) }), new Promise((_, no) => setTimeout(() => no(new Error("slow")), 8000))]);
+        await fetch(`/api/wrapped/${per}/card`, { method: "POST", headers: { "X-Kino": "1", "Content-Type": "image/jpeg" }, body: blob, credentials: "same-origin" });
+      } catch (_) {}
+    };
+    const share = { can: d.can_share, state: d.share, create: async (hide) => { const r = await api(`/api/wrapped/${per}/share`, { hide_name: !!hide }); await sendCard(hide); return { ...r, views: (share.state || {}).views || 0 }; },
                     remove: () => api(`/api/wrapped/${per}/share`, null, "DELETE") };
+    if (d.share) setTimeout(() => sendCard(d.share.hide_name), 1500);  // a link made before the banner existed gets its picture the next time it is opened here
     WRAPPED = KinoWrapped.mount(host, d, { tv: TV, img: (t) => img(t.poster, 0, 342), periods: idx.periods, share,
       onPeriod: (p) => { location.replace("#/wrapped/" + p); },
       onClose: () => { history.length > 1 ? history.back() : (location.hash = "#/home"); } });

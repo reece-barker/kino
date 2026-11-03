@@ -5117,11 +5117,20 @@ async def subtitles(fid: str, sub_id: str, p=Depends(current_profile)):
     raise HTTPException(404, "Subtitle not found")
 
 
+DEVICE_FAIL_RX = re.compile(r"sound|audio|codec|decod|format|picture|support", re.I)
+
+
 @app.post("/api/streams/{sid}/bad")
-async def stream_bad(sid: str, p=Depends(current_profile)):
+async def stream_bad(sid: str, request: Request, p=Depends(current_profile)):
     # A source that wouldn't play goes to the back of the list next time, unless its host just said it was busy (429), that passes
     r = stream_row(sid)
     host = urlparse(r["url"]).hostname or ""
+    try:
+        why = str((await request.json()).get("why") or "")
+    except Exception:
+        why = ""
+    if DEVICE_FAIL_RX.search(why):
+        return {"ok": True, "busy": False, "device": True, "host": host}  # this device can't play it (sound or format), the source itself is fine
     if host_busy(host, 120):
         return {"ok": True, "busy": True, "host": host}
     if time.time() - SLOW_START.get(r["url"], 0) < 180:
@@ -6543,7 +6552,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
             # archive.org is slow so these get a bit longer than other addon calls
             # quick is the title page's first look: whatever answers in a few seconds, so Play shows straight away. The
             # full list comes right after, slow addons (archive.org) get there 45 seconds there
-            j = await addon_call(a, "stream", kind, vid, ttl=3 * 3600, timeout=6 if quick else 45)
+            j = await addon_call(a, "stream", kind, vid, ttl=300, timeout=6 if quick else 45)
             return a, j.get("streams") or [], None
         except httpx.TimeoutException:
             return a, [], "took too long to answer"
@@ -6558,15 +6567,21 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
     for a, streams, err in got:
         rep_ = {"addon": a["m"].get("name"), "found": len(streams), "kept": 0, "other": [], "error": err}
         report.append(rep_)
-        for st in streams[:40]:
-            if not isinstance(st, dict):
-                continue
+        # Cached sources come first so a long list (Torrentio sends a lot) doesn't cut them off at the 40
+        streams = [x for x in streams if isinstance(x, dict)]
+        streams.sort(key=lambda x: 0 if TB_CACHED_RX.search(f"{x.get('name') or ''} {x.get('title') or ''}") else 1)
+        for st in streams[:60]:
             url = st.get("url")
             # archive.org works on https too, so old http links get upgraded instead of dropped
             if isinstance(url, str) and url.startswith("http://") and on_pd_list("https://" + url[7:]):
                 url = "https://" + url[7:]
             # Torrents, youtube ids, outside links and anything not on a public domain host are left out
-            if st.get("infoHash") or st.get("ytId") or st.get("externalUrl") or not pd_url_ok(url):
+            if not isinstance(url, str) or not url:
+                if st.get("infoHash") or st.get("ytId") or st.get("externalUrl"):
+                    dropped += 1
+                continue  # a notice with nothing to play
+            # A debrid source has the torrent's hash and a url to play it, the url is what plays
+            if st.get("ytId") or st.get("externalUrl") or (st.get("infoHash") and not url) or not pd_url_ok(url):
                 dropped += 1
                 what = "torrent" if st.get("infoHash") else "youtube" if st.get("ytId") else urlparse(str(url or st.get("externalUrl") or "")).hostname or "unknown"
                 if what not in rep_["other"]:
@@ -6592,7 +6607,7 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         if not h:
             return 1
         # A failure counts for 6 hours, links come back and go away, so an old one shouldnt keep a source at the back for good
-        if (h["bad"] or 0) > (h["good"] or 0) and time.time() - (h["bad"] or 0) < 6 * 3600:
+        if (h["bad"] or 0) > (h["good"] or 0) and time.time() - (h["bad"] or 0) < 2 * 3600:
             return 2
         return 0 if (h["good"] or 0) > (h["bad"] or 0) else 1
     # Ask every source if it is answering, a dead one is marked so it goes last and the player doesnt try it by itself
@@ -6626,11 +6641,16 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
     if out and TORBOX_KEY and not inline:
         hs = sorted({x["_hash"] for x in out if x.get("_hash")})
         if hs:
-            cached, prog = await soon(asyncio.gather(tb_cached(hs), tb_progress()), 1.2 if quick else 2.5, ({}, {}))
+            # Asked separately: a slow account list (mylist) must not throw away the quick cached answer
+            tb_t = 1.2 if quick else 2.5
+            cached, prog = await asyncio.gather(soon(tb_cached(hs), tb_t, {}), soon(tb_progress(), tb_t, {}))
             for x in out:
                 h = x.get("_hash")
                 if h:
-                    x["tb"], slow = tb_judge(h, cached.get(h), prog)
+                    said = cached.get(h)
+                    if said is False and TB_CACHED_RX.search(f"{x['label']}"):
+                        said = True  # the addon itself marks it as cached on TorBox, a miss in checkcached doesn't beat that
+                    x["tb"], slow = tb_judge(h, said, prog)
                     if slow:
                         x["slow"] = slow
                     if x["tb"].get("seeds") is not None and x.get("seeders") is None:
@@ -6797,7 +6817,10 @@ def torrent_stats(st):
     bh = st.get("behaviorHints") or {}
     def num(v):
         try:
-            n = int(float(str(v).replace(",", "")))
+            t = str(v).strip().replace(",", "")
+            if re.fullmatch(r"\d{1,3}(\.\d{3})+", t):
+                t = t.replace(".", "")  # 1.234 is a thousand and something, not 1
+            n = int(float(t))
             return n if 0 <= n < 10**7 else None
         except (TypeError, ValueError):
             return None
@@ -6805,7 +6828,7 @@ def torrent_stats(st):
     peers = next((n for n in [num(st.get(k)) for k in ("peers", "leechers", "leeches", "leecher")] + [num(bh.get("peers"))] if n is not None), None)
     text = " ".join(str(st.get(k) or "") for k in ("name", "title", "description"))
     if seeders is None:
-        m = re.search(r"(?:\U0001F464|\U0001F331)\s*(\d[\d,]*)|\bseed(?:er)?s?\s*[:=]?\s*(\d[\d,]*)|\bS\s*[:=]\s*(\d[\d,]*)\b", text, re.I)
+        m = re.search(r"(?:\U0001F464|\U0001F331|\u2B06\uFE0F?)\s*(\d[\d,.]*)|\bseed(?:er)?s?\s*[:=]?\s*(\d[\d,]*)|\bS\s*[:=]\s*(\d[\d,]*)\b", text, re.I)
         if m:
             seeders = num(next(g for g in m.groups() if g))
     if peers is None:
@@ -6956,7 +6979,7 @@ async def pd_open(url, headers, kind="play", _again=True):
             try:
                 # The first answer is waited for 15 seconds when playing. A debrid address that has to get the file ready first can sit there for
                 # minutes, or for ever when nobody is sharing it, so after that the player is told to take another source
-                r = await asyncio.wait_for(client.send(client.build_request("GET", url, headers=headers), stream=True), 15 if kind == "play" else 30)
+                r = await asyncio.wait_for(client.send(client.build_request("GET", url, headers=headers), stream=True), 25 if kind == "play" else 30)
             except asyncio.TimeoutError:
                 SLOW_START[first_url] = time.time()
                 raise HTTPException(504, f"{urlparse(url).hostname or 'The source'} is taking too long to start this one, it is probably still getting it ready")
@@ -7002,13 +7025,17 @@ async def rstream(sid: str, request: Request, dl: int = 0, p=Depends(current_pro
 
 
 def video_answer(status, ctype):
-    return status in (200, 206) and (ctype.startswith("video/") or ctype in ("application/octet-stream", "application/ogg"))
+    # Debrid and CDN hosts label a video all sorts of ways (binary/octet-stream, application/x-matroska, Video/mp4, force-download), so only what is
+    # clearly not a video is turned down (a web page, json, text, an image)
+    ctype = (ctype or "").split(";")[0].strip().lower()
+    return status in (200, 206) and not ctype.startswith(("text/", "image/", "application/json", "application/xml", "application/xhtml", "application/javascript"))
 
 
 # ---- TorBox: can this source start right away? A source address from a debrid addon asks TorBox for the file when it is opened. If TorBox
 # already has it that is instant, if it doesnt it has to download it first, which can take a long time or never start (nobody is sharing it).
 # The torrent's hash is in the address of most of these. TorBox's checkcached says which ones it has, and mylist says how the ones already
 # asked for are getting on (state, seeds, peers). Anything that can't be told is left as it is
+TB_CACHED_RX = re.compile(r"\[TB\+\]|\[TB⚡\]|TB\s*\+|⚡")
 HASH_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])")
 TB_SEEN = {}   # hash -> (when, cached)
 TB_LIST = {"at": 0, "by": {}}
@@ -7039,7 +7066,7 @@ async def tb_cached(hashes):
     if ask and TORBOX_KEY:
         try:
             async with httpx.AsyncClient(timeout=6, headers={"Authorization": f"Bearer {TORBOX_KEY}"}) as c:
-                r = await c.get(f"{TORBOX_API}/torrents/checkcached", params={"hash": ask[:100], "format": "object"})
+                r = await c.get(f"{TORBOX_API}/torrents/checkcached", params={"hash": ",".join(ask[:100]), "format": "object"})
             if r.status_code == 200:
                 data = r.json().get("data")
                 have = {str(k).lower() for k, v in data.items() if v} if isinstance(data, dict) else {str(x).lower() for x in data or []}

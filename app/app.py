@@ -7714,24 +7714,43 @@ GATE_WORDMARK = (Path(__file__).with_name("static") / "wordmark.svg").read_text(
 # a Fire TV, Google TV or Android TV with the Downloader app. /app (further down, nginx lets it through too) is the file itself, what Downloader is told to fetch. Neither says what the app
 # is or what is behind the gate, getting in still needs an allowed address or an approved device
 INSTALL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark light"><meta name="robots" content="noindex, nofollow"><title>Install the app on your TV</title>
+<meta name="color-scheme" content="dark light"><meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)"><meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="robots" content="noindex, nofollow"><title>Install the app on your TV</title>
+<meta property="og:type" content="website"><meta property="og:title" content="Install the app on your TV"><meta property="og:description" content="Step by step, about 5 minutes. For Fire TV, Google TV and Android TV.">
+<meta property="og:image" content="https://__HOST__/static/icon-share.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:url" content="https://__HOST__/install">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="Install the app on your TV"><meta name="twitter:image" content="https://__HOST__/static/icon-share.png">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml"><link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png"><link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="stylesheet" href="/static/app.css?v=__V__">
 <style>
-.inst-body { min-height: 100vh; display: block; padding: 0; }
-.inst { max-width: 760px; margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 18px 80px; font-size: 20px; line-height: 1.5; }
-.inst header { text-align: center; padding: 18px 0 26px; }
+html { -webkit-text-size-adjust: 100%; }
+.inst-body { display: block; padding: 0; min-height: 100vh; min-height: 100dvh; }
+.inst { width: 100%; max-width: 1180px; margin: 0 auto; box-sizing: border-box; padding: max(26px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(70px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left)); font-size: 20px; line-height: 1.5; }
+.inst header { text-align: center; padding: 14px 0 22px; }
 .inst .logo { display: block; margin: 0 auto; width: 84px; height: 84px; border-radius: 22px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4); }
-.inst h1 { font-size: clamp(30px, 7vw, 42px); line-height: 1.15; margin: 20px 0 10px; letter-spacing: -0.02em; }
-.inst .lead { color: var(--label-2); margin: 0; }
+.inst h1 { font-size: clamp(30px, 6.5vw, 48px); line-height: 1.12; margin: 20px 0 10px; letter-spacing: -0.02em; }
+.inst .lead { color: var(--label-2); margin: 0 auto; max-width: 640px; }
 .inst-pick > input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.inst-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 6px 0 22px; }
-.inst-tabs label { display: block; padding: 16px 14px; border-radius: 20px; background: var(--bg-2); color: var(--label-2); text-align: center; font-weight: 700; font-size: 20px; line-height: 1.25; cursor: pointer; box-shadow: inset 0 0 0 2px transparent; transition: background 0.2s, box-shadow 0.2s, color 0.2s; }
-.inst-tabs label small { display: block; margin-top: 6px; font-size: 15px; font-weight: 500; opacity: 0.85; }
-#tvFire:checked ~ .inst-tabs label[for="tvFire"], #tvGoogle:checked ~ .inst-tabs label[for="tvGoogle"] { background: var(--label); color: var(--page-bg); }
-#tvFire:focus-visible ~ .inst-tabs label[for="tvFire"], #tvGoogle:focus-visible ~ .inst-tabs label[for="tvGoogle"] { box-shadow: inset 0 0 0 3px var(--blue); }
+.pick-q { text-align: center; font-size: clamp(22px, 4.6vw, 30px); margin: 8px 0 14px; letter-spacing: -0.01em; }
+.inst-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; max-width: 900px; margin: 0 auto 18px; }
+.tvcard { position: relative; display: grid; grid-template-columns: 44px 1fr; align-items: center; column-gap: 14px; row-gap: 2px; padding: 18px 18px; border-radius: 22px; background: var(--page-bg); color: var(--label); cursor: pointer; text-align: left; box-shadow: inset 0 0 0 3px var(--blue); transition: background 0.2s, color 0.2s, transform 0.15s; -webkit-tap-highlight-color: transparent; }
+.tvcard:active { transform: scale(0.985); }
+.tvcard .tick { grid-row: 1 / span 3; width: 34px; height: 34px; border-radius: 50%; box-shadow: inset 0 0 0 3px var(--blue); display: grid; place-items: center; color: transparent; font-weight: 800; font-size: 22px; line-height: 1; }
+.tvcard .tvname { font-size: 22px; font-weight: 800; line-height: 1.2; }
+.tvcard small { font-size: 16px; color: var(--label-2); line-height: 1.3; }
+.tvcard .tvhint { font-style: normal; font-size: 16px; font-weight: 700; color: var(--blue); margin-top: 4px; }
+.tvcard .tvhint .on { display: none; }
+#tvFire:checked ~ .pick-box .tvcard[for="tvFire"], #tvGoogle:checked ~ .pick-box .tvcard[for="tvGoogle"] { background: var(--blue); color: #fff; }
+#tvFire:checked ~ .pick-box .tvcard[for="tvFire"] small, #tvGoogle:checked ~ .pick-box .tvcard[for="tvGoogle"] small, #tvFire:checked ~ .pick-box .tvcard[for="tvFire"] .tvhint, #tvGoogle:checked ~ .pick-box .tvcard[for="tvGoogle"] .tvhint { color: rgba(255, 255, 255, 0.92); }
+#tvFire:checked ~ .pick-box .tvcard[for="tvFire"] .tick, #tvGoogle:checked ~ .pick-box .tvcard[for="tvGoogle"] .tick { background: #fff; color: var(--blue); box-shadow: none; }
+#tvFire:checked ~ .pick-box .tvcard[for="tvFire"] .tick::before, #tvGoogle:checked ~ .pick-box .tvcard[for="tvGoogle"] .tick::before { content: "\\2713"; }
+#tvFire:checked ~ .pick-box .tvcard[for="tvFire"] .tvhint .on, #tvGoogle:checked ~ .pick-box .tvcard[for="tvGoogle"] .tvhint .on { display: inline; }
+#tvFire:checked ~ .pick-box .tvcard[for="tvFire"] .tvhint .off, #tvGoogle:checked ~ .pick-box .tvcard[for="tvGoogle"] .tvhint .off { display: none; }
+#tvFire:focus-visible ~ .pick-box .tvcard[for="tvFire"], #tvGoogle:focus-visible ~ .pick-box .tvcard[for="tvGoogle"] { outline: 4px solid var(--label); outline-offset: 3px; }
 .inst-panel { display: none; }
 #tvFire:checked ~ #pFire, #tvGoogle:checked ~ #pGoogle { display: block; }
+.shown { text-align: center; margin: 4px 0 18px; padding: 14px 16px; border-radius: 18px; background: var(--bg-2); font-size: 19px; }
+.shown b { color: var(--label); }
+.swlink { display: inline-block; margin-top: 8px; padding: 10px 18px; border-radius: 999px; background: var(--blue); color: #fff; font-weight: 800; cursor: pointer; text-decoration: none; }
 .steps { list-style: none; margin: 0; padding: 0; counter-reset: step; display: grid; gap: 14px; }
 .steps > li { counter-increment: step; position: relative; background: var(--bg-2); border-radius: 22px; padding: 20px 20px 20px 84px; }
 .steps > li::before { content: counter(step); position: absolute; left: 20px; top: 18px; width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--blue); color: #fff; font-weight: 800; font-size: 24px; }
@@ -7743,35 +7762,49 @@ INSTALL_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><me
 .inst details { margin-top: 12px; background: var(--page-bg); border-radius: 14px; padding: 4px 14px; }
 .inst summary { cursor: pointer; padding: 10px 0; font-weight: 700; font-size: 18px; }
 .inst details p { font-size: 18px; }
-.inst .done { margin-top: 22px; padding: 22px; border-radius: 22px; text-align: center; background: var(--bg-2); }
+.inst .done { margin-top: 18px; padding: 22px; border-radius: 22px; text-align: center; background: var(--bg-2); }
 .inst .done h2 { margin: 0 0 6px; font-size: 26px; }
-.inst .done p { margin: 0; color: var(--label-2); }
-.inst .help { text-align: center; color: var(--label-2); margin: 26px 0 0; font-size: 18px; }
-@media (max-width: 520px) { .inst { font-size: 19px; } .inst-tabs { grid-template-columns: 1fr; } .steps > li { padding: 18px 16px 18px 70px; } .steps > li::before { left: 14px; top: 16px; width: 42px; height: 42px; font-size: 22px; } }
+.inst .done p { margin: 0 0 14px; color: var(--label-2); }
+.wrong { display: inline-block; padding: 11px 20px; border-radius: 999px; background: var(--page-bg); box-shadow: inset 0 0 0 2px var(--blue); color: var(--label); font-weight: 800; font-size: 18px; cursor: pointer; }
+.wa { display: grid; grid-template-columns: 76px 1fr auto; align-items: center; gap: 18px; margin: 30px auto 0; max-width: 900px; padding: 20px; border-radius: 26px; background: var(--bg-2); color: var(--label); text-decoration: none; box-shadow: inset 0 0 0 2px rgba(37, 211, 102, 0.55); }
+.wa-logo { width: 76px; height: 76px; border-radius: 20px; background: #25D366; display: grid; place-items: center; box-shadow: 0 10px 26px rgba(37, 211, 102, 0.32); }
+.wa-logo svg { width: 46px; height: 46px; fill: #fff; }
+.wa-text b { display: block; font-size: 23px; line-height: 1.25; margin-bottom: 3px; }
+.wa-text span { color: var(--label-2); font-size: 18px; line-height: 1.35; display: block; }
+.wa-btn { padding: 14px 24px; border-radius: 999px; background: #25D366; color: #06210f; font-weight: 800; font-size: 19px; white-space: nowrap; }
+.wa:hover .wa-btn, .wa:focus-visible .wa-btn { filter: brightness(1.08); }
+.wa:focus-visible { outline: 4px solid var(--label); outline-offset: 3px; }
+.inst .help { text-align: center; color: var(--label-2); margin: 22px 0 0; font-size: 18px; }
+@media (min-width: 760px) { .inst { font-size: 22px; } .steps h2 { font-size: 25px; } .steps > li { padding: 24px 24px 24px 94px; } .steps > li::before { left: 24px; top: 22px; width: 52px; height: 52px; font-size: 27px; } .tvcard .tvname { font-size: 25px; } .tvcard small, .tvcard .tvhint { font-size: 18px; } }
+@media (min-width: 1000px) { .steps { grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; } .inst header { padding-top: 26px; } .shown { max-width: 900px; margin-left: auto; margin-right: auto; } .done { max-width: 900px; margin-left: auto; margin-right: auto; } }
+@media (max-width: 560px) { .inst { font-size: 19px; } .inst-tabs { grid-template-columns: 1fr; } .steps > li { padding: 18px 16px 18px 70px; } .steps > li::before { left: 14px; top: 16px; width: 42px; height: 42px; font-size: 22px; } .wa { grid-template-columns: 62px 1fr; } .wa-logo { width: 62px; height: 62px; border-radius: 17px; } .wa-logo svg { width: 38px; height: 38px; } .wa-btn { grid-column: 1 / -1; text-align: center; } }
 </style></head><body class="inst-body"><main class="inst">
-<header><img class="logo" src="/static/icon.svg" alt=""><h1>Install the app on your TV</h1><p class="lead">Follow the steps, one at a time. It takes about 5 minutes. First, what kind of TV do you have?</p></header>
+<header><img class="logo" src="/static/icon.svg" alt=""><h1>Install the app on your TV</h1><p class="lead">Follow the steps, one at a time. It takes about 5 minutes.</p></header>
 <div class="inst-pick">
 <input type="radio" name="tv" id="tvFire" checked aria-label="Amazon Fire TV"><input type="radio" name="tv" id="tvGoogle" aria-label="Google TV or Android TV">
-<div class="inst-tabs"><label for="tvFire">Amazon Fire TV<small>Fire TV Stick or Fire TV box</small></label><label for="tvGoogle">Google TV or Android TV<small>Chromecast with Google TV, Sony, Philips, Shield and more</small></label></div>
+<h2 class="pick-q">First, tap the kind of TV you have</h2>
+<div class="pick-box"><div class="inst-tabs">
+<label class="tvcard" for="tvFire"><span class="tick" aria-hidden="true"></span><span class="tvname">Amazon Fire TV</span><small>Fire TV Stick or Fire TV box</small><em class="tvhint"><span class="on">Showing the steps for this TV</span><span class="off">Tap here to show these steps</span></em></label>
+<label class="tvcard" for="tvGoogle"><span class="tick" aria-hidden="true"></span><span class="tvname">Google TV or Android TV</span><small>Chromecast with Google TV, Sony, Philips, Nvidia Shield and more</small><em class="tvhint"><span class="on">Showing the steps for this TV</span><span class="off">Tap here to show these steps</span></em></label>
+</div></div>
 
-<section class="inst-panel" id="pFire"><ol class="steps">
+<section class="inst-panel" id="pFire"><p class="shown">These steps are for <b>Amazon Fire TV</b>.<br>Not your TV? <label class="swlink" for="tvGoogle">Tap here for Google TV or Android TV</label></p><ol class="steps">
 <li><h2>Get the Downloader app</h2><p>On the Fire TV home screen, go to the <b>magnifying glass</b> (Find), choose <b>Search</b> and type <b>Downloader</b>.</p><p>Pick the app with the <b>orange</b> icon, then press <b>Get</b> or <b>Download</b> and wait for it to finish.</p></li>
 <li><h2>Open Downloader</h2><p>Press <b>Open</b>. If it asks to allow access to your photos, media and files, press <b>Allow</b>. Press <b>OK</b> on any welcome messages.</p></li>
 <li><h2>Type the address</h2><p>Click the box at the top, and type this exactly (no spaces, all small letters):</p><span class="addr">__ADDR__</span><p>Then press <b>Go</b>.</p><details><summary>The letters are hard to type</summary><p>Use the on-screen keyboard with your remote's arrow buttons and <b>OK</b>. Or install the free <b>Amazon Fire TV</b> app on your phone, which lets you type on the phone instead.</p></details></li>
 <li><h2>Wait, then press Install</h2><p>It downloads by itself. When it shows <b>Install</b> at the bottom right, press <b>Install</b>.</p><details><summary>It says "can't install" or "unknown apps"</summary><p>This is normal. Press <b>Settings</b>, turn <b>Downloader</b> to <b>On</b>, then press the <b>Back</b> button on your remote and press <b>Install</b> again.</p><p>If there is no Settings button: on the Fire TV home screen go to <b>Settings</b>, then <b>My Fire TV</b>, then <b>Developer options</b>, then <b>Install unknown apps</b> and turn <b>Downloader</b> on. If you do not see Developer options, go to <b>About</b> and press <b>OK</b> on the device name 7 times.</p></details></li>
 <li><h2>Open it</h2><p>When it says the app is installed, press <b>Open</b>.</p><p>If Downloader asks about deleting the file, press <b>Delete</b> and then <b>Delete</b> again, you don't need it any more.</p></li>
-</ol></section>
+</ol><div class="done"><h2>That's it!</h2><p>The app is on your TV now. You can find it with your other apps.</p><label class="wrong" for="tvGoogle">Wrong kind of TV? Show the Google TV steps</label></div></section>
 
-<section class="inst-panel" id="pGoogle"><ol class="steps">
+<section class="inst-panel" id="pGoogle"><p class="shown">These steps are for <b>Google TV or Android TV</b>.<br>Not your TV? <label class="swlink" for="tvFire">Tap here for Amazon Fire TV</label></p><ol class="steps">
 <li><h2>Get the Downloader app</h2><p>On the TV home screen go to <b>Apps</b>, choose <b>Search for apps</b> (or the magnifying glass) and type <b>Downloader</b>.</p><p>Pick the app with the <b>orange</b> icon and press <b>Install</b>. Wait for it to finish, then press <b>Open</b>.</p></li>
 <li><h2>Let it look at files</h2><p>If it asks to allow access to your photos, media and files, press <b>Allow</b>. Press <b>OK</b> on any welcome messages.</p></li>
 <li><h2>Type the address</h2><p>Click the box at the top, and type this exactly (no spaces, all small letters):</p><span class="addr">__ADDR__</span><p>Then press <b>Go</b>.</p><details><summary>The letters are hard to type</summary><p>Use the on-screen keyboard with your remote's arrow buttons and <b>OK</b>. Or use the <b>Google TV</b> app on your phone, which lets you type on the phone instead.</p></details></li>
 <li><h2>Wait, then press Install</h2><p>It downloads by itself. When it shows <b>Install</b>, press <b>Install</b>.</p><details><summary>It says "isn't allowed to install unknown apps"</summary><p>This is normal. Press <b>Settings</b>, turn <b>Allow from this source</b> to <b>On</b> for Downloader, then press the <b>Back</b> button on your remote and press <b>Install</b> again.</p><p>If you do not get a Settings button: go to the TV's <b>Settings</b>, then <b>Apps</b>, then <b>Security and restrictions</b>, then <b>Unknown sources</b> and turn <b>Downloader</b> on.</p></details></li>
 <li><h2>Open it</h2><p>When it says the app is installed, press <b>Open</b>.</p><p>If Downloader asks about deleting the file, press <b>Delete</b> and then <b>Delete</b> again, you don't need it any more.</p></li>
-</ol></section>
+</ol><div class="done"><h2>That's it!</h2><p>The app is on your TV now. You can find it with your other apps.</p><label class="wrong" for="tvFire">Wrong kind of TV? Show the Fire TV steps</label></div></section>
 </div>
-<div class="done"><h2>That's it!</h2><p>The app is on your TV now. You can find it with your other apps.</p></div>
-<p class="help">Stuck on a step? Take a photo of the TV screen and send it to the person who shared this page.</p>
+<a class="wa" href="https://chat.whatsapp.com/L5jdPY8N3j472JOLm2567W" target="_blank" rel="noopener noreferrer"><span class="wa-logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></span><span class="wa-text"><b>Stuck? Ask us on WhatsApp</b><span>Join our WhatsApp group, send a photo of your TV screen and someone will help you.</span></span><span class="wa-btn">Join the group</span></a>
 </main></body></html>"""
 INSTALL_HOST_RX = re.compile(r"[a-z0-9.-]{1,80}(:\d{1,5})?")
 
@@ -7781,7 +7814,7 @@ async def install_page(request: Request):
     host = (request.headers.get("host") or "").lower()
     if not INSTALL_HOST_RX.fullmatch(host):
         host = "kino.reece.page"
-    return Response(INSTALL_HTML.replace("__V__", STATIC_VERSION["v"]).replace("__ADDR__", f"{host}/app"), media_type="text/html",
+    return Response(INSTALL_HTML.replace("__V__", STATIC_VERSION["v"]).replace("__ADDR__", f"{host}/app").replace("__HOST__", host), media_type="text/html",
                     headers={"Cache-Control": "no-store"})
 
 

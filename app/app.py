@@ -7035,6 +7035,12 @@ async def pd_open(url, headers, kind="play", _again=True):
                 log.info("stream blocked, it went to %s which isn't in PD_HOSTS", url)
                 raise HTTPException(400, f"That stream sent Kino on to {host}, which isn't on the public domain list (PD_HOSTS)")
             await check_host(urlparse(url).hostname)
+            hop = urlparse(url).hostname or ""
+            if hop != first and up_wait(hop) > 0:
+                # A later step of the redirects (a debrid service's download link) said "too many requests" and asked to be left alone. Every source
+                # from the same account goes through it, so asking again only makes the wait longer
+                HOST_BUSY[first] = time.time()
+                raise HTTPException(503, f"{hop} is busy right now (too many requests), it needs {int(up_wait(hop))} seconds")
             try:
                 # The first answer is waited for 15 seconds when playing. A debrid address that has to get the file ready first can sit there for
                 # minutes, or for ever when nobody is sharing it, so after that the player is told to take another source
@@ -7043,7 +7049,7 @@ async def pd_open(url, headers, kind="play", _again=True):
                 SLOW_START[first_url] = time.time()
                 raise HTTPException(504, f"{urlparse(url).hostname or 'The source'} is taking too long to start this one, it is probably still getting it ready")
             up_note(urlparse(url).hostname or "", kind, r.status_code, retry_after(r.headers.get("retry-after")))
-            if r.status_code == 429 and kind == "play" and not retried:
+            if r.status_code == 429 and kind == "play" and not retried and (retry_after(r.headers.get("retry-after")) or 3) <= 8:
                 # "Too many requests" for somebody who pressed Play: it says how long to wait (a few seconds usually), so wait that (up to 6) and ask
                 # once more, like a player would, instead of giving the source up and the next one inheriting the same busy host
                 retried = True
@@ -7320,7 +7326,9 @@ async def stream_proxy(r, request, dl=0):
         hint = " Youtube links only work from the server that runs the addon." if up.status_code == 403 and "googlevideo" in host else ""
         if up.status_code == 429:
             HOST_BUSY[host] = time.time()
-            raise HTTPException(503, f"{host} is busy right now (it answered 429, too many requests), it needs a moment")
+            hop = urlparse(str(up.request.url)).hostname or host
+            secs = int(up_wait(hop) or retry_after(up.headers.get("retry-after")) or 30)
+            raise HTTPException(503, f"{hop} is busy right now (it answered 429, too many requests), it needs {secs} seconds")
         raise HTTPException(502, f"{host} didn't send a video (it answered {up.status_code}), try another source.{hint}")
     out = {k: up.headers[k] for k in ("content-length", "content-range", "accept-ranges", "last-modified") if k in up.headers}
     out["Cache-Control"] = "private, no-store"

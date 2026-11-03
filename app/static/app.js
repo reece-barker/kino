@@ -2387,6 +2387,24 @@
     SOURCES.skips = (SOURCES.skips || 0) + 1;
     if (/busy|429|too many/i.test(why || "")) { SOURCES.busy = true; const h = (SOURCES.list.find((x) => x.id === fid) || {}).host; if (h) SOURCES.busyHosts.add(h); }
     const untried = SOURCES.list.filter((x) => !SOURCES.tried.has(x.id));
+    // Every source goes through the same debrid account, so when it says "too many requests" the rest would only hit the same wait. Kino waits as long
+    // as it asked and then starts again from the best source, instead of working through the whole list
+    const asked = Number((/needs (\d+) seconds/.exec(why || "") || [])[1] || 0);
+    if (SOURCES.busy && asked && SOURCES.list.length > 1 && (SOURCES.rounds || 0) < 2 && !untried.some((x) => !SOURCES.busyHosts.has(x.host) && x.addon !== (SOURCES.list.find((y) => y.id === fid) || {}).addon)) {
+      SOURCES.rounds = (SOURCES.rounds || 0) + 1;
+      const secs = Math.min(75, Math.max(10, asked + 3)), tok2 = PLAY_N, first = SOURCES.list[0];
+      SOURCES.tried = new Set(); SOURCES.skips = 0; SOURCES.busyHosts = new Set(); SOURCES.busy = false;
+      let left2 = secs;
+      const tick = () => {
+        if (PLAY_N !== tok2) return;
+        if (left2 <= 0) { playFile(first.id, { from: from || 0, chain: true }); return; }
+        if (LOAD.on) loadStep(`TorBox says too many requests, waiting ${left2}s and then trying again`);
+        left2--; SOURCES.timer = setTimeout(tick, 1000);
+      };
+      toast("TorBox is limiting how fast files can be opened. Kino waits as long as it asks, then tries again", 6000);
+      tick();
+      return true;
+    }
     // Sources on a host that is busy come last
     const n = untried.find((x) => !SOURCES.busyHosts.has(x.host)) || untried[0];
     if (!n || SOURCES.skips > 14) {

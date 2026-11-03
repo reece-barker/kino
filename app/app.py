@@ -7049,6 +7049,14 @@ async def pd_open(url, headers, kind="play", _again=True):
                 SLOW_START[first_url] = time.time()
                 raise HTTPException(504, f"{urlparse(url).hostname or 'The source'} is taking too long to start this one, it is probably still getting it ready")
             up_note(urlparse(url).hostname or "", kind, r.status_code, retry_after(r.headers.get("retry-after")))
+            if r.status_code == 429:
+                # Which endpoint was limited and what it said (never the query, a debrid link carries the account's key in it)
+                try:
+                    body_ = (await r.aread())[:200].decode("utf-8", "ignore")
+                except Exception:
+                    body_ = ""
+                rl_ = {k: v for k, v in r.headers.items() if k.lower().startswith(("x-ratelimit", "retry-after"))}
+                log.info("kino: 429 from %s%s (%s source), headers %s, said %r", logsafe(urlparse(url).hostname or ""), logsafe(urlparse(url).path[:80]), kind, rl_, logsafe(body_))
             if r.status_code == 429 and kind == "play" and not retried and (retry_after(r.headers.get("retry-after")) or 3) <= 8:
                 # "Too many requests" for somebody who pressed Play: it says how long to wait (a few seconds usually), so wait that (up to 6) and ask
                 # once more, like a player would, instead of giving the source up and the next one inheriting the same busy host

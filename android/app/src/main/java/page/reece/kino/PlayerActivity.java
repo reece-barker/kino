@@ -245,6 +245,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
         sl.setMargins(0, 0, safeX(), safeY() + dp(130));
         root.addView(skip, sl);
+        skip.setTranslationY(dp(130));  // the controls start hidden, so it sits at the bottom corner and only rides up above them when they show
 
         buildUpNext();
 
@@ -642,6 +643,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         upNext.addView(body, new LinearLayout.LayoutParams(dp(250), ViewGroup.LayoutParams.WRAP_CONTENT));
         FrameLayout.LayoutParams ul = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
         ul.setMargins(0, 0, safeX(), safeY() + dp(130));
+        upNext.setTranslationY(dp(130));
         root.addView(upNext, ul);
     }
 
@@ -952,6 +954,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             controls.animate().alpha(1f).setDuration(220).start();
             eng.subsRaised(true);
             subText.animate().translationY(-dp(130)).setDuration(220).start();
+            skip.animate().translationY(0).setDuration(220).start();
+            upNext.animate().translationY(0).setDuration(220).start();
         }
         // Controls that come up on their own (a pause, a stall) put the remote on Play, not on whichever button is first in the row
         if (focus == null) focus = bPlay;
@@ -966,6 +970,9 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         controls.animate().alpha(0f).setDuration(260).withEndAction(() -> { controlsHiding = false; controls.setVisibility(View.GONE); }).start();
         eng.subsRaised(false);
         subText.animate().translationY(0).setDuration(260).start();
+        // Skip Intro and Up Next drop back to the bottom corner when the controls go, like the web player does
+        skip.animate().translationY(dp(130)).setDuration(260).start();
+        upNext.animate().translationY(dp(130)).setDuration(260).start();
         if (skip.getVisibility() == View.VISIBLE) skip.requestFocus();
         else if (upNext.getVisibility() == View.VISIBLE) upNext.getChildAt(1).requestFocus();
         else root.requestFocus();

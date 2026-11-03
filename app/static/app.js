@@ -217,7 +217,11 @@
   const epLabel = (s, e) => (s != null && e != null ? `S${s}, E${e}` : e != null ? `Episode ${e}` : "");
 
   // Interface sounds (sounds.js): never while a video is playing, never when switched off in Settings
-  const sfx = (n) => { try { if (window.KinoSound && pl.el.hidden) KinoSound.play(n); } catch (_) {} };
+  // A sound only plays for something the person just did on this screen: a message arriving by itself (a profile watching on another device, a new episode
+  // alert) used to ping on every open tab, including a computer nobody was using
+  let INPUT_AT = 0;
+  for (const ev of ["pointerdown", "keydown", "touchstart"]) addEventListener(ev, () => { INPUT_AT = performance.now(); }, true);
+  const sfx = (n) => { try { if (window.KinoSound && pl.el.hidden && !document.hidden && performance.now() - INPUT_AT < 4000) KinoSound.play(n); } catch (_) {} };
   let toastT;
   function toast(msg, ms = 3500) {
     sfx(/couldn't|can't|didn't|isn't|failed|error|wrong|not available|too many/i.test(msg) ? "error" : "notify");
@@ -1436,6 +1440,7 @@
           <div class="row ${s.style === "poster" ? "posters" : "wide"}" ${s.next != null ? `data-shelf="${esc(s.id)}" data-next="${esc(s.next)}" data-style="${esc(s.style)}"` : ""} ${s.pending ? "data-pending" : ""}>${s.pending ? Array.from({ length: 8 }, () => `<div class="sk ${s.style === "poster" ? "sk-poster" : "sk-wide"}"></div>`).join("") : ""}${s.items.map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
+            : s.style === "recent" ? wideTile(t, { href: t.stream ? extHref(t) : undefined, sub: [t.kind === "series" && t.season != null ? epLabel(t.season, t.episode) : "", ago(t.last)].filter(Boolean).join(" · ") })
             : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster", s.more === "#/shows" ? "All TV Shows" : "All Movies") : ""}</div></section>`).join("")}
       </main>`;
     wireTopbar();

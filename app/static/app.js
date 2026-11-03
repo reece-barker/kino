@@ -2440,10 +2440,14 @@
       if (!r.streams.length) { try { r = await api(url); } catch (_) {} if (!$("#pdBox") || $("#pdBox") !== box) return; }
       // The full list comes in behind the first one: the buttons stay as they are and only the count and what they use are updated (a full redraw
       // made the whole row flash and, on a TV, moved the selection)
-      else api(url).then((r2) => {
-        if ($("#pdBox") !== box || r2.streams.length <= (box._r || r).streams.length) return;
+      else box._full = api(url).then((r2) => {
+        // The full list always replaces the quick one while a priority addon was still working when that was made (its sources come first in it)
+        if ($("#pdBox") !== box || (r2.streams.length <= (box._r || r).streams.length && !box._pend)) return r2;
+        box._pend = false;
         if (box._upd) box._upd(r2); else if (!sheetClose) drawStreams(kind, id, t, ep, r2);
-      }).catch(() => {});
+        return r2;
+      }).catch(() => null);
+      box._pend = !!(r.prio_pending && r.prio_pending.length);
     }
     const lb = listBtn(t.in_list);
     // Not out yet: whatever is on offer for it is fake, so nothing is shown to play
@@ -2479,7 +2483,16 @@
       ${r.too_new ? `<div class="note pd-note">${ic("info")} ${esc(tooNewText(r.too_new, dayOf))}</div>` : r.fresh ? `<div class="note pd-note">${ic("info")} This only just came out. Some sources can be camera recordings or fakes until it is properly released, the better ones are tried first.</div>` : ""}
       ${res ? `<div class="progress thin" style="max-width:280px;margin-top:16px"><i style="width:${(res.pos / res.dur) * 100}%"></i></div><div class="note">${clock(res.dur - res.pos)} left</div>` : ""}`;
     const play = (s) => { SOURCES = { list: liveSources(box._r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false }; playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 }); };
-    $("#pdPlay").onclick = () => play(box._r.streams[0]);
+    $("#pdPlay").onclick = async () => {
+      // The addon put first in Settings hadn't answered when this list was made, so Play waits for the full list (a few seconds at most) instead of
+      // starting a source from another addon
+      if (box._pend && box._full) {
+        toast("Finding your best source", 4000);
+        await Promise.race([box._full, new Promise((ok) => setTimeout(ok, 20000))]);
+        if ($("#pdBox") !== box) return;
+      }
+      play(box._r.streams[0]);
+    };
     // When the rest of the sources arrive: the list the buttons use is swapped, and the Sources button's count changes (or the button is added)
     box._upd = (r2) => {
       box._r = r2;

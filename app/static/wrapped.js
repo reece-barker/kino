@@ -279,7 +279,8 @@
         else if (p === "intro") { fx.rain(40); Snd.chime(); }
       }
     }), { root: track, threshold: 0.55 });
-    secs.forEach((s) => io.observe(s));
+    // The slides start animating once the person has tapped to open (see the gate below), so the intro isn't spent behind it
+    const begin = () => secs.forEach((s) => io.observe(s));
     const sync = () => { const i = Math.round(track.scrollTop / (track.clientHeight || 1)); if (i === cur) return; cur = i; Snd.whoosh(); segs.forEach((s, k) => s.classList.toggle("on", k <= i)); next.hidden = i >= secs.length - 1; };
     track.addEventListener("scroll", sync, { passive: true });
     segs.forEach((s) => (s.onclick = () => go(Number(s.dataset.i))));
@@ -290,6 +291,7 @@
     // Keys: down, space and page down go on, up goes back, left and right move between the buttons of the share slide (or go on and back), Back closes
     const key = (e) => {
       if (!document.body.contains(kw)) return;
+      if (kw.querySelector(".kw-gate") && !["Escape", "BrowserBack", "GoBack", "Backspace", "Enter", " "].includes(e.key)) { e.preventDefault(); return; }
       const k = e.key, act = document.activeElement, inBtn = act && act.matches && act.matches("button, input, a") && !act.matches(".kw-next, .kw-seg");
       if (["Escape", "BrowserBack", "GoBack", "Backspace"].includes(k)) { if (o.onClose) { e.preventDefault(); e.stopPropagation(); o.onClose(); } return; }
       if (k === "ArrowDown" || k === "PageDown" || (k === " " && !inBtn)) { e.preventDefault(); e.stopPropagation(); go(cur + 1); }
@@ -304,7 +306,30 @@
     document.addEventListener("keydown", key, true);
     // On a tv the remote needs something to be on: the next button, or on the share slide its first button
     track.addEventListener("scrollend", () => { if (o.tv) { const b = secs[cur].querySelector("button.kw-btn, .kw-periods button") || secs[cur].querySelector("button, input"); (b || next).focus({ preventScroll: true }); } });
-    if (o.tv) next.focus({ preventScroll: true }); else track.focus({ preventScroll: true });
+    // Browsers only let a page make sound after the person has deliberately tapped something, and a phone may need that tap to be the last thing before the
+    // sound starts. So unless sound is already awake (or switched off), the Wrapped opens on a "Tap to open" screen, and that tap wakes it and plays the first chime
+    const ks = window.KinoSound, gated = !!ks && ks.on && ks.state() !== "running";
+    if (gated) {
+      const g = document.createElement("div");
+      g.className = "kw-gate";
+      g.innerHTML = `<div class="kw-eyebrow">Kino Wrapped</div><div class="kw-gmonth">${esc(d.month)}</div>${d.name ? `<div class="kw-p">${esc(d.name)}'s month is ready</div>` : `<div class="kw-p">Your month is ready</div>`}
+        <button class="kw-go" aria-label="Tap to open"><svg viewBox="0 0 24 24"><path d="M8 5.14v13.72c0 .8.87 1.3 1.56.88l11.04-6.86a1.03 1.03 0 000-1.76L9.56 4.26A1.03 1.03 0 008 5.14z"/></svg></button>
+        <div class="kw-p">Tap to open, with sound</div>
+        <button class="kw-btn ghost kw-nosound">Open without sound</button>`;
+      kw.appendChild(g);
+      const open = (sound) => {
+        if (!sound) ks.set(false); else { ks.wake(); ks.play("chime"); }
+        g.classList.add("out"); setTimeout(() => g.remove(), 500);
+        begin();
+        if (o.tv) next.focus({ preventScroll: true }); else track.focus({ preventScroll: true });
+      };
+      g.querySelector(".kw-go").onclick = () => open(true);
+      g.querySelector(".kw-nosound").onclick = () => open(false);
+      g.querySelector(".kw-go").focus({ preventScroll: true });
+    } else {
+      begin();
+      if (o.tv) next.focus({ preventScroll: true }); else track.focus({ preventScroll: true });
+    }
     sync();
     return { destroy() { fx.stop(); removeEventListener("resize", fitMonth); document.removeEventListener("keydown", key, true); io.disconnect(); root.innerHTML = ""; }, go };
   }

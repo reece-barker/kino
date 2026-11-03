@@ -5479,6 +5479,7 @@ class UpHost:
     def __init__(self):
         self.sem = asyncio.Semaphore(UPSTREAM_PER_HOST)
         self.blocked_until = 0.0
+        self.check_until = 0.0  # the checks Kino makes of sources leave a host alone for this long, playing a source is not held up by it
         self.strikes = 0
         self.last_429 = 0.0
         self.events = deque(maxlen=2000)  # (when, kind, status)
@@ -5507,7 +5508,17 @@ def up_note(host, kind, status, retry=None):
     st = up_host(host)
     now = time.time()
     st.events.append((now, kind, status))
-    if status == 429:
+    if status == 429 and kind in ("check", "event"):
+        # Kino's own look at a source got "too many requests". The checks stop for a while, but that must not stop the person pressing Play (the
+        # checks can be what used the host's allowance up), so playing is not blocked and no strike is counted against the host
+        HOST_BUSY[host] = now
+        st.last_429 = now
+        st.check_until = max(st.check_until, now + (retry or 30))
+        recent = sum(1 for t, _, _ in st.events if now - t < 60)
+        st.limited_at.append((now, st.active, recent))
+        del st.limited_at[:-20]
+        log.info("kino: %s said too many requests (429) to a check of a source, checks leave it alone for %ds (%d requests in the last minute)", logsafe(host), retry or 30, recent)
+    elif status == 429:
         HOST_BUSY[host] = now
         if now - st.last_429 > 600:
             st.strikes = 0
@@ -5524,6 +5535,11 @@ def up_note(host, kind, status, retry=None):
 def up_wait(host):
     st = UP.get(host)
     return max(0.0, st.blocked_until - time.time()) if st else 0.0
+
+
+def check_wait(host):
+    st = UP.get(host)
+    return max(0.0, st.check_until - time.time()) if st else 0.0
 
 
 def up_stats():
@@ -6182,10 +6198,26 @@ def fire(coro):
     asyncio.create_task(run())
 
 
+EVENT_LOCK = asyncio.Lock()
+
+
 async def send_event(resource, kind, vid, extra):
-    for a in addon_rows():
-        if supports(a["m"], resource, kind, vid):
-            await safe_fetch(a["base"] + resource_path(resource, kind, vid, extra), max_bytes=256 * 1024, timeout=8)
+    # One at a time with a short gap (marking a whole season watched sent dozens at once, which is what a tracker's rate limit answers with 429), and
+    # a 429 waits as long as it asks (up to 10 s) and tries once more. It does not mark the addon busy for browsing and playing
+    async with EVENT_LOCK:
+        for a in addon_rows():
+            if not supports(a["m"], resource, kind, vid):
+                continue
+            url = a["base"] + resource_path(resource, kind, vid, extra)
+            for attempt in (0, 1):
+                try:
+                    await safe_fetch(url, max_bytes=256 * 1024, timeout=8, kind="event")
+                    break
+                except HTTPException as e:
+                    if e.status_code != 429 or attempt:
+                        raise
+                    await asyncio.sleep(min(10.0, check_wait(urlparse(url).hostname or "") or 3.0))
+            await asyncio.sleep(0.4)
 
 
 @app.get("/api/admin/addons")
@@ -6569,7 +6601,17 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         # sources' own limits and could start work on their side
         early = {a["m"].get("name") for a in rows if a.get("prio")}
         cand = sorted(out, key=lambda x: (x["addon"] not in early, -(x["seeders"] if x.get("seeders") is not None else -1), -x["height"]))
-        todo = [x for x in cand if not probe_cached(x["_url"])][:4]
+        # At most one source per host (a few sources from the same addon would be a few requests to it at once, and the checks are what used up an
+        # addon's rate limit before the person had pressed Play), the answer for one says if the host is answering
+        todo, seen_h = [], set()
+        for x in cand:
+            h_ = urlparse(x["_url"]).hostname or ""
+            if probe_cached(x["_url"]) or h_ in seen_h:
+                continue
+            seen_h.add(h_)
+            todo.append(x)
+            if len(todo) >= 4:
+                break
         # The ones that are asked don't hold the list up: after a second and a half it goes with what it knows, and the asking carries on in the
         # background so the next look (and the player) has the answers. The quick look doesn't ask at all
         if todo and not quick:
@@ -6875,18 +6917,34 @@ async def tb_open(url, headers):
         raise
 
 
-async def pd_open(url, headers, kind="play"):
+# Where a source's address led to after its redirects (an addon that resolves a debrid link answers with a redirect to the real file). The player
+# asks for the video in many pieces (every seek, and the first few for the start and the end of the file), and each piece used to go back through the
+# addon, which is what runs into an addon's rate limit. Stremio resolves it once, so now do the pieces
+RESOLVED = {}  # source address -> (when, the address it led to)
+RESOLVED_SECS = 600
+
+
+async def pd_open(url, headers, kind="play", _again=True):
     """Opens a public domain video, following redirects but only ever to public domain hosts"""
     first_url = url
+    cached = RESOLVED.get(first_url) if kind in ("play", "check") else None
+    from_cache = bool(cached and time.time() - cached[0] < RESOLVED_SECS)
+    if from_cache:
+        url = cached[1]
     first = urlparse(url).hostname or ""
     wait = up_wait(first)
     if wait > 0:
-        # It asked to be left alone, so it is. The player takes the next source instead of making it worse
-        raise HTTPException(503, f"{first} is busy right now (too many requests), it needs {int(wait)} seconds")
-    client = ac(url, timeout=httpx.Timeout(30, read=60), follow_redirects=False,
+        # It asked to be left alone, so it is, unless this is somebody pressing Play and it is only a short wait, that is better than skipping the
+        # source. Otherwise the player takes the next source instead of making it worse
+        if kind == "play" and wait <= 8:
+            await asyncio.sleep(wait)
+        else:
+            raise HTTPException(503, f"{first} is busy right now (too many requests), it needs {int(wait)} seconds")
+    client = ac(first_url, timeout=httpx.Timeout(30, read=60), follow_redirects=False,
                 headers={"User-Agent": "Kino (Stremio addon client)"})
+    retried = False
     try:
-        for _ in range(5):
+        for _ in range(7):
             # Some hosts redirect to plain http, if the https version is on the list that gets used instead
             if url.startswith("http://") and on_pd_list("https://" + url[7:]):
                 url = "https://" + url[7:]
@@ -6903,10 +6961,32 @@ async def pd_open(url, headers, kind="play"):
                 SLOW_START[first_url] = time.time()
                 raise HTTPException(504, f"{urlparse(url).hostname or 'The source'} is taking too long to start this one, it is probably still getting it ready")
             up_note(urlparse(url).hostname or "", kind, r.status_code, retry_after(r.headers.get("retry-after")))
+            if r.status_code == 429 and kind == "play" and not retried:
+                # "Too many requests" for somebody who pressed Play: it says how long to wait (a few seconds usually), so wait that (up to 6) and ask
+                # once more, like a player would, instead of giving the source up and the next one inheriting the same busy host
+                retried = True
+                ra = retry_after(r.headers.get("retry-after"))
+                await r.aclose()
+                await asyncio.sleep(min(6.0, ra if ra else 3.0))
+                continue
             if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                 await r.aclose()
                 url = urljoin(url, r.headers["location"])
                 continue
+            if retried and r.status_code < 400:
+                host_ = urlparse(url).hostname or ""
+                st_ = up_host(host_)
+                st_.blocked_until, st_.strikes = 0.0, 0  # it answered after the wait, no reason to keep other plays from it
+            if from_cache and (r.status_code >= 400 or r.status_code in (301, 302, 303, 307, 308)) and _again:
+                # The remembered address stopped working (links expire), start again from the source's own address
+                RESOLVED.pop(first_url, None)
+                await r.aclose()
+                await client.aclose()
+                return await pd_open(first_url, headers, kind, False)
+            if kind in ("play", "check") and r.status_code in (200, 206) and url != first_url and not from_cache:
+                RESOLVED[first_url] = (time.time(), url)
+                if len(RESOLVED) > 500:
+                    RESOLVED.clear()
             return client, r
         raise HTTPException(502, "Too many redirects")
     except BaseException:
@@ -7031,7 +7111,7 @@ HOST_BUSY = {}  # host -> when it last said it was busy (429)
 
 
 def host_busy(host, secs=90):
-    return time.time() - HOST_BUSY.get(host, 0) < secs or up_wait(host) > 0
+    return time.time() - HOST_BUSY.get(host, 0) < secs or up_wait(host) > 0 or check_wait(host) > 0
 
 
 def probe_cached(url):

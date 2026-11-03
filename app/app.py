@@ -5120,6 +5120,48 @@ async def subtitles(fid: str, sub_id: str, p=Depends(current_profile)):
 DEVICE_FAIL_RX = re.compile(r"sound|audio|codec|decod|format|picture|support", re.I)
 
 
+@app.post("/api/admin/source-test/{sid}")
+async def source_test(sid: str, admin=Depends(require_admin)):
+    """Opens one source the way the player does (its address, the redirects, then ffprobe on where it ended up) and says what it found, for working
+    out why a source that looks fine won't play. Uncached TorBox sources are said so and not opened, opening them would start a download"""
+    r = stream_row(sid)
+    url = r["url"]
+    if TB_UNCACHED_RX.search(r["label"] or ""):
+        return {"ok": None, "verdict": "Not opened: the addon says this one isn't on TorBox yet, opening it would start a download"}
+    t0 = time.time()
+    try:
+        client, up = await asyncio.wait_for(pd_open(url, {"Range": "bytes=0-1023"}, "check"), 30)
+    except HTTPException as e:
+        return {"ok": False, "verdict": str(e.detail)[:200], "secs": round(time.time() - t0, 1)}
+    except asyncio.TimeoutError:
+        return {"ok": False, "verdict": "No answer in 30 seconds (the addon is probably still getting the file ready)", "secs": 30}
+    try:
+        final = str(up.request.url)
+        out = {"status": up.status_code, "type": up.headers.get("content-type", ""), "host": urlparse(final).hostname, "hops": final != url,
+               "size": None, "secs": round(time.time() - t0, 1)}
+        m = re.search(r"/(\d+)\s*$", up.headers.get("content-range", ""))
+        if m:
+            out["size"] = int(m.group(1))
+        head = b""
+        async for ch in up.aiter_bytes(64):
+            head += ch
+            break
+    finally:
+        await up.aclose(); await client.aclose()
+    if PLACEHOLDER_RE.search(urlparse(final).path):
+        return {**out, "ok": False, "verdict": "The addon sent its own status video (not ready, failed, or a bad key)"}
+    if not video_answer(out["status"], out["type"]) or head.lstrip()[:1] in (b"<", b"{"):
+        return {**out, "ok": False, "verdict": f"Not a video (answered {out['status']}, {out['type'] or 'no type'})"}
+    try:
+        pr = await asyncio.wait_for(asyncio.to_thread(run_probe, final), 40)
+    except Exception:
+        return {**out, "ok": None, "verdict": "Answers with a video but it couldn't be read (ffprobe failed or took too long)"}
+    v = pr.get("video") or {}
+    au = [f"{a.get('codec')} {a.get('channels')}ch" for a in pr.get("audio") or []][:4]
+    return {**out, "ok": True, "container": pr.get("container"), "video": f"{v.get('codec')} {v.get('width')}x{v.get('height')}" + (" HDR" if v.get("transfer") in ("smpte2084", "arib-std-b67") else "") + (" Dolby Vision" if v.get("dovi") else ""),
+            "audio": au, "minutes": round((pr.get("duration") or 0) / 60), "verdict": "Opens and has video"}
+
+
 @app.post("/api/streams/{sid}/bad")
 async def stream_bad(sid: str, request: Request, p=Depends(current_profile)):
     # A source that wouldn't play goes to the back of the list next time, unless its host just said it was busy (429), that passes

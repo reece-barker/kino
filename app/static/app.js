@@ -2539,10 +2539,26 @@
     const own = t.files.filter((f) => !ep || (f.season === ep.season && f.episode === ep.episode));
     const head = `<div class="src-head"><div><h2>Sources</h2><p class="secondary">${esc(t.name)}${ep ? ` · ${esc(epLabel(ep.season, ep.episode))}` : ""}</p></div>
       <button class="round-btn sm" data-close aria-label="Close">${ic("close")}</button></div>`;
-    const sh = sheet(head + `<div class="src-list" id="srcList"></div>`, { wide: true });
+    const sh = sheet(head + (isAdmin() ? `<div class="src-test"><button class="btn secondary small" id="srcTest">Test these sources</button><span class="secondary" id="srcTestNote"></span></div>` : "") + `<div class="src-list" id="srcList"></div>`, { wide: true });
     const list = $("#srcList", sh.el);
     let streams = null, err = "", tooNew = null;
     const dayOf2 = (d) => new Date(d + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
+    // Admin only: opens each addon source the way the player does and says what it found (container, codecs, or why it isn't a video)
+    const TESTED = {};
+    const testLine = (x) => { const r = TESTED[x.id]; if (!r) return ""; return `<span class="src-warn ${r.ok ? "src-ok" : ""}">${ic("info")} ${esc(r.verdict)}${r.ok ? `: ${esc([r.container, r.video, (r.audio || []).join(" + ")].filter(Boolean).join(" · "))}` : ""}${r.secs ? ` (${r.secs}s)` : ""}</span>`; };
+    const tb = $("#srcTest", sh.el);
+    if (tb) tb.onclick = async () => {
+      if (!streams || !streams.length) return;
+      tb.disabled = true;
+      const todo = streams.slice(0, 12);
+      for (let i = 0; i < todo.length; i++) {
+        $("#srcTestNote", sh.el).textContent = ` Testing ${i + 1} of ${todo.length}`;
+        try { TESTED[todo[i].id] = await api(`/api/admin/source-test/${todo[i].id}`, {}); } catch (e) { TESTED[todo[i].id] = { ok: false, verdict: e.message }; }
+        draw(false);
+      }
+      $("#srcTestNote", sh.el).textContent = " Done";
+      tb.disabled = false;
+    };
     const draw = (loading) => {
       list.innerHTML = `<h3 class="sr-sub">On the Storage Box</h3>` + (own.map((f, i) => {
         const p = f.progress && !f.watched && f.progress.dur ? f.progress.pos / f.progress.dur : 0;
@@ -2561,6 +2577,7 @@
             ${x.health === "dead" ? `<span class="src-warn">${ic("info")} Not answering right now${x.why ? `, it ${esc(x.why)}` : ""}</span>` : ""}
             ${x.slow ? `<span class="src-warn">${ic("info")} Slow to start: ${esc(x.slow)}</span>` : ""}
             ${x.suspect && x.suspect.length ? `<span class="src-warn">${ic("info")} Probably not the real thing: ${esc(x.suspect.join(", "))}</span>` : ""}
+            ${testLine(x)}
             ${!x.plays ? `<span class="src-warn">${ic("info")} Might not play in this browser, saving it to the Library always works</span>` : ""}
             ${p > 0.02 ? `<span class="src-prog"><i style="width:${p * 100}%"></i></span>` : ""}</span>
           <span class="src-play">${ic("play")}</span></button>`;

@@ -212,7 +212,7 @@
   function mount(root, d, o) {
     o = o || {};
     const list = slides(d, o);
-    root.innerHTML = `<div class="kw"><div class="kw-top"><div class="kw-segs">${list.map((_, i) => `<button class="kw-seg${i ? "" : " on"}" data-i="${i}" aria-label="Slide ${i + 1}"></button>`).join("")}</div>${o.onClose ? `<button class="kw-close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : ""}</div>
+    root.innerHTML = `<div class="kw"><div class="kw-top">${o.onClose ? `<button class="kw-close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : ""}<div class="kw-segs">${list.map((_, i) => `<button class="kw-seg${i ? "" : " on"}" data-i="${i}" aria-label="Slide ${i + 1}"></button>`).join("")}</div></div>
       <div class="kw-track" tabindex="-1">${list.map(([p, h]) => `<section class="kw-s" data-p="${p}">${h}</section>`).join("")}</div><button class="kw-next" aria-label="Next"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></div>`;
     // A picture that doesn't load: the big one becomes a coloured name tile, the small ones go (no inline handlers, the page's policy doesn't allow them)
     root.querySelectorAll("img[data-fb]").forEach((im) => im.addEventListener("error", () => {
@@ -227,7 +227,7 @@
     mute.className = "kw-mute"; mute.setAttribute("aria-label", "Sound");
     const SPK = '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/>', mdraw = () => { mute.innerHTML = SPK + (Snd.muted ? '<path d="M17 9l5 6M22 9l-5 6"/></svg>' : '<path d="M16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12"/></svg>'); mute.setAttribute("aria-pressed", String(!Snd.muted)); };
     mdraw(); mute.onclick = () => { Snd.toggle(); mdraw(); };
-    root.querySelector(".kw-top").insertBefore(mute, root.querySelector(".kw-close"));
+    root.querySelector(".kw-top").appendChild(mute);
     // Sound needs a tap or key first, the first one wakes it up
     const wake = () => Snd.wake();
     kw.addEventListener("pointerdown", wake, { once: true }); document.addEventListener("keydown", wake, { once: true, capture: true });

@@ -14,10 +14,11 @@
   const KS = () => window.KinoSound;
   const Snd = {
     get muted() { return !(KS() && KS().on); },
-    toggle() { if (!KS()) return true; KS().set(!KS().on); if (KS().on) KS().play("tick"); return !KS().on; },
+    toggle() { if (!KS()) return true; KS().set(!KS().on); if (KS().on) { KS().play("tick"); KS().music.start(); } else KS().music.stop(0.3); return !KS().on; },
     wake() { if (KS()) KS().wake(); },
     tick() { KS() && KS().play("tick"); }, whoosh() { KS() && KS().play("whoosh"); }, pop() { KS() && KS().play("pop"); },
     chime() { KS() && KS().play("chime"); }, fanfare() { KS() && KS().play("fanfare"); },
+    music(v) { const k = KS(); if (!k) return; if (v && k.on) k.music.start(); else k.music.stop(); },
   };
 
   // Confetti on a canvas over the slides, from the bottom corners and raining from the top, gone after a few seconds
@@ -280,7 +281,9 @@
       }
     }), { root: track, threshold: 0.55 });
     // The slides start animating once the person has tapped to open (see the gate below), so the intro isn't spent behind it
-    const begin = () => secs.forEach((s) => io.observe(s));
+    const begin = () => { started = true; secs.forEach((s) => io.observe(s)); Snd.music(true); };
+    document.addEventListener("visibilitychange", () => { if (document.hidden) Snd.music(false); else if (started) Snd.music(true); });
+    let started = false;
     const sync = () => { const i = Math.round(track.scrollTop / (track.clientHeight || 1)); if (i === cur) return; cur = i; Snd.whoosh(); segs.forEach((s, k) => s.classList.toggle("on", k <= i)); next.hidden = i >= secs.length - 1; };
     track.addEventListener("scroll", sync, { passive: true });
     segs.forEach((s) => (s.onclick = () => go(Number(s.dataset.i))));
@@ -313,7 +316,7 @@
       const g = document.createElement("div");
       g.className = "kw-gate";
       g.innerHTML = `<div class="kw-eyebrow">Kino Wrapped</div><div class="kw-gmonth">${esc(d.month)}</div>${d.name ? `<div class="kw-p">${esc(d.name)}'s month is ready</div>` : `<div class="kw-p">Your month is ready</div>`}
-        <button class="kw-go" aria-label="Tap to open"><svg viewBox="0 0 24 24"><path d="M8 5.14v13.72c0 .8.87 1.3 1.56.88l11.04-6.86a1.03 1.03 0 000-1.76L9.56 4.26A1.03 1.03 0 008 5.14z"/></svg></button>
+        <button class="kw-go" aria-label="Tap to open"><svg viewBox="0 0 24 24"><path d="M8.2 5.2v13.6L19.4 12z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>
         <div class="kw-p">Tap to open, with sound</div>
         <button class="kw-btn ghost kw-nosound">Open without sound</button>`;
       kw.appendChild(g);
@@ -331,7 +334,7 @@
       if (o.tv) next.focus({ preventScroll: true }); else track.focus({ preventScroll: true });
     }
     sync();
-    return { destroy() { fx.stop(); removeEventListener("resize", fitMonth); document.removeEventListener("keydown", key, true); io.disconnect(); root.innerHTML = ""; }, go };
+    return { destroy() { Snd.music(false); fx.stop(); removeEventListener("resize", fitMonth); document.removeEventListener("keydown", key, true); io.disconnect(); root.innerHTML = ""; }, go };
   }
 
   window.KinoWrapped = { mount, card };

@@ -180,3 +180,15 @@ body.tv .kw-offer { right: 5%; bottom: 7%; width: 420px; }
 .kw-ai a { color: inherit; text-decoration: underline; text-underline-offset: 2px; opacity: 0.85; }
 
 .kw-month { white-space: nowrap; max-width: 100%; }
+
+/* The "tap to open" screen: the tap is what lets the browser play sound */
+.kw-gate { position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: clamp(10px, 2.4vh, 20px); padding: 24px; text-align: center;
+  background: radial-gradient(120% 90% at 50% 0%, #4a48c9 0%, #08080d 72%); transition: opacity 0.5s, transform 0.5s var(--ease); }
+.kw-gate.out { opacity: 0; transform: scale(1.06); pointer-events: none; }
+.kw-gmonth { font-size: clamp(48px, min(16vw, 18vh), 140px); font-weight: 850; letter-spacing: -0.05em; line-height: 1; max-width: 100%; white-space: nowrap; }
+.kw-go { appearance: none; border: 0; padding: 0; width: clamp(84px, 14vh, 120px); height: clamp(84px, 14vh, 120px); border-radius: 50%; display: grid; place-items: center; background: #fff; color: #000; cursor: pointer; margin: 8px 0 2px;
+  box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.5); animation: kwPulse 1.8s ease-out infinite; -webkit-tap-highlight-color: transparent; }
+.kw-go svg { width: 42%; height: 42%; fill: currentColor; margin-left: 6%; }
+.kw-go:active { transform: scale(0.95); }
+@keyframes kwPulse { 70% { box-shadow: 0 0 0 28px rgba(255, 255, 255, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); } }
+@media (prefers-reduced-motion: reduce) { .kw-go { animation: none; } }

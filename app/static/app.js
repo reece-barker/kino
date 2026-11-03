@@ -5936,22 +5936,29 @@
   }
   async function pageWrapped(arg) {
     const n = ROUTE_N;
-    app.innerHTML = `<main class="page"><div class="empty"><span class="spin"></span></div></main>`;
-    const idx = await api("/api/wrapped");
-    if (n !== ROUTE_N) return;
+    // A loading screen straight away (its own styles inline, the Wrapped files aren't here yet), the first time a month is made it can take a few seconds
+    const host = document.createElement("div");
+    host.id = "kwHost";
+    host.style.cssText = "position:fixed;inset:0;z-index:400;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;color:#fff;font:700 19px -apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;text-align:center;padding:24px;background:radial-gradient(120% 90% at 50% 0%,#3b3a9e 0%,#08080d 70%)";
+    host.innerHTML = `<div class="spin" style="width:64px;height:64px;border-width:4px"></div><div id="kwMsg">Getting your Wrapped ready</div>`;
+    document.body.appendChild(host);
+    const msgs = ["Counting up your hours", "Finding your top picks", "Working out your busiest night", "Looking for your streaks", "Writing your personality card"];
+    let mi = 0;
+    const mt = setInterval(() => { const m = $("#kwMsg"); if (m) m.textContent = msgs[mi++ % msgs.length] + "..."; else clearInterval(mt); }, 1700);
+    const idx = await api("/api/wrapped").catch(() => ({ periods: [] }));
+    if (n !== ROUTE_N) { clearInterval(mt); return; }
     const per = /^\d{4}-\d{2}$/.test(arg) ? arg : (idx.periods.find((p) => p.done) || idx.periods[0] || {}).period;
     if (!per) {
+      clearInterval(mt); host.remove();
       app.innerHTML = `<main class="page"><h1 class="large-title">Kino Wrapped</h1><div class="empty"><h2>Nothing to wrap up yet</h2><p>Watch a bit more and your first Wrapped will show up here at the end of the month.</p></div></main>`;
       return;
     }
-    await loadWrapped();
-    const d = await api(`/api/wrapped/${per}`).catch((e) => { toast(e.message, 4000); return null; });
-    if (n !== ROUTE_N) return;
-    if (!d) { history.length > 1 ? history.back() : (location.hash = "#/home"); return; }
+    const [, d] = await Promise.all([loadWrapped().catch(() => null), api(`/api/wrapped/${per}`).catch((e) => { toast(e.message, 4000); return null; })]);
+    clearInterval(mt);
+    if (n !== ROUTE_N) { host.remove(); return; }
+    if (!d || !window.KinoWrapped) { host.remove(); history.length > 1 ? history.back() : (location.hash = "#/home"); return; }
     api("/api/wrapped/seen", { period: per, action: "open" }).catch(() => {});
-    const host = document.createElement("div");
-    host.id = "kwHost";
-    document.body.appendChild(host);
+    host.removeAttribute("style");
     const share = { can: d.can_share, state: d.share, create: async (hide) => { const r = await api(`/api/wrapped/${per}/share`, { hide_name: !!hide }); return { ...r, views: (share.state || {}).views || 0 }; },
                     remove: () => api(`/api/wrapped/${per}/share`, null, "DELETE") };
     WRAPPED = KinoWrapped.mount(host, d, { tv: TV, img: (t) => img(t.poster, 0, 342), periods: idx.periods, share,

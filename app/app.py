@@ -6581,6 +6581,9 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
                     dropped += 1
                 continue  # a notice with nothing to play
             # A debrid source has the torrent's hash and a url to play it, the url is what plays
+            if PLACEHOLDER_RE.search(urlparse(url).path):
+                rep_["error"] = rep_["error"] or str(st.get("title") or st.get("description") or "the addon sent an error")[:100]
+                continue  # an addon's own error (bad key and the like) comes as a stream with a video of a message
             if st.get("ytId") or st.get("externalUrl") or (st.get("infoHash") and not url) or not pd_url_ok(url):
                 dropped += 1
                 what = "torrent" if st.get("infoHash") else "youtube" if st.get("ytId") else urlparse(str(url or st.get("externalUrl") or "")).hostname or "unknown"
@@ -6621,7 +6624,8 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
         todo, seen_h = [], set()
         for x in cand:
             h_ = urlparse(x["_url"]).hostname or ""
-            if probe_cached(x["_url"]) or h_ in seen_h:
+            # A source the addon says is not on TorBox yet is never asked, opening it would start the download in the account
+            if probe_cached(x["_url"]) or h_ in seen_h or TB_UNCACHED_RX.search(x["label"] or ""):
                 continue
             seen_h.add(h_)
             todo.append(x)
@@ -6824,11 +6828,11 @@ def torrent_stats(st):
             return n if 0 <= n < 10**7 else None
         except (TypeError, ValueError):
             return None
-    seeders = next((n for n in [num(st.get(k)) for k in ("seeders", "seeds", "seeder")] + [num(bh.get("seeders"))] if n is not None), None)
+    seeders = next((n for n in [num(st.get(k)) for k in ("seeders", "seeds", "seeder", "seed", "numSeeds")] + [num(bh.get("seeders"))] if n is not None), None)
     peers = next((n for n in [num(st.get(k)) for k in ("peers", "leechers", "leeches", "leecher")] + [num(bh.get("peers"))] if n is not None), None)
     text = " ".join(str(st.get(k) or "") for k in ("name", "title", "description"))
     if seeders is None:
-        m = re.search(r"(?:\U0001F464|\U0001F331|\u2B06\uFE0F?)\s*(\d[\d,.]*)|\bseed(?:er)?s?\s*[:=]?\s*(\d[\d,]*)|\bS\s*[:=]\s*(\d[\d,]*)\b", text, re.I)
+        m = re.search(r"(?:\U0001F464|\U0001F331|\u2B06\uFE0F?|\U0001F465)\s*(\d[\d,.]*)|\bseed(?:er)?s?\s*[:=]?\s*(\d[\d,]*)|\bS\s*[:=]\s*(\d[\d,]*)\b", text, re.I)
         if m:
             seeders = num(next(g for g in m.groups() if g))
     if peers is None:
@@ -6943,6 +6947,11 @@ async def tb_open(url, headers):
 # Where a source's address led to after its redirects (an addon that resolves a debrid link answers with a redirect to the real file). The player
 # asks for the video in many pieces (every seek, and the first few for the start and the end of the file), and each piece used to go back through the
 # addon, which is what runs into an addon's rate limit. Stremio resolves it once, so now do the pieces
+# The addons answer with a short video of their own when a file isn't ready (downloading, failed, bad key, limit reached). It is a real mp4, so it
+# looked like a working source. These are the addresses those are served from (Torrentio, MediaFusion, StremThru, Jackettio)
+PLACEHOLDER_RE = re.compile(r"/(?:videos/(?:[a-z_]+_v\d+|not_ready|error|access_denied|expired_api_key|not_premium|two_factor_auth)"
+                            r"|static/exceptions/[^/]+|v0/store/_/static/[^/]+)\.mp4$", re.I)
+TB_UNCACHED_RX = re.compile(r"\[\w+ download\]|\[\w+⬇️?\]|⏳")
 RESOLVED = {}  # source address -> (when, the address it led to)
 RESOLVED_SECS = 600
 
@@ -6995,6 +7004,9 @@ async def pd_open(url, headers, kind="play", _again=True):
             if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                 await r.aclose()
                 url = urljoin(url, r.headers["location"])
+                if PLACEHOLDER_RE.search(urlparse(url).path):
+                    SLOW_START[first_url] = time.time()  # not held against the source, it may well be ready next time
+                    raise HTTPException(503, "The source says it is still getting this one ready (it sent its own status video), try another source")
                 continue
             if retried and r.status_code < 400:
                 host_ = urlparse(url).hostname or ""
@@ -7197,7 +7209,7 @@ async def probe_source(url):
         if host_busy(host):  # an earlier one in the queue just got "too many requests"
             return None, "busy", None
         try:
-            ok, why, size = await asyncio.wait_for(go(), 5)
+            ok, why, size = await asyncio.wait_for(go(), 12)
         except asyncio.TimeoutError:
             ok, why, size = None, "slow to answer", None  # a service that sets a download going can take longer than this, that isnt dead
         except HTTPException as e:

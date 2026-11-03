@@ -9152,9 +9152,50 @@ async def wrapped_share(period: str, request: Request, p=Depends(current_profile
     return {"code": code, "url": f"{wrap_base(request)}/w/{code}", "hide_name": bool(hide)}
 
 
+@app.post("/api/wrapped/{period}/card")
+async def wrapped_card(period: str, request: Request, p=Depends(current_profile)):
+    """The picture for the share link's preview, drawn in the person's browser and sent here. It is opened, checked and saved again as a plain jpeg"""
+    wrap_period_ok(period)
+    sh = wrap_share_row(p["id"], period)
+    if not sh or p.get("kids"):
+        raise HTTPException(404, "Make the share link first")
+    if int(request.headers.get("content-length") or 0) > 3 * 1024 * 1024:
+        raise HTTPException(413, "That picture is too big")
+    raw = await request.body()
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw))
+        if im.format not in ("JPEG", "PNG") or im.width < 600 or im.width > 3000 or im.height < 300 or im.height > 1600:
+            raise ValueError("size")
+        im = im.convert("RGB").resize((1200, 630))
+        for q in (86, 78, 70, 60):
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=q, optimize=True)
+            if buf.tell() < 280 * 1024:  # WhatsApp skips big preview pictures
+                break
+    except Exception:
+        raise HTTPException(400, "That isn't a picture Kino can use")
+    WRAP_CARDS.mkdir(exist_ok=True)
+    (WRAP_CARDS / f"{sh['code']}.jpg").write_bytes(buf.getvalue())
+    return {"ok": True, "bytes": buf.tell()}
+
+
+@app.get("/w/{code}/card.jpg")
+async def wrapped_public_card(code: str):
+    r = wrap_lookup(code)
+    if not r:
+        raise HTTPException(404, "No picture")
+    f = WRAP_CARDS / f"{r['code']}.jpg"
+    return FileResponse(f if f.exists() else STATIC / "icon-share.png", media_type="image/jpeg" if f.exists() else "image/png",
+                        headers={"Cache-Control": "public, max-age=300", "X-Robots-Tag": "noindex, nofollow"})
+
+
 @app.delete("/api/wrapped/{period}/share")
 async def wrapped_unshare(period: str, p=Depends(current_profile)):
     wrap_period_ok(period)
+    sh = wrap_share_row(p["id"], period)
+    if sh:
+        (WRAP_CARDS / f"{sh['code']}.jpg").unlink(missing_ok=True)
     db().q("UPDATE wrapped_shares SET revoked = 1 WHERE profile_id = ? AND period = ?", (p["id"], period))
     return {"ok": True}
 
@@ -9168,11 +9209,14 @@ def wrap_lookup(code):
 
 
 WRAPPED_HTML = (Path(__file__).with_name("wrapped.html")).read_text()
+WRAP_CARDS = DATA_DIR / "wrapped-cards"  # the picture a share link shows in WhatsApp and the like, made by the person's own browser when they share
 WRAP_HEADERS = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"}
 
 
 def wrap_page(request, title, desc, code, status=200):
-    return Response(WRAPPED_HTML.replace("__V__", STATIC_VERSION["v"]).replace("__TITLE__", html.escape(title)).replace("__DESC__", html.escape(desc))
+    card = WRAP_CARDS / f"{code}.jpg"
+    img_url = f"{wrap_base(request)}/w/{code}/card.jpg?v={int(card.stat().st_mtime)}" if code and card.exists() else f"{wrap_base(request)}/static/icon-share.png"
+    return Response(WRAPPED_HTML.replace("__IMG__", img_url).replace("__V__", STATIC_VERSION["v"]).replace("__TITLE__", html.escape(title)).replace("__DESC__", html.escape(desc))
                     .replace("__CODE__", code).replace("__SITE__", wrap_base(request)), media_type="text/html", status_code=status, headers=WRAP_HEADERS)
 
 

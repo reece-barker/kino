@@ -178,3 +178,5 @@ body.tv .kw-offer { right: 5%; bottom: 7%; width: 420px; }
 .kw-sharebox > * { max-width: min(100%, 620px); }
 .kw-ai { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .kw-ai a { color: inherit; text-decoration: underline; text-underline-offset: 2px; opacity: 0.85; }
+
+.kw-month { white-space: nowrap; max-width: 100%; }

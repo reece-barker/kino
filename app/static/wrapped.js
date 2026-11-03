@@ -10,42 +10,15 @@
   const words = (s) => String(s).split(/\s+/).filter(Boolean).map((w, i) => `<span class="kw-w" style="--n:${i}">${esc(w)}</span>`).join(" ");
   const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // Little sounds made in the browser (nothing to download): a tick, a whoosh between slides, a pop and a fanfare. Off with the speaker button, which is remembered
-  const Snd = (() => {
-    let ctx = null, muted = false;
-    try { muted = localStorage.getItem("kino-sound") === "off"; } catch (_) {}
-    const ac = () => {
-      if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { return null; } }
-      if (ctx.state === "suspended") ctx.resume().catch(() => {});
-      return ctx;
-    };
-    const tone = (f, at, dur, type, vol, f2) => {
-      const c = ac(); if (!c || muted) return;
-      const o = c.createOscillator(), g = c.createGain(), t = c.currentTime + at;
-      o.type = type || "sine"; o.frequency.setValueAtTime(f, t); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
-      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol || 0.1, t + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      o.connect(g); g.connect(c.destination); o.start(t); o.stop(t + dur + 0.05);
-    };
-    const noise = (at, dur, from, to, vol) => {
-      const c = ac(); if (!c || muted) return;
-      const n = Math.floor(c.sampleRate * dur), b = c.createBuffer(1, n, c.sampleRate), d = b.getChannelData(0);
-      for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
-      const s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(), t = c.currentTime + at;
-      s.buffer = b; f.type = "bandpass"; f.Q.value = 1.2; f.frequency.setValueAtTime(from, t); f.frequency.exponentialRampToValueAtTime(to, t + dur);
-      g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      s.connect(f); f.connect(g); g.connect(c.destination); s.start(t);
-    };
-    return {
-      get muted() { return muted; },
-      toggle() { muted = !muted; try { localStorage.setItem("kino-sound", muted ? "off" : "on"); } catch (_) {} if (window.KinoSound) KinoSound.set(!muted); if (!muted) this.tick(); return muted; },
-      wake: ac,
-      tick() { tone(880, 0, 0.07, "triangle", 0.07, 1180); },
-      whoosh() { noise(0, 0.38, 400, 2600, 0.07); },
-      pop() { tone(540, 0, 0.14, "sine", 0.12, 180); tone(1080, 0, 0.06, "triangle", 0.05); },
-      chime() { [523, 659, 784, 1047].forEach((f, i) => tone(f, i * 0.09, 0.5, "sine", 0.1)); },
-      fanfare() { [[523, 0], [659, 0.1], [784, 0.2], [1047, 0.3], [1319, 0.45]].forEach(([f, a]) => { tone(f, a, 0.7, "triangle", 0.1); tone(f / 2, a, 0.7, "sine", 0.06); }); noise(0.3, 0.9, 3000, 7000, 0.05); },
-    };
-  })();
+  // The sounds come from sounds.js (the same engine and the same on/off switch as the rest of Kino)
+  const KS = () => window.KinoSound;
+  const Snd = {
+    get muted() { return !(KS() && KS().on); },
+    toggle() { if (!KS()) return true; KS().set(!KS().on); if (KS().on) KS().play("tick"); return !KS().on; },
+    wake() { if (KS()) KS().wake(); },
+    tick() { KS() && KS().play("tick"); }, whoosh() { KS() && KS().play("whoosh"); }, pop() { KS() && KS().play("pop"); },
+    chime() { KS() && KS().play("chime"); }, fanfare() { KS() && KS().play("fanfare"); },
+  };
 
   // Confetti on a canvas over the slides, from the bottom corners and raining from the top, gone after a few seconds
   function Confetti(host) {
@@ -90,7 +63,7 @@
       <h1 class="kw-month" style="--i:1">${letters(d.month)}</h1>
       <div class="kw-h rv" style="--i:2">${esc(d.year)}</div>
       <p class="kw-p rv" style="--i:3">${who ? `${who}'s month` : "A month"} of watching, in numbers.</p>
-      ${o.periods && o.periods.length > 1 ? `<div class="kw-periods rv" style="--i:4">${o.periods.map((p) => `<button data-period="${esc(p.period)}" class="${p.period === d.period ? "on" : ""}">${esc(p.label)}</button>`).join("")}</div>` : ""}`]);
+      ${o.periods && o.periods.length > 1 ? `<div class="kw-periods rv" style="--i:4">${o.periods.slice(0, 2).map((p) => `<button data-period="${esc(p.period)}" class="${p.period === d.period ? "on" : ""}">${esc(p.label)}</button>`).join("")}</div>` : ""}`]);
     out.push(["time", `
       <div class="kw-eyebrow rv" style="--i:0">You watched for</div>
       <div class="kw-big rv" style="--i:1" data-count="${d.hours}" data-dec="1">0</div>
@@ -209,6 +182,64 @@
     draw();
   }
 
+  // The picture a share link shows in WhatsApp, iMessage, Discord and so on (1200 x 630), drawn on a canvas here in the person's own browser so it can use their
+  // profile picture and the real posters. o.avatar is { svg, a, b } (an icon), { img, bg } (a picture), or null; o.img(t, i) gives a poster address
+  async function card(d, o) {
+    o = o || {};
+    const W = 1200, H = 630, cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const x = cv.getContext("2d"), FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+    const PAL = [["#5e5ce6", "#ff375f"], ["#0a84ff", "#64d2ff"], ["#ff9f0a", "#ff453a"], ["#30d158", "#64d2ff"], ["#bf5af2", "#0a84ff"], ["#ff375f", "#ff9f0a"]];
+    const [c1, c2] = PAL[(Number(String(d.period).slice(5, 7)) || 1) % PAL.length];
+    const load = (src) => new Promise((ok) => { if (!src) return ok(null); const im = new Image(); const t = setTimeout(() => ok(null), 5000); im.onload = () => { clearTimeout(t); ok(im); }; im.onerror = () => { clearTimeout(t); ok(null); }; im.src = src; });
+    const rr = (px, py, w, h, r) => { x.beginPath(); x.moveTo(px + r, py); x.arcTo(px + w, py, px + w, py + h, r); x.arcTo(px + w, py + h, px, py + h, r); x.arcTo(px, py + h, px, py, r); x.arcTo(px, py, px + w, py, r); x.closePath(); };
+    const posters = await Promise.all((d.top || []).slice(0, 3).map((tt, i) => load(tt.poster && o.img ? o.img(tt, i) : null)));
+    let av = null;
+    if (o.avatar && o.avatar.svg) av = await load("data:image/svg+xml;charset=utf-8," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">${o.avatar.svg}</svg>`));
+    else if (o.avatar && o.avatar.img) av = await load(o.avatar.img);
+    // Background: dark with two soft glows in the month's colours
+    x.fillStyle = "#08080d"; x.fillRect(0, 0, W, H);
+    const glow = (cx, cy, r, col) => { const g = x.createRadialGradient(cx, cy, 0, cx, cy, r); g.addColorStop(0, col + "cc"); g.addColorStop(1, col + "00"); x.fillStyle = g; x.fillRect(0, 0, W, H); };
+    glow(150, 40, 620, c1); glow(1100, 640, 640, c2);
+    // Posters, overlapping and tilted, on the right
+    const tiles = posters.length ? posters : [null];
+    const slots = [{ cx: 905, cy: 330, w: 250, rot: 0.0, z: 3 }, { cx: 1030, cy: 345, w: 210, rot: 0.1, z: 2 }, { cx: 790, cy: 350, w: 210, rot: -0.1, z: 1 }];
+    tiles.map((im, i) => ({ im, i, s: slots[i] })).sort((a, b) => a.s.z - b.s.z).forEach(({ im, i, s: sl }) => {
+      const w = sl.w, h = w * 1.5;
+      x.save(); x.translate(sl.cx, sl.cy); x.rotate(sl.rot);
+      x.shadowColor = "rgba(0,0,0,0.55)"; x.shadowBlur = 40; x.shadowOffsetY = 16;
+      rr(-w / 2, -h / 2, w, h, 18); x.fillStyle = "#1c1c1e"; x.fill(); x.shadowColor = "transparent";
+      x.save(); rr(-w / 2, -h / 2, w, h, 18); x.clip();
+      if (im) x.drawImage(im, -w / 2, -h / 2, w, h);
+      else { const g = x.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2); g.addColorStop(0, c1); g.addColorStop(1, c2); x.fillStyle = g; x.fillRect(-w / 2, -h / 2, w, h); x.fillStyle = "#fff"; x.font = `800 26px ${FONT}`; x.textAlign = "center"; x.fillText(((d.top[i] || {}).name || "").slice(0, 18), 0, 8); }
+      x.restore(); x.lineWidth = 2; x.strokeStyle = "rgba(255,255,255,0.22)"; rr(-w / 2, -h / 2, w, h, 18); x.stroke(); x.restore();
+    });
+    // Left: who, which month, the personality, the numbers
+    x.textAlign = "left"; x.textBaseline = "alphabetic";
+    const fit = (txt, px, weight, maxW) => { let f = px; do { x.font = `${weight} ${f}px ${FONT}`; f -= 2; } while (x.measureText(txt).width > maxW && f > 18); };
+    let top = 64;
+    if (d.name || av) {
+      if (av) {
+        const ar = 46, ax = 70 + ar, ay = 66 + ar;
+        x.save(); x.beginPath(); x.arc(ax, ay, ar, 0, Math.PI * 2); x.clip();
+        const a = o.avatar || {}, g = x.createLinearGradient(ax - ar, ay - ar, ax + ar, ay + ar); g.addColorStop(0, a.a || a.bg || c1); g.addColorStop(1, a.b || a.bg || c2); x.fillStyle = g; x.fillRect(ax - ar, ay - ar, ar * 2, ar * 2);
+        const sc = a.svg ? 1.5 : 1.7, sw = ar * sc, sh = (av.height / (av.width || 1)) * sw; x.drawImage(av, ax - (a.svg ? ar : sw / 2), ay - (a.svg ? ar : sh / 2), a.svg ? ar * 2 : sw, a.svg ? ar * 2 : sh);
+        x.restore(); x.lineWidth = 3; x.strokeStyle = "rgba(255,255,255,0.5)"; x.beginPath(); x.arc(ax, ay, ar, 0, Math.PI * 2); x.stroke();
+      }
+      x.fillStyle = "#fff"; fit(d.name ? `${d.name}'s` : "", 40, 800, 420); x.fillText(d.name ? `${d.name}'s` : "", av ? 190 : 70, 66 + 40);
+      x.fillStyle = "rgba(255,255,255,0.7)"; x.font = `800 22px ${FONT}`; if ("letterSpacing" in x) x.letterSpacing = "4px"; x.fillText("KINO WRAPPED", av ? 190 : 70, 66 + 78); if ("letterSpacing" in x) x.letterSpacing = "0px";
+      top = 190;
+    } else { x.fillStyle = "rgba(255,255,255,0.7)"; x.font = `800 24px ${FONT}`; if ("letterSpacing" in x) x.letterSpacing = "4px"; x.fillText("KINO WRAPPED", 70, 100); if ("letterSpacing" in x) x.letterSpacing = "0px"; top = 150; }
+    x.fillStyle = "#fff"; fit(d.month, 150, 850, 560); x.fillText(d.month, 66, top + 130);
+    x.fillStyle = "rgba(255,255,255,0.85)"; x.font = `800 52px ${FONT}`; x.fillText(String(d.year), 72, top + 190);
+    const gr = x.createLinearGradient(70, 0, 640, 0); gr.addColorStop(0, "#fff"); gr.addColorStop(1, "#ffd1e8");
+    x.fillStyle = gr; fit(d.persona.title, 62, 850, 580); x.fillText(d.persona.title, 70, top + 280);
+    x.fillStyle = "rgba(255,255,255,0.9)"; x.font = `700 32px ${FONT}`;
+    x.fillText(`${Math.round(d.hours)} hours  ·  ${d.active_days} days  ·  ${d.titles} titles`, 70, top + 335);
+    x.fillStyle = "rgba(255,255,255,0.55)"; x.font = `800 26px ${FONT}`; x.fillText("Kino", 70, H - 36);
+    return new Promise((ok, no) => cv.toBlob((b) => (b ? ok(b) : no(new Error("no picture"))), "image/jpeg", 0.88));
+  }
+
   function mount(root, d, o) {
     o = o || {};
     const list = slides(d, o);
@@ -233,6 +264,9 @@
     kw.addEventListener("pointerdown", wake, { once: true }); document.addEventListener("keydown", wake, { once: true, capture: true });
     kw.addEventListener("click", (e) => { if (e.target.closest(".kw-btn, .kw-seg, .kw-next, .kw-periods button, .kw-close, .kw-check")) Snd.tick(); });
     const go = (i) => { i = Math.max(0, Math.min(secs.length - 1, i)); track.scrollTo({ top: i * track.clientHeight, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); };
+    // The big month name shrinks to fit the width instead of breaking onto a second line (September, November, December are long)
+    const fitMonth = () => { const m = root.querySelector(".kw-month"); if (!m) return; m.style.fontSize = ""; const room = Math.min(m.parentElement.clientWidth - 8, 740); let f = parseFloat(getComputedStyle(m).fontSize); if (m.scrollWidth > room) m.style.fontSize = Math.floor(f * room / m.scrollWidth) + "px"; };
+    fitMonth(); addEventListener("resize", fitMonth);
     const first = {};
     const io = new IntersectionObserver((es) => es.forEach((e) => {
       if (!e.isIntersecting) return;
@@ -272,8 +306,8 @@
     track.addEventListener("scrollend", () => { if (o.tv) { const b = secs[cur].querySelector("button.kw-btn, .kw-periods button") || secs[cur].querySelector("button, input"); (b || next).focus({ preventScroll: true }); } });
     if (o.tv) next.focus({ preventScroll: true }); else track.focus({ preventScroll: true });
     sync();
-    return { destroy() { fx.stop(); document.removeEventListener("keydown", key, true); io.disconnect(); root.innerHTML = ""; }, go };
+    return { destroy() { fx.stop(); removeEventListener("resize", fitMonth); document.removeEventListener("keydown", key, true); io.disconnect(); root.innerHTML = ""; }, go };
   }
 
-  window.KinoWrapped = { mount };
+  window.KinoWrapped = { mount, card };
 })();

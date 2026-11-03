@@ -5725,7 +5725,7 @@
       try { from = sessionStorage.getItem("kino-from"); } catch (_) {}
       const fresh = RELOADED || history.length <= 1;
       RELOADED = false;
-      if (fresh) location.hash = from && from !== location.hash.split("?")[0] ? from : "#/home";
+      if (fresh) { BACK_UNTIL = Date.now() + 1500; location.hash = from && from !== location.hash.split("?")[0] ? from : "#/home"; }
       else history.back();
       return true;
     }
@@ -5929,6 +5929,49 @@
 
   // Coming back from the player the page refreshes in place: same scroll, same focus, the old page held at its height
   // while the new one draws, so resume bars update without the page jumping or flashing
+  // Going back to a page (the back button, the remote's Back, swiping back) puts it where it was left: the scroll, how far a long list had loaded,
+  // the rows that were scrolled sideways and, on a tv, the card the remote was on. Opening a page any other way starts at the top like before
+  try { history.scrollRestoration = "manual"; } catch (_) {}
+  // Every page entry gets stamped once it is drawn. Going back or forward lands on a stamped entry, a new link or address has none yet (popstate fires
+  // for those as well so it can't tell them apart). BACK_UNTIL is for the places that send the app back by hand
+  let BACK_UNTIL = 0;
+  const wasHere = () => { try { return !!(history.state && history.state.kino) || Date.now() < BACK_UNTIL; } catch (_) { return false; } };
+  const SCROLLS = (() => { try { return JSON.parse(sessionStorage.getItem("kino-scroll") || "{}"); } catch (_) { return {}; } })();
+  function saveScroll(hash) {
+    if (!hash || !app.firstElementChild || $(".sk", app)) return;  // not while it is still only the placeholder shapes
+    const k = focusKey(document.activeElement);
+    SCROLLS[hash] = { y: Math.round(scrollY), rows: $$(".row", app).map((r) => Math.round(r.scrollLeft)), at: Date.now(),
+                      key: k ? { tag: k.tag, text: k.text.slice(0, 80), sel: k.sel || null, sec: k.sec || null, idx: k.idx ?? -1 } : null };
+    const keep = Object.entries(SCROLLS).sort((a, b) => b[1].at - a[1].at).slice(0, 12);
+    Object.keys(SCROLLS).forEach((h) => delete SCROLLS[h]);
+    keep.forEach(([h, v]) => (SCROLLS[h] = v));
+    try { sessionStorage.setItem("kino-scroll", JSON.stringify(SCROLLS)); } catch (_) {}
+  }
+  function restoreScroll(e, n) {
+    let stop = false, tries = 0;
+    const cancel = () => { stop = true; };
+    ["wheel", "touchstart", "keydown", "pointerdown"].forEach((ev) => addEventListener(ev, cancel, { once: true, passive: true }));
+    const rows = () => $$(".row", app).forEach((r, i) => { if (e.rows[i]) r.scrollLeft = e.rows[i]; });
+    const done = () => {
+      window.scrollTo(0, e.y);
+      rows();
+      if (TV && e.key) {
+        const a = document.activeElement;
+        if (a && a !== document.body) a.blur();
+        refocus({ el: document.createElement("i"), ...e.key });
+      }
+      setTimeout(() => { if (!stop && n === ROUTE_N) { rows(); window.scrollTo(0, e.y); } }, 700);
+    };
+    const step = () => {
+      if (stop || n !== ROUTE_N) return;
+      // A long list loads a page at a time as you near the bottom, so go on loading until the page is as tall as it was
+      if (document.documentElement.scrollHeight >= e.y + innerHeight || tries >= 24) { done(); return; }
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      tries++;
+      setTimeout(step, 250);
+    };
+    step();
+  }
   let SOFT = false;
   async function softRoute() {
     const y = scrollY, k = focusKey(document.activeElement), h = app.offsetHeight;
@@ -5949,6 +5992,8 @@
     const [, page, arg] = (location.hash || "#/").split("?")[0].split("/");
     const n = ++ROUTE_N;
     const changed = (location.hash.split("?")[0]) !== LAST_PAGE;
+    const back = wasHere();
+    if (changed && !SOFT && LAST_PAGE) saveScroll(LAST_PAGE);
     // Remembers where a title page was opened from. The app reloads the page after the player on low memory tvs,
     // which wipes the back history, and back then went to Home instead of where you were
     if (changed && LAST_PAGE && ["title", "discover", "person"].includes(page)) { try { sessionStorage.setItem("kino-from", LAST_PAGE); } catch (_) {} }
@@ -5996,6 +6041,7 @@
       } else await pageHome();
       if (isAdmin() && page !== "sync" && page !== "home") api("/api/admin/sync").then((s) => { SYNC = s; updateSyncChip(); }).catch(() => {});
       if (n === ROUTE_N) { enhanceRows(app); tvSelects(app); }
+      const saved = changed && back && n === ROUTE_N ? SCROLLS[location.hash.split("?")[0]] : null;
       if (changed && n === ROUTE_N) {
         // Tells screen readers which page opened, the page itself no longer announces everything that changes in it
         const say = $("#routeSay"), h1 = $(".large-title, .hero-name", app);
@@ -6013,13 +6059,18 @@
           const side = $("#side"); if (side) side.classList.remove("open");
         }
       }
-      LAST_PAGE = location.hash.split("?")[0];
+      if (saved && saved.y > 0) restoreScroll(saved, n);
+      if (n === ROUTE_N) {
+        LAST_PAGE = location.hash.split("?")[0];  // a draw that was replaced by a newer one doesn't count as the page that was shown
+        try { history.replaceState({ kino: 1 }, "", location.href); } catch (_) {}
+      }
     } catch (e) {
       if (e.message === "pick profile" || n !== ROUTE_N) return;
       if (e.status === 403 && /allow list/.test(e.message)) {
         location.href = "/gate";
         return;
       }
+      LAST_PAGE = location.hash.split("?")[0];  // the error page is what is on screen now, going back from it is a change of page too
       app.innerHTML = (ME.profile ? topbar("") : "") + `<main class="page"><div class="empty"><h2>Something went wrong</h2><p>${esc(e.message)}</p>
         <a class="btn secondary small" href="#/home">Go Home</a></div></main>`;
       if (ME.profile) wireTopbar();

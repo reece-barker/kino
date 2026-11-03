@@ -1976,3 +1976,8 @@ body.tv .tile.tile-open { z-index: 6; }
 
 /* A TV has no mute buttons on trailers, the sound is always on */
 body.tv #heroMute, body.tv #trSnd, body.tv .tile-snd { display: none !important; }
+
+/* A blur behind a small round button showed on phones as a blurry patch around it (iOS draws it over the corners and the edges, and over the whole top of the
+   page where a button is fixed in place), so the small round buttons use a plain translucent fill instead */
+.round-btn, .glass-btn.round, .page-back, .page-back.glass { -webkit-backdrop-filter: none; backdrop-filter: none; }
+.page-back, .page-back.glass { background: rgba(24, 24, 26, 0.72); }

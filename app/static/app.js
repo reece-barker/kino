@@ -6017,11 +6017,20 @@
     if (!p || (location.hash || "#/home").split("?")[0] !== "#/home" || !pl.el.hidden) { WRAP_OFFER = false; return; }
     try { await loadWrapped(); } catch (_) { return; }
     api("/api/wrapped/seen", { period: p.period, action: "shown" }).catch(() => {});
+    const month = p.label.split(" ")[0];
+    if (TV) {
+      // A card floating in the corner can't be reached with a remote, so on a TV it is a proper box the remote lands on (Back is the same as Not Now)
+      const sh = sheet(`<h2>Your ${esc(month)} Kino Wrapped is ready</h2><p class="secondary">See what you watched, and your watching personality. Takes a minute.</p>
+        <div class="actions end"><button class="btn secondary" data-no>Not Now</button><button class="btn primary" data-see>See It</button></div>`, { onClose: () => {} });
+      $("[data-no]", sh.el).onclick = () => { sh.close(); api("/api/wrapped/seen", { period: p.period, action: "dismiss" }).catch(() => {}); };
+      $("[data-see]", sh.el).onclick = () => { sh.close(); location.hash = "#/wrapped/" + p.period; };
+      setTimeout(() => { const b = $("[data-see]", sh.el); if (b) b.focus({ preventScroll: true }); }, 80);
+      return;
+    }
     const el = document.createElement("div");
     el.className = "kw-offer";
     el.setAttribute("role", "dialog");
     el.setAttribute("aria-label", "Kino Wrapped");
-    const month = p.label.split(" ")[0];
     el.innerHTML = `<b>Your ${esc(month)} Kino Wrapped is ready</b><p>See what you watched, and your watching personality. Takes a minute.</p>
       <div class="kw-actions"><button class="kw-btn" data-see>See it</button><button class="kw-btn ghost" data-no>Not now</button></div>`;
     document.body.appendChild(el);

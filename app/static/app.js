@@ -2377,12 +2377,17 @@
   function nextSource(fid, from, why, loud) {
     // The server says if the source's host was just busy (429, too many requests), that isnt the source being broken so it isnt held against it,
     // and sources on that host wait while others are tried
-    api(`/api/streams/${fid}/bad`, { why: why || "" }).then((r) => { if (r && r.busy && SOURCES) { SOURCES.busyHosts.add(r.host); SOURCES.busy = true; } }).catch(() => {});
+    api(`/api/streams/${fid}/bad`, { why: why || "" }).then((r) => {
+      // The account's own daily limit, every source fails the same way: stop the run through the list and say so
+      if (r && r.limit) { clearTimeout(SOURCES && SOURCES.timer); PLAY_N++; loadHide(); toast(r.limit, 12000); return; }
+      if (r && r.busy && SOURCES) { SOURCES.busyHosts.add(r.host); SOURCES.busy = true; } }).catch(() => {});
     if (!SOURCES || !SOURCES.list.some((x) => x.id === fid)) {
       // The player gave up on a source and there is no list to carry on from: say so, instead of dropping back to the page without a word
       if (loud) toast("That source didn't play and there's no other one to try. Pick one from the Sources list.", 7000);
       return false;
     }
+    // The debrid account has used its whole day of bandwidth, every source from it fails the same way, so say so once and stop
+    if (/daily bandwidth/i.test(why || "")) { toast(why, 12000); return false; }
     SOURCES.tried.add(fid);
     SOURCES.skips = (SOURCES.skips || 0) + 1;
     if (/busy|429|too many/i.test(why || "")) { SOURCES.busy = true; const h = (SOURCES.list.find((x) => x.id === fid) || {}).host; if (h) SOURCES.busyHosts.add(h); }

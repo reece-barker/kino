@@ -5171,6 +5171,12 @@ async def stream_bad(sid: str, request: Request, p=Depends(current_profile)):
         why = str((await request.json()).get("why") or "")
     except Exception:
         why = ""
+    lw = LAST_WHY.get(r["url"])
+    why_srv = ""
+    if lw and time.time() - lw[0] < 600:
+        why_srv = f"TorBox's daily bandwidth limit is used up, so nothing from TorBox can play until it resets. Nothing is wrong with the source" if lw[1] == "daily bandwidth" else ""
+    if why_srv:
+        return {"ok": True, "busy": True, "host": host, "limit": why_srv}
     if DEVICE_FAIL_RX.search(why):
         return {"ok": True, "busy": False, "device": True, "host": host}  # this device can't play it (sound or format), the source itself is fine
     if host_busy(host, 120):
@@ -7002,6 +7008,7 @@ PLACEHOLDER_RE = re.compile(r"/(?:videos/(?:[a-z_]+_v\d+|not_ready|error|access_
                             r"|static/exceptions/[^/]+|v0/store/_/static/[^/]+)\.mp4$", re.I)
 NONVIDEO_RX = re.compile(r"\.(nfo|txt|srt|sub|idx|ass|ssa|vtt|jpe?g|png|gif|sfv|exe|url|pdf|md5|diz|rar|zip|par2|torrent)\s*$", re.I)
 TB_UNCACHED_RX = re.compile(r"\[\w+ download\]|\[\w+⬇️?\]|⏳")
+LAST_WHY = {}  # source address -> the last reason it was turned down (a limit or a wait), so the player can say it
 RESOLVED = {}  # source address -> (when, the address it led to)
 RESOLVED_SECS = 600
 
@@ -7055,6 +7062,16 @@ async def pd_open(url, headers, kind="play", _again=True):
                     body_ = (await r.aread())[:200].decode("utf-8", "ignore")
                 except Exception:
                     body_ = ""
+                if "DAILY_BANDWIDTH_LIMIT_EXCEEDED" in body_:
+                    # Not a rate limit: the debrid account has used up the day's bandwidth, nothing from it opens until it resets. Said once and plainly,
+                    # and its host is left alone for a while so the player doesn't go through the whole list asking for it
+                    nums = dict(re.findall(r'"daily_bandwidth_(limit|usage)":(\d+)', body_))
+                    gb = lambda k: f"{int(nums[k]) / 1e12:.2f} TB" if k in nums else "?"
+                    up_host(urlparse(url).hostname or "").blocked_until = time.time() + 600
+                    HOST_BUSY[first] = time.time()
+                    await r.aclose()
+                    LAST_WHY[first_url] = (time.time(), "daily bandwidth")
+                    raise HTTPException(503, f"TorBox's daily bandwidth limit is used up ({gb('usage')} of {gb('limit')}), so nothing from TorBox can play until it resets. Nothing is wrong with the source")
                 rl_ = {k: v for k, v in r.headers.items() if k.lower().startswith(("x-ratelimit", "retry-after"))}
                 log.info("kino: 429 from %s%s (%s source), headers %s, said %r", logsafe(urlparse(url).hostname or ""), logsafe(urlparse(url).path[:80]), kind, rl_, logsafe(body_))
             if r.status_code == 429 and kind == "play" and not retried and (retry_after(r.headers.get("retry-after")) or 3) <= 8:

@@ -216,8 +216,11 @@
   };
   const epLabel = (s, e) => (s != null && e != null ? `S${s}, E${e}` : e != null ? `Episode ${e}` : "");
 
+  // Interface sounds (sounds.js): never while a video is playing, never when switched off in Settings
+  const sfx = (n) => { try { if (window.KinoSound && pl.el.hidden) KinoSound.play(n); } catch (_) {} };
   let toastT;
   function toast(msg, ms = 3500) {
+    sfx(/couldn't|can't|didn't|isn't|failed|error|wrong|not available|too many/i.test(msg) ? "error" : "notify");
     const t = $("#toast");
     t.textContent = msg;
     t.hidden = false;
@@ -333,8 +336,10 @@
     wrap.className = "sheet-wrap";
     wrap.innerHTML = `<div class="sheet ${wide ? "wide" : ""}" role="dialog" aria-modal="true">${html}</div>`;
     document.body.appendChild(wrap);
+    sfx("open");
     const prev = document.activeElement;
     const close = () => {
+      sfx("close");
       wrap.remove(); sheetClose = under; document.removeEventListener("keydown", onKey);
       if (prev && prev.focus) {
         prev.focus();
@@ -355,6 +360,21 @@
     return { el: wrap.firstElementChild, close };
   }
   const closeSheet = () => sheetClose && sheetClose();
+
+  // A click or press anywhere gets a soft sound that fits what it was (a title opening, Play, going back, a switch, an ordinary button). On a TV the
+  // focus moving with the remote gets a very quiet tick, but only when a key was just pressed, so a page putting focus somewhere by itself stays silent
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest && e.target.closest("a, button, [role=button], select, input.switch, label.set-row");
+    if (!el || el.closest(".player, .kw") || el.hasAttribute("data-close")) return;
+    if (el.matches("input.switch")) return sfx(el.checked ? "on" : "off");
+    if (el.matches("[data-goback], .page-back, .more-row[href='#/home']")) return sfx("back");
+    if (el.matches(".btn.primary, #pdPlay, #playMain, [data-heroplay], [data-heroresume], #vPlay")) return sfx("confirm");
+    if (el.matches("a.tile, .tile a, .hero-slide a, .side-item, .tb-item, .more-row, .mi")) return sfx("select");
+    sfx("tick");
+  }, true);
+  let KEY_AT = 0;
+  addEventListener("keydown", () => { KEY_AT = performance.now(); }, true);
+  if (TV) document.addEventListener("focusin", (e) => { if (performance.now() - KEY_AT < 350 && e.target.closest && e.target.closest("#app, .sheet, .menu, #side, .kw-offer")) sfx("move"); });
 
   // Taking something out of Continue Watching on a tv: hold OK on the card (or press the remotes menu button), like the
   // streaming apps do. A quick press still plays it
@@ -3398,6 +3418,7 @@
       <section class="card set-card">
         <h2 class="set-title">Appearance</h2>
         <div class="set-row"><span><b>Theme</b><span class="secondary">Automatic follows this device's light or dark setting</span></span>${themePicker("setTheme")}</div>
+        ${toggle("setSound", window.KinoSound ? KinoSound.on : false, "Interface Sounds", "Soft clicks and chimes as you move around Kino, and in Kino Wrapped. This device only, and never while a video is playing")}
       </section>
       <section class="card set-card">
         <h2 class="set-title">Android App</h2>
@@ -3456,6 +3477,7 @@
     if (pc) pc.onclick = () => setPin(false);
     if (po) po.onclick = () => setPin(true);
     wireThemePicker($("#setTheme"));
+    const snd = $("#setSound"); if (snd) snd.onchange = () => { if (window.KinoSound) { KinoSound.set(snd.checked); if (snd.checked) KinoSound.play("on"); } };
     drawInterests();
     const saveP = async () => {
       const prefs = { audio_lang: $("#pAudioL").value, sub_lang: $("#pSubL").value, sub_size: $("#pSubS").value, sub_color: $("#pSubC").value, sub_bg: $("#pSubB").value, autoplay: $("#pAuto").checked, skip_intro: $("#pSkip").checked, share_events: $("#pShare").checked, blur_watched: $("#pBlur").checked, still_watching: Number($("#pStillAfter").value), load_stats: $("#pLoadStats").checked, previews: $("#pPrev").checked, preview_sound: $("#pPrevSnd").checked, auto_next_source: $("#pFake").checked, live_all_countries: $("#pLiveAll").checked, live_english: $("#pLiveEng").checked };

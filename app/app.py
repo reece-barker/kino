@@ -6453,13 +6453,18 @@ async def collect_streams(rows, one, quick):
     if not quick:
         return list(await asyncio.gather(*tasks))
     start, got, pending = time.time(), [], set(tasks)
+    # The addons put first in Settings (Source Priority) are always waited for, until they answer or the quick look's own limit for an addon (6 seconds)
+    # runs out. Without that the list Play uses was made from the fast addons alone and Play started a source from the second addon while the
+    # first one was still working, and only the full list that came after had the priority addon on top
+    prio_tasks = [t for t, a in zip(tasks, rows) if a.get("prio")]
     while pending:
         elapsed, have = time.time() - start, sum(len(g[1]) for g in got)
         # How long it is worth waiting for the rest: a lot of sources already in hand (0.3s), a few (1.2s), none yet (4s)
         limit = 0.3 if have >= 15 else 1.2 if have >= 3 else 4
-        if elapsed >= limit and (have or elapsed >= 4):
+        waiting_on_prio = any(not t.done() for t in prio_tasks) and elapsed < 7
+        if elapsed >= limit and (have or elapsed >= 4) and not waiting_on_prio:
             break
-        done, pending = await asyncio.wait(pending, timeout=max(0.05, limit - elapsed), return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(pending, timeout=0.25 if waiting_on_prio and elapsed >= limit else max(0.05, limit - elapsed), return_when=asyncio.FIRST_COMPLETED)
         got += [d.result() for d in done]
     out = list(got)
     seen = {g[0]["id"] for g in got}
@@ -6628,7 +6633,9 @@ async def streams_for(kind: str, vid: str, request: Request, quick: int = 0, p=D
     for x in out:
         x.pop("_url", None)
         x.pop("_hash", None)
-    res = {"streams": out, "dropped": dropped, "checked": len(rows), "partial": bool(quick and any(x["error"] == "took too long to answer" for x in report)), "fresh": fresh, "too_new": too_new}
+    res = {"streams": out, "dropped": dropped, "checked": len(rows), "partial": bool(quick and any(x["error"] == "took too long to answer" for x in report)), "fresh": fresh, "too_new": too_new,
+           # A priority addon that hadn't answered when the quick look gave up: the page waits for the full list before Play starts anything
+           "prio_pending": [x["addon"] for x in report if quick and x["error"] == "took too long to answer" and x["addon"] in prio]}
     # What this title turned out to have, for hiding ones with nothing. Found something always counts, nothing only
     # counts for a film when every addon answered (shows get checked by there first episodes in the background)
     if kind in ("movie", "series") and rows and not inline:

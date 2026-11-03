@@ -4,6 +4,7 @@
 
   // ---------------------------------------------------------- icons, simple sf symbols lookalikes
   const P = {
+    sparkle: "M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z",
     play: "M8 5.14v13.72c0 .8.87 1.3 1.56.88l11.04-6.86a1.03 1.03 0 000-1.76L9.56 4.26A1.03 1.03 0 008 5.14z",
     pause: "M7 4h3.5a1 1 0 011 1v14a1 1 0 01-1 1H7a1 1 0 01-1-1V5a1 1 0 011-1zm6.5 0H17a1 1 0 011 1v14a1 1 0 01-1 1h-3.5a1 1 0 01-1-1V5a1 1 0 011-1z",
     stop: "M7 6h10a1 1 0 011 1v10a1 1 0 01-1 1H7a1 1 0 01-1-1V7a1 1 0 011-1z",
@@ -489,6 +490,7 @@
         <button class="side-me" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu"><span class="side-av">${pav(p, "xs")}<i class="alert-dot side-av-dot" data-alertdot hidden></i></span><span class="side-lbl side-name">${esc(p.name)}</span><span class="side-lbl side-time" id="sideTime">${clockNow()}</span></button>
         <div class="menu drop side-menu" id="avatarMenu" hidden>
           <a href="#/alerts" class="mi">${ic("bell")} Alerts <span class="mi-badge"><i class="alert-dot" data-alertdot hidden></i></span></a>
+          <a href="#/wrapped" class="mi">${ic("sparkle")} Kino Wrapped</a>
           <a href="#/profiles" class="mi">${ic("people")} Switch Profile</a>
           ${kidsMode() ? "" : isAdmin() ? `<button class="mi" id="adminOut">${ic("lock")} Sign Out of Admin</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin Sign In</button>`}
           <div class="menu-sep"></div>
@@ -612,7 +614,7 @@
       const p = ME.profile;
       const row = (href, icon, label) => `<a class="more-row" href="${href}" data-close>${ic(icon)}<span>${label}</span>${ic("chevron")}</a>`;
       const sh = sheet(`<div class="more-head">${pav(p, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
-        <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/alerts", "bell", "Alerts")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
+        <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/alerts", "bell", "Alerts")}${row("#/wrapped", "sparkle", "Kino Wrapped")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
           ${isAdmin() ? row("#/admin", "server", "Admin") : ""}
           ${row("#/profiles", "people", "Switch Profile")}</div>
         <div class="menu-label">Appearance</div>${themePicker("sheetTheme")}
@@ -5909,6 +5911,76 @@
     new MutationObserver(() => { clearTimeout(selT); selT = setTimeout(() => tvSelects(document.body), 60); }).observe(document.body, { childList: true, subtree: true });
   }
 
+  // ---------------------------------------------------------- kino wrapped
+  // A monthly look back (own watching only), the slides live in wrapped.js and wrapped.css which also run the public share page. Offered once a month
+  // in a small card on Home, never in the middle of anything, and always there under the profile menu
+  let WRAPPED = null, WRAP_P = null, WRAP_OFFER = false;
+  const loadWrapped = () => {
+    if (window.KinoWrapped) return Promise.resolve();
+    if (WRAP_P) return WRAP_P;
+    return (WRAP_P = new Promise((ok, no) => {
+      const v = (document.querySelector('script[src*="app.js"]') || {}).src || "";
+      const q = v.includes("?") ? v.slice(v.indexOf("?")) : "";
+      const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "/static/wrapped.css" + q; document.head.appendChild(l);
+      const sc = document.createElement("script");
+      sc.src = "/static/wrapped.js" + q;
+      sc.onload = () => ok();
+      sc.onerror = () => { WRAP_P = null; sc.remove(); no(new Error("Couldn't load Wrapped")); };
+      document.head.appendChild(sc);
+    }));
+  };
+  function closeWrapped() {
+    if (WRAPPED) { try { WRAPPED.destroy(); } catch (_) {} WRAPPED = null; }
+    const h = $("#kwHost"); if (h) h.remove();
+    const o = $(".kw-offer"); if (o) o.remove();
+  }
+  async function pageWrapped(arg) {
+    const n = ROUTE_N;
+    app.innerHTML = `<main class="page"><div class="empty"><span class="spin"></span></div></main>`;
+    const idx = await api("/api/wrapped");
+    if (n !== ROUTE_N) return;
+    const per = /^\d{4}-\d{2}$/.test(arg) ? arg : (idx.periods.find((p) => p.done) || idx.periods[0] || {}).period;
+    if (!per) {
+      app.innerHTML = `<main class="page"><h1 class="large-title">Kino Wrapped</h1><div class="empty"><h2>Nothing to wrap up yet</h2><p>Watch a bit more and your first Wrapped will show up here at the end of the month.</p></div></main>`;
+      return;
+    }
+    await loadWrapped();
+    const d = await api(`/api/wrapped/${per}`).catch((e) => { toast(e.message, 4000); return null; });
+    if (n !== ROUTE_N) return;
+    if (!d) { history.length > 1 ? history.back() : (location.hash = "#/home"); return; }
+    api("/api/wrapped/seen", { period: per, action: "open" }).catch(() => {});
+    const host = document.createElement("div");
+    host.id = "kwHost";
+    document.body.appendChild(host);
+    const share = { can: d.can_share, state: d.share, create: async (hide) => { const r = await api(`/api/wrapped/${per}/share`, { hide_name: !!hide }); return { ...r, views: (share.state || {}).views || 0 }; },
+                    remove: () => api(`/api/wrapped/${per}/share`, null, "DELETE") };
+    WRAPPED = KinoWrapped.mount(host, d, { tv: TV, img: (t) => img(t.poster, 0, 342), periods: idx.periods, share,
+      onPeriod: (p) => { location.replace("#/wrapped/" + p); },
+      onClose: () => { history.length > 1 ? history.back() : (location.hash = "#/home"); } });
+  }
+  async function wrappedOffer() {
+    if (WRAP_OFFER || !ME.profile || !pl.el.hidden || document.querySelector(".kw")) return;
+    WRAP_OFFER = true;
+    let idx;
+    try { idx = await api("/api/wrapped"); } catch (_) { return; }
+    const p = idx.popup;
+    if (!p || (location.hash || "#/home").split("?")[0] !== "#/home" || !pl.el.hidden) { WRAP_OFFER = false; return; }
+    try { await loadWrapped(); } catch (_) { return; }
+    api("/api/wrapped/seen", { period: p.period, action: "shown" }).catch(() => {});
+    const el = document.createElement("div");
+    el.className = "kw-offer";
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-label", "Kino Wrapped");
+    const month = p.label.split(" ")[0];
+    el.innerHTML = `<b>Your ${esc(month)} Kino Wrapped is ready</b><p>See what you watched, and your watching personality. Takes a minute.</p>
+      <div class="kw-actions"><button class="kw-btn" data-see>See it</button><button class="kw-btn ghost" data-no>Not now</button></div>`;
+    document.body.appendChild(el);
+    const gone = () => el.remove();
+    $("[data-see]", el).onclick = () => { gone(); location.hash = "#/wrapped/" + p.period; };
+    $("[data-no]", el).onclick = () => { gone(); api("/api/wrapped/seen", { period: p.period, action: "dismiss" }).catch(() => {}); };
+    if (TV) { const a = document.activeElement; if (!a || a === document.body || a === AUTO_FOCUS) $("[data-see]", el).focus({ preventScroll: true }); }
+  }
+
   // ---------------------------------------------------------- router
   const applyPrefs = () => document.body.classList.toggle("blur-watched", !!(ME.profile && ME.profile.prefs && ME.profile.prefs.blur_watched));
 
@@ -5988,7 +6060,7 @@
     clearTimeout(SCAN_T);
     stopFavRow();
     closeSheet();
-    stopPreviews(); closeTrailer();
+    stopPreviews(); closeTrailer(); closeWrapped();
     const [, page, arg] = (location.hash || "#/").split("?")[0].split("/");
     const n = ++ROUTE_N;
     const changed = (location.hash.split("?")[0]) !== LAST_PAGE;
@@ -6024,6 +6096,7 @@
       else if (page === "discover" && arg) await pageDiscover(safeDecode(arg), safeDecode(location.hash.split("?")[0].split("/")[3] || ""));
       else if (page === "search") await pageSearch();
       else if (page === "person" && arg) await pagePerson(safeDecode(arg));
+      else if (page === "wrapped") await pageWrapped(arg || "");
       else if (page === "mylist") await pageMyList();
       else if (page === "alerts") await pageAlerts();
       else if (page === "settings") await pageSettings();
@@ -6059,7 +6132,8 @@
           const side = $("#side"); if (side) side.classList.remove("open");
         }
       }
-      if (saved && saved.y > 0) restoreScroll(saved, n);
+      if (saved && saved.y > 0 && page !== "wrapped") restoreScroll(saved, n);
+      if ((page === "home" || !page) && ME.profile) setTimeout(() => { if (n === ROUTE_N) wrappedOffer(); }, 4500);
       if (n === ROUTE_N) {
         LAST_PAGE = location.hash.split("?")[0];  // a draw that was replaced by a newer one doesn't count as the page that was shown
         try { history.replaceState({ kino: 1 }, "", location.href); } catch (_) {}

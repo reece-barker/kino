@@ -8940,7 +8940,7 @@ def wrap_persona_local(st):
     parts, g = st["parts"], [x["name"] for x in st["genres"]]
     wk = (st["weekdays"][5]["secs"] + st["weekdays"][6]["secs"]) / (st["secs"] or 1)
     if parts["night"] >= 35:
-        title, why = "The Night Owl", f"{parts['night']}% of your watching happened after 11pm"
+        title, why = "The Night Owl", f"{parts['night']}% of your watching was late at night"
     elif wk >= 0.55:
         title, why = "The Weekend Warrior", f"{round(wk * 100)}% of your time was a Saturday or Sunday"
     elif st["binge"] and st["binge"]["episodes"] >= 6:
@@ -8962,7 +8962,7 @@ def wrap_persona_local(st):
     else:
         title, why = "The Steady Watcher", "a bit of everything, all month"
     lines = [f"{st['words']} of watching across {st['active_days']} days", f"Top pick: {st['top'][0]['name']}", f"Busiest day of the week: {st['busiest_day']}"]
-    return {"title": title, "blurb": f"{st['month']} was all about {title.lower()}: {why}.", "lines": lines, "forecast": "", "source": "local"}
+    return {"title": title, "blurb": f"{st['month']} belonged to {title}: {why}.", "lines": lines, "forecast": "", "source": "local"}
 
 
 WRAP_SCHEMA = {"type": "object", "properties": {"title": {"type": "string"}, "blurb": {"type": "string"}, "lines": {"type": "array", "items": {"type": "string"}},

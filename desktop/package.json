@@ -1,0 +1,25 @@
+{
+  "name": "kino-desktop",
+  "productName": "Kino",
+  "version": "1.0.0",
+  "description": "Kino for Mac, a desktop wrapper around the family media site",
+  "author": "Reece Barker",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/settings.js",
+    "icons": "python3 build/make-icons.py",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --mac --arm64 --x64",
+    "dist:universal": "electron-builder --mac --universal"
+  },
+  "devDependencies": {
+    "electron": "45.2.2",
+    "electron-builder": "26.18.0"
+  },
+  "allowScripts": {
+    "electron-winstaller": false
+  }
+}

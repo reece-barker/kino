@@ -1,0 +1,33 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: #000;
+  color: #f5f5f7;
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  display: grid;
+  place-items: center;
+  -webkit-app-region: drag; /* title bar is hidden, so the page is the drag handle */
+  user-select: none;
+}
+main { text-align: center; max-width: 420px; padding: 0 24px; }
+.icon { border-radius: 22px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6); margin-bottom: 28px; }
+h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 10px; }
+p { margin: 0; color: #a1a1a6; }
+.row { display: flex; gap: 10px; justify-content: center; margin: 28px 0 22px; }
+.btn {
+  -webkit-app-region: no-drag;
+  display: inline-block;
+  padding: 10px 20px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #f5f5f7;
+  text-decoration: none;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+.btn:hover { background: rgba(255, 255, 255, 0.2); }
+.btn.primary { background: #f5f5f7; color: #000; }
+.btn.primary:hover { background: #fff; }
+.small { font-size: 12px; color: #636366; min-height: 18px; }

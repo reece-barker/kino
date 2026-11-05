@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'">
+<title>Kino</title>
+<link rel="stylesheet" href="offline.css">
+</head>
+<body>
+<main>
+  <img class="icon" src="icon.svg" alt="" width="96" height="96">
+  <h1>You're offline</h1>
+  <p id="msg">Kino can't reach the server right now. Check your connection and it will reconnect on its own.</p>
+  <div class="row">
+    <a class="btn primary" id="retry" href="?action=retry">Retry</a>
+    <a class="btn" id="dl" href="?action=downloads">Open Downloads</a>
+  </div>
+  <p class="small" id="detail"></p>
+</main>
+<script src="offline.js"></script>
+</body>
+</html>

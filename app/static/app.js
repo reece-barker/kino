@@ -514,6 +514,7 @@
         <button class="side-me" id="avatarBtn" aria-haspopup="true" aria-label="Profile menu"><span class="side-av">${pav(p, "xs")}<i class="alert-dot side-av-dot" data-alertdot hidden></i></span><span class="side-lbl side-name">${esc(p.name)}</span><span class="side-lbl side-time" id="sideTime">${clockNow()}</span></button>
         <div class="menu drop side-menu" id="avatarMenu" hidden>
           <a href="#/alerts" class="mi">${ic("bell")} Alerts <span class="mi-badge"><i class="alert-dot" data-alertdot hidden></i></span></a>
+          ${offlineAvail() ? `<a href="#/downloads" class="mi">${ic("download")} Downloads</a>` : ""}
           <a href="#/wrapped" class="mi">${ic("sparkle")} Kino Wrapped</a>
           <a href="#/profiles" class="mi">${ic("people")} Switch Profile</a>
           ${kidsMode() ? "" : isAdmin() ? `<button class="mi" id="adminOut">${ic("lock")} Sign Out of Admin</button>` : `<button class="mi" id="adminIn">${ic("lock")} Admin Sign In</button>`}
@@ -638,7 +639,7 @@
       const p = ME.profile;
       const row = (href, icon, label) => `<a class="more-row" href="${href}" data-close>${ic(icon)}<span>${label}</span>${ic("chevron")}</a>`;
       const sh = sheet(`<div class="more-head">${pav(p, "md")}<div><h2>${esc(p.name)}</h2><span class="secondary">${p.kids ? "Kids Profile" : "Profile"}</span></div></div>
-        <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/alerts", "bell", "Alerts")}${row("#/wrapped", "sparkle", "Kino Wrapped")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
+        <div class="more-list">${row("#/mylist", "bookmark", "My List")}${row("#/alerts", "bell", "Alerts")}${offlineAvail() ? row("#/downloads", "download", "Downloads") : ""}${row("#/wrapped", "sparkle", "Kino Wrapped")}${row("#/settings", "gear", "Settings")}${row("#/history", "clock", "History")}
           ${isAdmin() ? row("#/admin", "server", "Admin") : ""}
           ${row("#/profiles", "people", "Switch Profile")}</div>
         <div class="menu-label">Appearance</div>${themePicker("sheetTheme")}
@@ -2152,6 +2153,7 @@
         const art = f.thumbnail ? `<img loading="lazy" decoding="async" src="${img(f.thumbnail, 0, WW())}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
         return `<div class="ep"><button class="tile landscape ${f.watched ? "is-watched" : ""}" data-playfile="${f.id}" aria-label="Play ${esc(epLabel(f.season, f.episode))} ${esc(f.ep_name || "")}"><div class="art">${art}${p != null ? `<div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div>` : ""}${f.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
           <div class="ep-row"><div class="num">${esc(epLabel(f.season, f.episode) || "Extra")}${f.duration ? ` · ${Math.max(1, Math.round(f.duration / 60))} min` : ""}</div>
+            ${offlineAvail() ? `<button class="ep-mark" data-epdl="${f.id}" aria-label="Download ${esc(epLabel(f.season, f.episode))} for offline" title="Download for offline">${ic("download")}</button>` : ""}
             ${t.imdb ? `<button class="ep-mark" data-epsrc="${f.id}" aria-label="Other sources for ${esc(epLabel(f.season, f.episode))}" title="Sources">${ic("link")}</button>` : ""}
             <button class="ep-mark" data-epwatch="${f.id}" data-state="${f.watched ? 1 : 0}" aria-label="${f.watched ? "Mark as unwatched" : "Mark as watched"}" title="${f.watched ? "Watched, click to unmark" : "Mark as watched"}">${ic(f.watched ? "check" : "plus")}</button>
             ${t.is_admin ? `<button class="ep-mark" data-delfile="${f.id}" aria-label="Delete this episode" title="Delete this episode">${ic("trash")}</button>` : ""}</div>
@@ -2160,6 +2162,7 @@
       wireFileButtons();
     };
     const wireFileButtons = () => {
+      $$("[data-epdl]").forEach((b) => (b.onclick = () => offlineSheet(b.dataset.epdl, t)));
       $$("[data-playfile]").forEach((b) => (b.onclick = () => {
         const f = t.files.find((x) => x.id === b.dataset.playfile);
         playFile(f.id, { title: t, from: f.progress ? f.progress.pos : 0 });
@@ -2214,6 +2217,7 @@
     }));
     const dl = $("#dlMain");
     if (dl) dl.onclick = async () => {
+      if (offlineAvail()) return offlineSheet(up.id, t);
       const info = await api(`/api/file/${up.id}`);
       const a = document.createElement("a");
       a.href = info.download + "&save=1";
@@ -4630,7 +4634,7 @@
     $("#skipIntro").hidden = true;
     $("#subsLayer").innerHTML = "";
     let info;
-    try { info = await api(`/api/file/${fid}`); } catch (e) {
+    try { info = opts.offlineInfo || await api(`/api/file/${fid}`); } catch (e) {
       if (my !== PLAY_N) return;
       // A source that wont even open moves on to the next one by itself (that was a dead end before, with only a message)
       if (SOURCES && SOURCES.list.some((x) => x.id === fid) && moreSources(fid) && nextSource(fid, opts.from, /busy|429/i.test(e.message) ? "That source is busy" : "That source didn't open")) return;
@@ -4868,12 +4872,14 @@
 
   function saveProgress() {
     if (!pl.info || pl.info.live || pl.info.recording || !total()) return;
+    // A download keeps where you got to on the device and sends it to the server when there is a connection
+    if (pl.info.offline) { KinoOffline.savePos(pl.info.id, pos(), total()).then(() => { if (navigator.onLine && !OFFLINE) KinoOffline.syncPositions(); }); return; }
     api("/api/progress", { file_id: pl.info.id, pos: pos(), dur: total() }).catch(() => {});
   }
 
   // Tells tracking addons what's playing, only when the profile has turned that on
   function sendEvent(action) {
-    if (!pl.info || pl.info.live || pl.info.recording || !ME.profile || !ME.profile.prefs || !ME.profile.prefs.share_events) return;
+    if (!pl.info || pl.info.live || pl.info.recording || pl.info.offline || !ME.profile || !ME.profile.prefs || !ME.profile.prefs.share_events) return;
     api("/api/event", { file_id: pl.info.id, action, pos: pos(), dur: total() }).catch(() => {});
   }
 
@@ -5144,6 +5150,15 @@
     buildMenus();
     if (!id) return;
     const fid = pl.info.id;
+    if (pl.info.offline) {
+      // A downloaded film keeps its subtitles on the device
+      const txt = await KinoOffline.subText(pl.info.offlineId, Number(String(id).slice(1)));
+      if (!pl.info || pl.subId !== id) return;
+      if (!txt) { toast("Those subtitles couldn't be loaded"); return; }
+      pl.cues = parseVtt(txt);
+      if (!quiet) toast("Subtitles on");
+      return;
+    }
     for (let i = 0; i < 120; i++) {
       const r = await fetch(`/api/subs/${fid}/${id}`, { credentials: "same-origin" });
       if (!pl.info || pl.info.id !== fid || pl.subId !== id) return;
@@ -5944,6 +5959,142 @@
     new MutationObserver(() => { clearTimeout(selT); selT = setTimeout(() => tvSelects(document.body), 60); }).observe(document.body, { childList: true, subtree: true });
   }
 
+  // ---------------------------------------------------------- offline downloads
+  // Films and episodes kept on this device for when there is no connection (offline.js does the work, the server makes the copy). Not on a TV or a kids profile.
+  let OFFLINE = false, OFF_P = null, DL_UNSUB = null, DL_BOOT = false;
+  const offlineAvail = () => !TV && !kidsMode() && !!(window.isSecureContext && navigator.storage && navigator.storage.getDirectory && window.Worker && window.indexedDB);
+  const loadOffline = () => {
+    if (window.KinoOffline) return Promise.resolve();
+    if (OFF_P) return OFF_P;
+    return (OFF_P = new Promise((ok, no) => {
+      const sc = document.createElement("script");
+      sc.src = "/static/offline.js" + (((document.querySelector('script[src*="app.js"]') || {}).src || "").match(/\?.*$/) || [""])[0];
+      sc.onload = () => ok();
+      sc.onerror = () => { OFF_P = null; sc.remove(); no(new Error("Couldn't load downloads")); };
+      document.head.appendChild(sc);
+    }));
+  };
+  // Who this device is, remembered, so Kino can open with no connection
+  const cachedMe = () => { try { return JSON.parse(localStorage.getItem("kino-me") || "null"); } catch (_) { return null; } };
+  async function loadMe() {
+    try {
+      const me = await api("/api/me");
+      OFFLINE = false;
+      try { if (me.profile) localStorage.setItem("kino-me", JSON.stringify({ profile: me.profile, at: Date.now() })); } catch (_) {}
+      return me;
+    } catch (e) {
+      if (e.status) throw e;  // the server answered, it isn't the connection
+      const c = cachedMe();
+      if (c && c.profile) { OFFLINE = true; return { profile: c.profile, admin: null, ip: null }; }
+      throw e;
+    }
+  }
+  addEventListener("offline", () => { if (offlineAvail() && cachedMe()) { OFFLINE = true; toast("You're offline. Your downloads still play", 5000); if (!/^#\/downloads/.test(location.hash)) location.hash = "#/downloads"; } });
+  addEventListener("online", async () => {
+    try { await api("/api/me"); } catch (_) { return; }
+    if (OFFLINE) { OFFLINE = false; toast("Back online"); route(); }
+    if (window.KinoOffline) { KinoOffline.syncPositions(); if (ME.profile) KinoOffline.resumeAll(ME.profile.id); }
+  });
+  const dlWhen = () => { if (DL_BOOT || !ME.profile || !offlineAvail()) return; DL_BOOT = true; loadOffline().then(() => { KinoOffline.resumeAll(ME.profile.id); KinoOffline.syncPositions(); }).catch(() => {}); };
+
+  const freeSpace = async () => { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate().catch(() => ({})) : {}; return e.quota ? Math.max(0, e.quota - (e.usage || 0)) : 0; };
+
+  // The Download button: pick the quality, the sound and the subtitles, then it goes to the Downloads page
+  async function offlineSheet(fid, t) {
+    if (!offlineAvail()) return;
+    try { await loadOffline(); } catch (e) { toast(e.message); return; }
+    let o;
+    try { o = await api(`/api/offline/options/${fid}`); } catch (e) { toast(e.message, 5000); return; }
+    const m = o.meta, pref = (ME.profile && ME.profile.prefs && ME.profile.prefs.sub_lang || "").toLowerCase();
+    const free = await freeSpace();
+    const sh = sheet(`<h2>Download for offline</h2><p class="secondary">${esc(m.name)}${m.kind === "series" ? " · " + esc(epLabel(m.season, m.episode)) : ""}${m.ep_name ? " · " + esc(nice(m.ep_name)) : ""}</p>
+      <div class="dl-opts" role="radiogroup" aria-label="Quality">${o.qualities.map((q) => `<label class="dl-opt"><input type="radio" name="dlq" value="${q.quality}" ${q.quality === o.default ? "checked" : ""}>
+        <span><b>${esc(q.quality)}</b> <span class="secondary">about ${bytes(q.est_bytes)}</span><span class="secondary dl-note">${esc(q.note)}</span></span></label>`).join("")}</div>
+      ${o.audio.length > 1 ? `<div class="set-row"><span><b>Sound</b></span><select class="plain" id="dlAudio">${o.audio.map((a) => `<option value="${a.n}" ${a.default ? "selected" : ""}>${esc(a.label)}</option>`).join("")}</select></div>` : ""}
+      ${o.subs.length ? `<div class="dl-subs"><b>Subtitles</b>${o.subs.map((s) => `<label class="dl-sub"><input type="checkbox" value="${esc(s.id)}" ${pref && s.label.toLowerCase().includes(pref) ? "checked" : ""}> ${esc(s.label)}</label>`).join("")}</div>` : ""}
+      <p class="secondary dl-info">Kino makes a copy on the server first (a few minutes), then it downloads to this device. Keep Kino open and the screen on while it downloads.${free ? ` About ${bytes(free)} free for downloads on this device.` : ""}</p>
+      <div class="actions end"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="dlGo">${ic("download")} Download</button></div>`);
+    $("#dlGo", sh.el).onclick = async (e) => {
+      const q = (sh.el.querySelector("input[name=dlq]:checked") || {}).value || o.default;
+      const need = (o.qualities.find((x) => x.quality === q) || {}).est_bytes || 0;
+      if (free && need > free * 0.95) { toast(`That needs about ${bytes(need)} and this device has about ${bytes(free)} free`, 6000); return; }
+      e.target.disabled = true;
+      try {
+        await KinoOffline.start({ file_id: fid, quality: q, audio: Number(($("#dlAudio", sh.el) || {}).value || 0), subs: $$(".dl-sub input:checked", sh.el).map((x) => x.value), meta: m, profile_id: ME.profile.id,
+          images: { poster: m.poster ? img(m.poster, 0, 342) : null, background: m.background ? img(m.background, 0, 640) : null } });
+        sh.close();
+        toast("Added to Downloads", 3000);
+        location.hash = "#/downloads";
+      } catch (err) { e.target.disabled = false; toast(err.message, 6000); }
+    };
+  }
+
+  const dlEta = (s) => (s > 90 ? `about ${Math.round(s / 60)} min left` : s > 0 ? "less than a minute left" : "");
+  function dlState(r) {
+    const pct = (a, b) => (b ? Math.min(100, Math.round((a / b) * 100)) : 0);
+    if (r.state === "ready") return { text: "Ready to watch offline", pct: 100 };
+    if (r.state === "failed") return { text: r.error || "That didn't work", pct: 0, bad: true };
+    if (r.state === "paused") return { text: `Paused${r.got ? ` at ${pct(r.got, r.size)}%` : ""}`, pct: r.phase === "device" ? pct(r.got, r.size) : Math.round(((r.server || {}).progress || 0) * 100) };
+    if (r.state === "queued") return { text: `Waiting in line${(r.server || {}).queue > 1 ? `, ${(r.server || {}).queue - 1} ahead` : ""}`, pct: 0 };
+    if (r.state === "preparing") { const s = r.server || {}; return { text: `${r.waiting ? "Waiting for a connection" : "Getting it ready on the server"} ${Math.round((s.progress || 0) * 100)}%${s.eta ? " · " + dlEta(s.eta) : ""}`, pct: Math.round((s.progress || 0) * 100) }; }
+    const left = r.speed && r.size ? (r.size - r.got) / r.speed : 0;
+    return { text: r.waiting ? "Waiting for a connection" : `Downloading ${bytes(r.got || 0)} of ${bytes(r.size || 0)}${r.speed ? " · " + bytes(r.speed) + "/s" : ""}${left ? " · " + dlEta(left) : ""}`, pct: pct(r.got, r.size) };
+  }
+
+  async function pageDownloads() {
+    const n = ROUTE_N;
+    app.innerHTML = `<main class="page narrow dl-page"><h1 class="large-title">Downloads</h1><div id="dlTop"></div><div id="dlList"><div class="empty"><span class="spin"></span></div></div></main>`;
+    if (!offlineAvail()) {
+      $("#dlList").innerHTML = `<div class="empty"><h2>Downloads aren't available here</h2><p>${TV ? "Downloads are for phones, tablets and computers." : kidsMode() ? "Downloads aren't available on kids profiles." : "This browser can't keep files for offline. On an iPhone, add Kino to your Home Screen first, then open it from there."}</p></div>`;
+      return;
+    }
+    try { await loadOffline(); } catch (e) { $("#dlList").innerHTML = `<div class="empty"><h2>Couldn't load downloads</h2><p>${esc(e.message)}</p></div>`; return; }
+    if (n !== ROUTE_N) return;
+    const urls = new Map();
+    const draw = async () => {
+      if (n !== ROUTE_N || !$("#dlList")) return;
+      const rows = (await KinoOffline.list()).filter((r) => r.profile_id === ME.profile.id).sort((a, b) => (["ready"].includes(a.state) - ["ready"].includes(b.state)) || b.added - a.added);
+      const st = await KinoOffline.storage();
+      urls.forEach((u) => URL.revokeObjectURL(u)); urls.clear();
+      const art = (r) => { if (!r.poster) return `<div class="ph" style="--h:${hue(r.meta.name)}">${esc(r.meta.name)}</div>`; const u = URL.createObjectURL(r.poster); urls.set(r.id, u); return `<img src="${u}" alt="">`; };
+      $("#dlTop").innerHTML = `${OFFLINE ? `<div class="note dl-off">${ic("info")} You're offline. These are saved on this device and play without a connection.</div>` : ""}
+        <div class="card dl-storage"><div class="dl-prog"><i style="width:${st.quota ? Math.min(100, (st.usage / st.quota) * 100) : 0}%"></i></div>
+        <span class="secondary">${bytes(st.files)} of downloads on this device${st.quota ? ` · about ${bytes(Math.max(0, st.quota - st.usage))} free for more` : ""}${st.persisted ? "" : " · Kino may clear them if the device runs very low on space"}</span></div>`;
+      $("#dlList").innerHTML = rows.length ? rows.map((r) => { const s = dlState(r), m = r.meta;
+        return `<div class="dl-card" data-id="${esc(r.id)}"><div class="dl-art">${art(r)}</div>
+          <div class="dl-body"><b>${esc(m.name)}</b><span class="secondary">${m.kind === "series" ? esc(epLabel(m.season, m.episode)) + (m.ep_name ? " · " + esc(nice(m.ep_name)) : "") + " · " : ""}${esc(r.quality)} · ${bytes(r.size || 0)}</span>
+            ${r.state === "ready" ? "" : `<div class="dl-prog ${s.bad ? "bad" : ""}"><i style="width:${s.pct}%"></i></div>`}<span class="dl-state ${s.bad ? "bad" : ""}">${esc(s.text)}</span></div>
+          <div class="dl-acts">${r.state === "ready" ? `<button class="btn primary small" data-dlplay>${ic("play")} Play</button>` : ""}
+            ${["preparing", "queued", "downloading"].includes(r.state) ? `<button class="round-btn sm" data-dlpause aria-label="Pause" title="Pause">${ic("pause")}</button>` : ""}
+            ${["paused", "failed"].includes(r.state) ? `<button class="btn secondary small" data-dlgo>${r.state === "failed" ? "Try Again" : "Resume"}</button>` : ""}
+            <button class="round-btn sm" data-dlrm aria-label="Remove" title="Remove">${ic("trash")}</button></div></div>`; }).join("")
+        : `<div class="empty"><h2>No downloads yet</h2><p>Open a film or an episode and tap the download button. Downloads play with no connection, so they're good for a trip.</p></div>`;
+      $$("[data-dlplay]").forEach((b) => (b.onclick = () => playDownload(b.closest(".dl-card").dataset.id)));
+      $$("[data-dlpause]").forEach((b) => (b.onclick = () => KinoOffline.pause(b.closest(".dl-card").dataset.id)));
+      $$("[data-dlgo]").forEach((b) => (b.onclick = () => KinoOffline.resume(b.closest(".dl-card").dataset.id)));
+      $$("[data-dlrm]").forEach((b) => (b.onclick = async () => {
+        const id = b.closest(".dl-card").dataset.id;
+        if (await confirmSheet("Remove this download?", "It's deleted from this device. You can download it again later.", "Remove", true)) { await KinoOffline.remove(id); toast("Removed"); }
+      }));
+    };
+    DL_UNSUB = KinoOffline.on(draw);
+    await draw();
+  }
+
+  async function playDownload(id) {
+    try { await loadOffline(); } catch (_) { return; }
+    const rec = await KinoOffline.get(id);
+    if (!rec || rec.state !== "ready") return;
+    let src;
+    try { src = await KinoOffline.fileUrl(id); } catch (_) { toast("That download can't be opened, remove it and download it again", 6000); return; }
+    const m = rec.meta || {};
+    const info = { id: rec.file_id, name: m.name, stream: true, src, cdn: null, direct: true, offline: true, offlineId: id, video: { codec: null }, audio: [], default_audio: 0,
+      subs: (rec.subs || []).map((s, i) => ({ id: "o" + i, label: s.label, lang: s.label, kind: "offline" })), badges: [], download: null, resume: await KinoOffline.position(rec.file_id),
+      season: m.season, episode: m.episode, ep_name: m.ep_name, show_id: null, title_id: null, intro: null, credits: null, next: null, kind: m.kind, video_id: null, ext: ".mp4",
+      prefs: (ME.profile && ME.profile.prefs) || {}, is_admin: false, art: null };
+    playFile(rec.file_id, { web: true, offlineInfo: info, name: m.name });
+  }
+
   // ---------------------------------------------------------- kino wrapped
   // A monthly look back (own watching only), the slides live in wrapped.js and wrapped.css which also run the public share page. Offered once a month
   // in a small card on Home, never in the middle of anything, and always there under the profile menu
@@ -6125,6 +6276,7 @@
     stopFavRow();
     closeSheet();
     stopPreviews(); closeTrailer(); closeWrapped();
+    if (DL_UNSUB) { DL_UNSUB(); DL_UNSUB = null; }
     const [, page, arg] = (location.hash || "#/").split("?")[0].split("/");
     const n = ++ROUTE_N;
     const changed = (location.hash.split("?")[0]) !== LAST_PAGE;
@@ -6136,12 +6288,15 @@
     try {
       if (!ME.profile || page === "profiles" || !page) {
         if (!ME.profile && page !== "profiles") {
-          const me = await api("/api/me");
+          const me = await loadMe();
           ME.profile = me.profile; ME.admin = me.admin; ME.ip = me.ip;
         }
         if (!ME.profile || page === "profiles") { document.body.classList.remove("with-side"); LAST_PAGE = null; return pageProfiles(false); }
         if (!page) { location.hash = "#/home"; return; }
       }
+      // No connection: only the downloads page works, so anything else goes there
+      if (OFFLINE && page !== "downloads" && page !== "profiles") { location.replace("#/downloads"); return; }
+      dlWhen();
       applyPrefs();
       // Which sections the sidebar has (Live TV, Videos), asked once and again after the admin changes addons or playlists
       if (!ME.features) ME.features = await api("/api/features").catch(() => ({}));
@@ -6161,6 +6316,7 @@
       else if (page === "search") await pageSearch();
       else if (page === "person" && arg) await pagePerson(safeDecode(arg));
       else if (page === "wrapped") await pageWrapped(arg || "");
+      else if (page === "downloads") await pageDownloads();
       else if (page === "mylist") await pageMyList();
       else if (page === "alerts") await pageAlerts();
       else if (page === "settings") await pageSettings();
@@ -6221,7 +6377,7 @@
   setTimeout(handCheck, 4000);
 
   // Installable app, the service worker only caches the app shell, never videos or api calls
-  if ("serviceWorker" in navigator && location.protocol === "https:") {
+  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
     window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
   }
 })();

@@ -1,0 +1,47 @@
+appId: page.reece.kino.desktop
+productName: Kino
+copyright: Kino
+directories:
+  output: dist
+  buildResources: build
+files:
+  - package.json
+  - src/**/*
+afterPack: build/adhoc-sign.js
+artifactName: Kino-${version}-${arch}.${ext}
+mac:
+  category: public.app-category.entertainment
+  icon: build/icon.icns
+  # no Apple developer account, so no signing and no notarising
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  extendInfo:
+    NSMicrophoneUsageDescription: Kino uses the microphone for voice search.
+dmg:
+  title: Kino
+  icon: build/icon.icns
+  background: build/background.png
+  window:
+    width: 660
+    height: 400
+  iconSize: 112
+  contents:
+    - x: 180
+      y: 190
+    - x: 480
+      y: 190
+      type: link
+      path: /Applications
+win:
+  icon: build/icon.ico
+  target: nsis
+linux:
+  icon: build/icon.png
+  category: AudioVideo
+  target: AppImage

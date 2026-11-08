@@ -206,6 +206,8 @@ CREATE TABLE IF NOT EXISTS embeds (key TEXT PRIMARY KEY, h TEXT, vec BLOB, at RE
 CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, ref TEXT, kind TEXT, name TEXT, sub TEXT, title_id TEXT,
   device TEXT, ip TEXT, started REAL, last REAL, secs REAL DEFAULT 0, pos REAL, dur REAL);
 CREATE INDEX IF NOT EXISTS activity_last ON activity (last);
+CREATE TABLE IF NOT EXISTS offline_jobs (id TEXT PRIMARY KEY, profile_id INTEGER, file_id TEXT, quality TEXT, audio INTEGER DEFAULT 0, state TEXT, progress REAL DEFAULT 0, eta REAL, size INTEGER,
+  error TEXT, subs TEXT, meta TEXT, created REAL, updated REAL);
 CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, name TEXT, pw TEXT, status TEXT DEFAULT 'active', trusted INTEGER DEFAULT 0,
   free_invite INTEGER DEFAULT 0, invited_by INTEGER, created REAL, last_login REAL);
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_email ON accounts (email) WHERE status != 'removed';
@@ -1450,13 +1452,21 @@ HLS_DIR = DATA_DIR / "hls"
 SUBS_DIR = DATA_DIR / "subs"
 SESS = {}
 SUB_JOBS = {}
-FF_INFO = {"burst": False}
+FF_INFO = {"burst": False, "tonemap": False}
 
 
 def ffmpeg_supports_burst():
     try:
         out = subprocess.run(["ffmpeg", "-hide_banner", "-h", "full"], capture_output=True, text=True, timeout=20).stdout
         return "readrate_initial_burst" in out
+    except Exception:
+        return False
+
+
+def ffmpeg_supports_tonemap():
+    try:
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True, timeout=20).stdout
+        return " zscale " in out and " tonemap " in out
     except Exception:
         return False
 
@@ -1524,6 +1534,7 @@ async def lifespan(app):
     asyncio.create_task(asyncio.to_thread(warm_meta))  # Fills the meta cache in the background so the first home page isnt slow
     (DATA_DIR / "img").mkdir(parents=True, exist_ok=True)
     FF_INFO["burst"] = await asyncio.to_thread(ffmpeg_supports_burst)
+    FF_INFO["tonemap"] = await asyncio.to_thread(ffmpeg_supports_tonemap)
     # Changes whenever a static file changes so browsers and the app install pick up new versions
     h = hashlib.sha1()
     for p in sorted(STATIC.glob("*")):
@@ -1543,7 +1554,7 @@ async def lifespan(app):
                 log.exception("making alerts failed")  # never lets alerts stop the library scan
             await asyncio.sleep(RESCAN_MINUTES * 60)
 
-    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker, rec_worker, cert_worker, ext_worker)]
+    tasks = [asyncio.create_task(c()) for c in (scanner, stats_worker, session_reaper, probe_worker, catalog_worker, intro_worker, backup_worker, live_worker, rec_worker, cert_worker, ext_worker, offline_worker)]
     yield
     for t in tasks:
         t.cancel()
@@ -9302,6 +9313,295 @@ async def wrapped_public_img(code: str, i: int):
     if not d or not 0 <= i < len(d["top"]) or not d["top"][i].get("poster"):
         raise HTTPException(404, "No picture")
     return await img(d["top"][i]["poster"], 0, 342)
+
+
+# ---------------------------------------------------------------- Offline downloads
+# For a trip with no connection: the person picks a film or episode, the server makes a copy that phones and laptops can play (mp4, h264 video, aac sound,
+# 720p or 1080p, 4K is always brought down) and the app on their device downloads it and keeps it. The copies are made one at a time (OFFLINE_MAX_JOBS, nice'd and
+# on 2 threads) so watching is never slowed, each person can have 2 waiting or running, and the copies on the server are thrown away as soon as the device has them
+# (or after a day or two) and never take more than OFFLINE_MAX_GB.
+OFFLINE_DIR = DATA_DIR / "offline"
+OFFLINE_MAX_JOBS = int(env("OFFLINE_MAX_JOBS", "1"))
+OFFLINE_MAX_GB = float(env("OFFLINE_MAX_GB", "30"))
+OFFLINE_KEEP_HOURS = float(env("OFFLINE_KEEP_HOURS", "36"))
+OFFLINE_THREADS = int(env("OFFLINE_THREADS", "2"))
+OFFLINE_PER_PROFILE = 2
+OFFLINE_Q = {"720p": {"h": 720, "mbps": 2.2}, "1080p": {"h": 1080, "mbps": 4.5}}  # the height and the typical video rate of what is made
+OFFLINE_WAKE = None  # made by the worker when it starts
+OFFLINE_RUN = {}  # job id -> the running ffmpeg process
+
+
+def offline_row(jid):
+    r = db().q("SELECT * FROM offline_jobs WHERE id = ?", (jid,))
+    return dict(r[0]) if r else None
+
+
+def offline_job_json(r):
+    return {"id": r["id"], "file_id": r["file_id"], "quality": r["quality"], "state": r["state"], "progress": round(r["progress"] or 0, 3), "eta": r["eta"], "size": r["size"],
+            "error": r["error"], "queue": r.get("queue"), "meta": json.loads(r["meta"] or "{}"), "subs": json.loads(r["subs"] or "[]")}
+
+
+def offline_plan(pr, quality):
+    """How a source becomes the copy: (mode, height, estimated bytes). Copy when it is already h264 at or under the size wanted and not much bigger than the
+    target rate, otherwise it is converted down (never up)"""
+    v = pr.get("video") or {}
+    h = int(v.get("height") or 0) or 720
+    dur = float(pr.get("duration") or 0)
+    q = OFFLINE_Q[quality]
+    th = min(q["h"], h) if h >= 480 else h
+    src_mbps = (float(pr.get("size_bytes") or 0) * 8 / dur / 1e6) if dur and pr.get("size_bytes") else 99
+    can_copy = v.get("codec") == "h264" and h <= q["h"] and src_mbps <= q["mbps"] * 1.6 and not v.get("dovi") and v.get("transfer") not in ("smpte2084", "arib-std-b67")
+    est = int(dur * ((src_mbps if can_copy else min(q["mbps"], q["mbps"] * th / q["h"] * 1.1)) * 1e6 + 128_000) / 8)
+    return ("copy" if can_copy else "transcode"), th, est
+
+
+@app.get("/api/offline/options/{fid}")
+async def offline_options(fid: str, p=Depends(current_profile)):
+    if fid.startswith("s"):
+        raise HTTPException(400, "Only films and episodes in your Library can be saved for offline for now")
+    f = file_or_404(fid)
+    kids_block_file(p, f)
+    t = LIB["titles"].get(f["title_id"])
+    pr = await get_probe(f)
+    pr = {**pr, "size_bytes": f["size"]}
+    v = pr.get("video") or {}
+    if not v:
+        raise HTTPException(415, "That file has no video")
+    h = int(v.get("height") or 0)
+    # What can be offered depends on what there is: 4K and 1080p sources get 720p (the small one) and 1080p, a 720p source just 720p, anything smaller as it is
+    qs = ["720p", "1080p"] if h >= 1000 else ["720p"]
+    out = []
+    for q in qs:
+        mode, th, est = offline_plan(pr, q)
+        note = "Smallest, looks good on a phone" if q == "720p" else ("Sharper, about twice the size" if h < 2000 else "Sharper, brought down from 4K to keep it small")
+        if h >= 2000 and q == "720p":
+            note = "Brought down from 4K so it stays small"
+        out.append({"quality": q, "height": th, "est_bytes": est, "mode": mode, "note": note})
+    meta = (meta_for(t) or {}) if t else {}
+    ep = next((x for x in meta.get("videos", []) if x.get("season") == f["season"] and x.get("episode") == f["episode"]), {}) if f["season"] is not None else {}
+    audio = [{"n": a["n"], "label": " ".join(str(y) for y in (a.get("title") or (lang_name(a.get("lang")) if a.get("lang") else ""), a.get("codec", "").upper(), f"{a.get('channels')}ch") if y), "default": bool(a.get("default"))} for a in pr["audio"]]
+    subs = [{"id": s["id"], "label": s["label"]} for s in f["ext_subs"]]
+    for s in pr["subs"]:
+        if s["codec"] in TEXT_SUB_CODECS:
+            subs.append({"id": f"e{s['index']}", "label": s.get("title") or (lang_name(s["lang"]) if s.get("lang") else f"Track {s['n'] + 1}")})
+    return {"file_id": fid, "duration": pr.get("duration"), "source": {"height": h, "codec": v.get("codec"), "bytes": f["size"]}, "qualities": out, "default": "720p",
+            "audio": audio, "subs": subs,
+            "meta": {"name": meta.get("name") or (t or {}).get("guess_name") or f["name"], "kind": "series" if f["season"] is not None else "movie", "season": f["season"], "episode": f["episode"],
+                     "ep_name": ep.get("name"), "year": str(meta.get("releaseInfo") or (t or {}).get("year") or "")[:4], "poster": meta.get("poster"), "background": meta.get("background"),
+                     "logo": meta.get("logo"), "overview": ep.get("overview") or meta.get("description"), "title_id": f["title_id"], "genres": meta.get("genres") or []}}
+
+
+def offline_used():
+    return sum((OFFLINE_DIR / f"{r['id']}.mp4").stat().st_size for r in db().q("SELECT id FROM offline_jobs WHERE state IN ('done','running')") if (OFFLINE_DIR / f"{r['id']}.mp4").exists())
+
+
+@app.post("/api/offline/prepare")
+async def offline_prepare(request: Request, p=Depends(current_profile)):
+    b = await json_obj(request)
+    fid, quality = str(b.get("file_id") or ""), str(b.get("quality") or "720p")
+    if quality not in OFFLINE_Q:
+        raise HTTPException(400, "Pick 720p or 1080p")
+    opt = await offline_options(fid, p)
+    if quality not in [q["quality"] for q in opt["qualities"]]:
+        raise HTTPException(400, "That quality isn't available for this one")
+    mine = db().q("SELECT COUNT(*) AS c FROM offline_jobs WHERE profile_id = ? AND state IN ('queued','running')", (p["id"],))[0]["c"]
+    if mine >= OFFLINE_PER_PROFILE:
+        raise HTTPException(429, f"{OFFLINE_PER_PROFILE} are already being made for you, wait for one to finish")
+    # The same thing asked for again gives the same job back
+    old = db().q("SELECT * FROM offline_jobs WHERE profile_id = ? AND file_id = ? AND quality = ? AND state IN ('queued','running','done') ORDER BY created DESC LIMIT 1", (p["id"], fid, quality))
+    if old:
+        return offline_job_json(dict(old[0]))
+    if shutil.disk_usage(DATA_DIR).free < 8 * 1024**3 or offline_used() + next(q["est_bytes"] for q in opt["qualities"] if q["quality"] == quality) > OFFLINE_MAX_GB * 1024**3:
+        raise HTTPException(503, "The server has no room for another copy right now, try again in a little while")
+    audio = int(b.get("audio") or 0)
+    want = [s for s in (b.get("subs") or []) if isinstance(s, str)][:8]
+    subs = [s for s in opt["subs"] if s["id"] in want]
+    jid = "o" + secrets.token_hex(7)
+    est = next(q["est_bytes"] for q in opt["qualities"] if q["quality"] == quality)
+    db().q("INSERT INTO offline_jobs (id, profile_id, file_id, quality, audio, state, progress, size, subs, meta, created, updated) VALUES (?,?,?,?,?,'queued',0,?,?,?,?,?)",
+           (jid, p["id"], fid, quality, audio, est, json.dumps(subs), json.dumps({**opt["meta"], "duration": opt["duration"]}), time.time(), time.time()))
+    OFFLINE_WAKE.set()
+    return offline_job_json(offline_row(jid))
+
+
+@app.get("/api/offline/jobs")
+async def offline_jobs(p=Depends(current_profile)):
+    rows = [dict(r) for r in db().q("SELECT * FROM offline_jobs WHERE profile_id = ? AND state != 'gone' ORDER BY created DESC LIMIT 50", (p["id"],))]
+    waiting = [r["id"] for r in db().q("SELECT id FROM offline_jobs WHERE state = 'queued' ORDER BY created")]
+    for r in rows:
+        r["queue"] = waiting.index(r["id"]) + 1 if r["id"] in waiting else 0
+    return {"jobs": [offline_job_json(r) for r in rows], "used_gb": round(offline_used() / 1024**3, 1), "max_gb": OFFLINE_MAX_GB}
+
+
+def offline_mine(jid, p):
+    r = offline_row(jid)
+    if not r or r["profile_id"] != p["id"]:
+        raise HTTPException(404, "That download isn't there")
+    return r
+
+
+@app.get("/api/offline/job/{jid}")
+async def offline_job(jid: str, p=Depends(current_profile)):
+    r = offline_mine(jid, p)
+    waiting = [x["id"] for x in db().q("SELECT id FROM offline_jobs WHERE state = 'queued' ORDER BY created")]
+    r["queue"] = waiting.index(jid) + 1 if jid in waiting else 0
+    return offline_job_json(r)
+
+
+@app.delete("/api/offline/job/{jid}")
+async def offline_cancel(jid: str, p=Depends(current_profile)):
+    r = offline_mine(jid, p)
+    proc = OFFLINE_RUN.get(jid)
+    if proc:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+    offline_remove(jid)
+    return {"ok": True}
+
+
+def offline_remove(jid):
+    for f in OFFLINE_DIR.glob(f"{jid}*"):
+        f.unlink(missing_ok=True)
+    db().q("UPDATE offline_jobs SET state = 'gone', updated = ? WHERE id = ?", (time.time(), jid))
+
+
+@app.post("/api/offline/job/{jid}/done")
+async def offline_done(jid: str, p=Depends(current_profile)):
+    """The device has the whole file, the copy on the server isn't needed any more"""
+    offline_mine(jid, p)
+    offline_remove(jid)
+    return {"ok": True}
+
+
+@app.get("/api/offline/file/{jid}")
+async def offline_file(jid: str, request: Request, p=Depends(current_profile)):
+    r = offline_mine(jid, p)
+    f = OFFLINE_DIR / f"{jid}.mp4"
+    if r["state"] != "done" or not f.exists():
+        raise HTTPException(409, "That copy isn't ready yet")
+    return range_response(str(f), request)
+
+
+@app.get("/api/offline/sub/{jid}/{n}")
+async def offline_sub(jid: str, n: int, p=Depends(current_profile)):
+    offline_mine(jid, p)
+    f = OFFLINE_DIR / f"{jid}.{n}.vtt"
+    if not f.exists():
+        raise HTTPException(404, "No subtitles")
+    return Response(f.read_text(errors="ignore"), media_type="text/vtt")
+
+
+async def offline_make(r):
+    """Makes one copy with ffmpeg, in a single pass: the video, the chosen sound track and every chosen subtitle as its own webvtt file"""
+    f = LIB["files"].get(r["file_id"])
+    if not f:
+        raise RuntimeError("That file isn't in the library any more")
+    pr = {**await get_probe(f), "size_bytes": f["size"]}
+    mode, th, est = offline_plan(pr, r["quality"])
+    v = pr["video"]
+    out = OFFLINE_DIR / f"{r['id']}.mp4"
+    part = OFFLINE_DIR / f"{r['id']}.part.mp4"
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-progress", "pipe:1", "-nostats", "-threads", str(OFFLINE_THREADS), "-i", f["path"],
+            "-map", "0:v:0", "-map", f"0:a:{max(0, min(r['audio'] or 0, max(0, len(pr['audio']) - 1)))}?"]
+    if mode == "copy":
+        args += ["-c:v", "copy"] + (["-tag:v", "avc1"] if v.get("codec") == "h264" else [])
+    else:
+        vf = f"scale=-2:'min({th},ih)'"
+        if v.get("transfer") in ("smpte2084", "arib-std-b67") and FF_INFO.get("tonemap"):
+            vf = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv," + vf
+        args += ["-vf", vf + ",format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", f"{OFFLINE_Q[r['quality']]['mbps'] * 2:g}M",
+                 "-bufsize", f"{OFFLINE_Q[r['quality']]['mbps'] * 4:g}M", "-profile:v", "high", "-level", "4.1"]
+    a = pr["audio"][max(0, min(r["audio"] or 0, len(pr["audio"]) - 1))] if pr["audio"] else None
+    args += ["-c:a", "copy"] if a and a.get("codec") == "aac" and (a.get("channels") or 2) <= 2 else ["-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+    args += ["-sn", "-movflags", "+faststart", "-f", "mp4", str(part)]
+    # Subtitles: each one a separate webvtt file next to it (the app shows them itself)
+    subs = json.loads(r["subs"] or "[]")
+    for i, s in enumerate(subs):
+        if s["id"].startswith("e") and s["id"][1:].isdigit():
+            args += ["-map", f"0:{int(s['id'][1:])}", "-f", "webvtt", str(OFFLINE_DIR / f"{r['id']}.{i}.vtt")]
+        elif s["id"].startswith("x"):
+            ext = next((x for x in f["ext_subs"] if x["id"] == s["id"]), None)
+            if ext:
+                raw = Path(ext["path"]).read_bytes()
+                txt = raw.decode("utf-8-sig", errors="ignore")
+                if "�" in txt or not txt.strip():
+                    txt = raw.decode("latin-1")
+                (OFFLINE_DIR / f"{r['id']}.{i}.vtt").write_text(txt if ext["path"].lower().endswith(".vtt") else srt_to_vtt(txt))
+    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, preexec_fn=lambda: os.nice(15))
+    OFFLINE_RUN[r["id"]] = proc
+    dur = float(pr.get("duration") or 0) or 1
+    t0, last = time.time(), 0.0
+    try:
+        async for line in proc.stdout:
+            line = line.decode("utf-8", "ignore").strip()
+            if line.startswith("out_time_us="):
+                try:
+                    done = min(0.995, int(line.split("=")[1]) / 1e6 / dur)
+                except ValueError:
+                    continue
+                if time.time() - last > 2:
+                    last = time.time()
+                    el = last - t0
+                    db().q("UPDATE offline_jobs SET progress = ?, eta = ?, updated = ? WHERE id = ?", (done, int(el / done - el) if done > 0.02 else None, last, r["id"]))
+        err = (await proc.stderr.read()).decode("utf-8", "ignore")[-300:]
+        await proc.wait()
+    finally:
+        OFFLINE_RUN.pop(r["id"], None)
+    if proc.returncode != 0:
+        part.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg stopped: {err.strip() or proc.returncode}")
+    part.rename(out)
+    return out.stat().st_size
+
+
+async def offline_worker():
+    """Takes the waiting copies one after another (OFFLINE_MAX_JOBS at a time), and sweeps old ones away"""
+    global OFFLINE_WAKE
+    OFFLINE_WAKE = asyncio.Event()
+    OFFLINE_DIR.mkdir(parents=True, exist_ok=True)
+    db().q("UPDATE offline_jobs SET state = 'queued', progress = 0 WHERE state = 'running'")  # a restart stopped these half way, they start again
+    for f in OFFLINE_DIR.glob("*.part.mp4"):
+        f.unlink(missing_ok=True)
+    sem = asyncio.Semaphore(OFFLINE_MAX_JOBS)
+
+    async def one(r):
+        async with sem:
+            cur = offline_row(r["id"])
+            if not cur or cur["state"] != "queued":
+                return
+            db().q("UPDATE offline_jobs SET state = 'running', updated = ? WHERE id = ?", (time.time(), r["id"]))
+            try:
+                size = await offline_make(cur)
+                if offline_row(r["id"])["state"] == "gone":
+                    return
+                db().q("UPDATE offline_jobs SET state = 'done', progress = 1, eta = 0, size = ?, updated = ? WHERE id = ?", (size, time.time(), r["id"]))
+            except Exception as e:
+                log.warning("offline copy %s failed: %s", r["id"], str(e)[:200])
+                if (offline_row(r["id"]) or {}).get("state") != "gone":
+                    db().q("UPDATE offline_jobs SET state = 'failed', error = ?, updated = ? WHERE id = ?", (str(e)[:200], time.time(), r["id"]))
+                for f in OFFLINE_DIR.glob(f"{r['id']}*"):
+                    f.unlink(missing_ok=True)
+
+    started = set()
+    last_sweep = 0.0
+    while True:
+        for r in db().q("SELECT id FROM offline_jobs WHERE state = 'queued' ORDER BY created"):
+            if r["id"] not in started:
+                started.add(r["id"])
+                asyncio.create_task(one(dict(r)))
+        if time.time() - last_sweep > 600:
+            last_sweep = time.time()
+            old = time.time() - OFFLINE_KEEP_HOURS * 3600
+            for r in db().q("SELECT id FROM offline_jobs WHERE state IN ('done','failed') AND updated < ?", (old,)):
+                offline_remove(r["id"])
+            db().q("DELETE FROM offline_jobs WHERE state = 'gone' AND updated < ?", (time.time() - 7 * 86400,))
+        try:
+            await asyncio.wait_for(OFFLINE_WAKE.wait(), 5)
+        except asyncio.TimeoutError:
+            pass
+        OFFLINE_WAKE.clear()
 
 
 # ---------------------------------------------------------------- accounts (email and password)

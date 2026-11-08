@@ -1236,6 +1236,32 @@ body.pip .player-ui, body.pip .skip-intro, body.pip .up-next, body.pip .subs-lay
 /* no dragging pictures out of the page, and no long press save menu on them */
 img, picture, video, canvas { -webkit-user-drag: none; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 
+/* downloads for offline */
+.dl-page { max-width: 760px; }
+.dl-off { margin-bottom: 14px; }
+.dl-storage { padding: 14px 16px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
+.dl-prog { height: 6px; border-radius: 3px; background: var(--fill-2); overflow: hidden; }
+.dl-prog i { display: block; height: 100%; border-radius: 3px; background: var(--blue); transition: width 0.4s var(--ease); }
+.dl-prog.bad i { background: var(--red); }
+.dl-card { display: grid; grid-template-columns: 64px 1fr auto; gap: 14px; align-items: center; padding: 12px; margin-bottom: 10px; border-radius: var(--r-card); background: var(--bg-2); }
+.dl-art { position: relative; width: 64px; aspect-ratio: 2 / 3; border-radius: 8px; overflow: hidden; background: var(--bg-3); }
+.dl-art img, .dl-art .ph { width: 100%; height: 100%; object-fit: cover; font-size: 11px; padding: 4px; text-align: center; }
+.dl-body { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.dl-body b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-body .secondary { font-size: 13px; }
+.dl-state { font-size: 13px; color: var(--label-2); font-variant-numeric: tabular-nums; }
+.dl-state.bad { color: var(--red); }
+.dl-acts { display: flex; gap: 8px; align-items: center; }
+@media (max-width: 560px) { .dl-card { grid-template-columns: 54px 1fr; } .dl-art { width: 54px; } .dl-acts { grid-column: 1 / -1; justify-content: flex-end; } }
+.dl-opts { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.dl-opt { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; background: var(--fill); cursor: pointer; }
+.dl-opt input { margin-top: 4px; width: 20px; height: 20px; accent-color: var(--blue); }
+.dl-opt:has(input:checked) { box-shadow: inset 0 0 0 2px var(--blue); }
+.dl-note { display: block; }
+.dl-subs { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.dl-sub { display: flex; gap: 10px; align-items: center; min-height: 36px; }
+.dl-info { margin: 10px 0; font-size: 13px; }
+.ep-mark[data-epdl] svg { width: 16px; height: 16px; }
 /* sign in and account pages */
 .inline-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; white-space: nowrap; color: var(--label-2); }
 .ac-form { display: flex; flex-direction: column; gap: 10px; }

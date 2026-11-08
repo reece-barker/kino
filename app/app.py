@@ -206,6 +206,12 @@ CREATE TABLE IF NOT EXISTS embeds (key TEXT PRIMARY KEY, h TEXT, vec BLOB, at RE
 CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, ref TEXT, kind TEXT, name TEXT, sub TEXT, title_id TEXT,
   device TEXT, ip TEXT, started REAL, last REAL, secs REAL DEFAULT 0, pos REAL, dur REAL);
 CREATE INDEX IF NOT EXISTS activity_last ON activity (last);
+CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, name TEXT, pw TEXT, status TEXT DEFAULT 'active', trusted INTEGER DEFAULT 0,
+  free_invite INTEGER DEFAULT 0, invited_by INTEGER, created REAL, last_login REAL);
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_email ON accounts (email) WHERE status != 'removed';
+CREATE TABLE IF NOT EXISTS invites (id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT, email TEXT, name TEXT, invited_by INTEGER, status TEXT, trust INTEGER DEFAULT 0, created REAL, expires REAL, used_account INTEGER);
+CREATE TABLE IF NOT EXISTS acct_sessions (token_hash TEXT PRIMARY KEY, account_id INTEGER, created REAL, last_seen REAL, ua TEXT, ip TEXT);
+CREATE TABLE IF NOT EXISTS reset_tokens (token_hash TEXT PRIMARY KEY, account_id INTEGER, expires REAL);
 CREATE TABLE IF NOT EXISTS wrapped_cache (profile_id INTEGER, period TEXT, data TEXT, at REAL, PRIMARY KEY (profile_id, period));
 CREATE TABLE IF NOT EXISTS wrapped_shares (code TEXT PRIMARY KEY, profile_id INTEGER, period TEXT, data TEXT, hide_name INTEGER DEFAULT 0, created REAL, views INTEGER DEFAULT 0, revoked INTEGER DEFAULT 0);
 """
@@ -450,7 +456,7 @@ def device_allowed(request):
 
 
 def access_ok(request):
-    return ip_allowed(client_ip(request)) or device_allowed(request)
+    return ip_allowed(client_ip(request)) or device_allowed(request) or bool(acct_session(request))
 
 
 def ip_allowed(ip):
@@ -1576,7 +1582,7 @@ async def guard(request: Request, call_next):
     # Every change request needs this header, other websites cant add it so they cant trick your browser into doing stuff
     if request.method in ("POST", "PUT", "DELETE") and request.headers.get("x-kino") != "1":
         return JSONResponse({"detail": "Missing request header"}, status_code=403)
-    if path.startswith("/api/") and not path.startswith(("/api/dl/", "/api/gate", "/api/x/")) and not access_ok(request):
+    if path.startswith("/api/") and not path.startswith(("/api/dl/", "/api/gate", "/api/x/", "/api/account/login", "/api/account/forgot", "/api/account/join", "/api/account/reset")) and not access_ok(request):
         log.warning("kino blocked ip=%s path=%s", client_ip(request), path)
         return JSONResponse({"detail": "This network or device isn't on the allow list"}, status_code=403)
     resp = await call_next(request)
@@ -1830,7 +1836,9 @@ async def features(p=Depends(current_profile)):
 
 @app.get("/api/me")
 async def me(request: Request):
-    return {"profile": cookie_profile(request), "admin": admin_user(request), "ip": client_ip(request)}
+    a = acct_session(request)
+    return {"profile": cookie_profile(request), "admin": admin_user(request), "ip": client_ip(request),
+            "account": {"name": a["name"], "email": a["email"], "trusted": bool(a["trusted"])} if a else None}
 
 
 @app.get("/api/profiles")
@@ -7975,12 +7983,18 @@ GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta 
 <meta name="color-scheme" content="dark light"><meta name="robots" content="noindex, nofollow"><title>Kino</title>
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml"><link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png"><link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="stylesheet" href="/static/app.css?v=__V__"></head><body class="gate-body"><main class="gate" id="gate">
-<div class="gate-card glass-card"><div class="gate-mark">__WORDMARK__</div><h1>This Device Isn't Allowed Yet</h1>
-<p class="secondary">Kino only opens on your family's networks or on devices the admin has approved. Ask for access and give the admin this code.</p>
+<div class="gate-card glass-card"><div class="gate-mark">__WORDMARK__</div><h1>Sign In to Kino</h1>
+<p class="secondary">Use the email and password you chose when you were invited.</p>
+<form id="signForm" class="gate-form"><input id="gateEmail" type="email" autocomplete="username" maxlength="200" placeholder="Email" required>
+<input id="gatePw" type="password" autocomplete="current-password" maxlength="200" placeholder="Password" required>
+<button class="btn primary" type="submit">Sign In</button></form>
+<p class="note" id="signMsg"></p><button class="link-btn" id="forgotBtn" type="button">Forgot your password?</button>
+<details class="gate-old"><summary>Ask for access with a device code instead</summary>
+<p class="secondary">Kino also opens on devices the admin has approved. Give the admin this code.</p>
 <div class="gate-code" id="gateCode">···-···</div>
 <form id="gateForm" class="gate-form"><input id="gateName" maxlength="40" placeholder="Name this device, like Mum's iPad" required>
-<button class="btn primary" type="submit">Ask for Access</button></form>
-<p class="note" id="gateMsg"></p></div></main><script src="/static/gate.js?v=__V__"></script></body></html>"""
+<button class="btn secondary" type="submit">Ask for Access</button></form>
+<p class="note" id="gateMsg"></p></details></div></main><script src="/static/gate.js?v=__V__"></script></body></html>"""
 GATE_WORDMARK = (Path(__file__).with_name("static") / "wordmark.svg").read_text()
 
 # ---- the install page for tvs
@@ -9284,6 +9298,424 @@ async def wrapped_public_img(code: str, i: int):
     if not d or not 0 <= i < len(d["top"]) or not d["top"][i].get("poster"):
         raise HTTPException(404, "No picture")
     return await img(d["top"][i]["poster"], 0, 342)
+
+
+# ---------------------------------------------------------------- accounts (email and password)
+# Each person gets their own account: invited by email, they choose a password, and from then on they sign in on any device or network with the email and the
+# password. The admin (or a person the admin marked as trusted) invites; an invite from a trusted person waits for the admin's one tap unless that person is set to
+# invite freely. Signing in gives the device a long lasting session cookie, which lets it through the gate like an approved device does. Removing an account ends
+# all its sessions at once. The old device and network approvals still work next to this until the admin switches them off.
+ACCT_COOKIE = "kino_acct"
+ACCT_SESSION_DAYS = 180
+ACCT_INVITE_DAYS = 7
+ACCT_RESET_MINUTES = 60
+ACCT_FAILS = {}  # (ip) -> times of failed sign ins, and ("e", email) -> the same per address
+SMTP_HOST, SMTP_PORT = env("SMTP_HOST", ""), int(env("SMTP_PORT", "587") or 587)
+SMTP_USER, SMTP_PASS = env("SMTP_USER", ""), env("SMTP_PASS", "")
+SMTP_FROM = env("SMTP_FROM", "kino@reece.page")
+SMTP_SECURITY = env("SMTP_SECURITY", "starttls").strip().lower()  # starttls, ssl or none
+PUBLIC_URL = env("PUBLIC_URL", "https://kino.reece.page").rstrip("/")
+EMAIL_RX = re.compile(r"^[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$")
+MAIL_LOG = deque(maxlen=20)  # the last few mails (when no mail server is set, the link is kept here and in the log so the admin can pass it on)
+
+
+def tok_new():
+    t = secrets.token_urlsafe(32)
+    return t, hashlib.sha256(t.encode()).hexdigest()
+
+
+def ahash(t):
+    return hashlib.sha256(str(t).encode()).hexdigest()
+
+
+def mail_ready():
+    return bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
+
+
+def send_mail_now(to, subject, text):
+    import smtplib
+    import ssl
+    from email.message import EmailMessage
+    m = EmailMessage()
+    m["From"] = f"Kino <{SMTP_FROM}>"
+    m["To"] = to
+    m["Subject"] = subject
+    m["Message-ID"] = f"<{secrets.token_hex(12)}@{SMTP_FROM.split('@')[-1]}>"
+    m.set_content(text)
+    ctx = ssl.create_default_context()
+    if SMTP_HOST in ("127.0.0.1", "localhost", "::1"):
+        # a mail bridge on this same machine has a certificate of its own, nothing leaves the machine
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    if SMTP_SECURITY == "ssl":
+        s = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20, context=ctx)
+    else:
+        s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
+        if SMTP_SECURITY == "starttls":
+            s.starttls(context=ctx)
+    try:
+        s.login(SMTP_USER, SMTP_PASS)
+        s.send_message(m)
+    finally:
+        try:
+            s.quit()
+        except Exception:
+            pass
+
+
+async def send_mail(to, subject, text, link=None):
+    """Sends an email in the background thread. Without a mail server the link is only kept in the log and for the admin to copy. True when it was sent"""
+    MAIL_LOG.append({"to": to, "subject": subject, "link": link, "at": time.time()})
+    if not mail_ready():
+        log.warning("kino mail not set up, would have sent %r to %s", subject, logsafe(to))
+        return False
+    try:
+        await asyncio.to_thread(send_mail_now, to, subject, text)
+        return True
+    except Exception as e:
+        log.warning("kino mail to %s failed: %s", logsafe(to), type(e).__name__)
+        return False
+
+
+def acct_public(a):
+    return {"id": a["id"], "email": a["email"], "name": a["name"], "trusted": bool(a["trusted"]), "free": bool(a["free_invite"]), "status": a["status"],
+            "created": a["created"], "last_login": a["last_login"]}
+
+
+def acct_session(request):
+    """The account behind this device's sign in, or None. Checked on every request, so removing the account cuts it off straight away"""
+    t = request.cookies.get(ACCT_COOKIE)
+    if not t:
+        return None
+    r = db().q("SELECT s.token_hash, s.last_seen, a.* FROM acct_sessions s JOIN accounts a ON a.id = s.account_id WHERE s.token_hash = ? AND a.status = 'active'", (ahash(t),))
+    if not r:
+        return None
+    r = dict(r[0])
+    now = time.time()
+    if now - (r["last_seen"] or 0) > ACCT_SESSION_DAYS * 86400:
+        db().q("DELETE FROM acct_sessions WHERE token_hash = ?", (r["token_hash"],))
+        return None
+    if now - (r["last_seen"] or 0) > 600:
+        db().q("UPDATE acct_sessions SET last_seen = ?, ip = ? WHERE token_hash = ?", (now, client_ip(request), r["token_hash"]))
+    return r
+
+
+def acct_start(resp, request, aid):
+    t, h = tok_new()
+    db().q("INSERT INTO acct_sessions (token_hash, account_id, created, last_seen, ua, ip) VALUES (?,?,?,?,?,?)",
+           (h, aid, time.time(), time.time(), request.headers.get("user-agent", "")[:200], client_ip(request)))
+    db().q("UPDATE accounts SET last_login = ? WHERE id = ?", (time.time(), aid))
+    set_cookie(resp, ACCT_COOKIE, t, ACCT_SESSION_DAYS * 86400)
+    for r in db().q("SELECT token_hash FROM acct_sessions WHERE account_id = ? ORDER BY last_seen DESC LIMIT -1 OFFSET 12", (aid,)):
+        db().q("DELETE FROM acct_sessions WHERE token_hash = ?", (r["token_hash"],))  # a person keeps at most 12 devices signed in
+
+
+def pw_ok(pw):
+    pw = str(pw or "")
+    if len(pw) < 10:
+        raise HTTPException(400, "Use at least 10 characters for the password")
+    if len(pw) > 200:
+        raise HTTPException(400, "That password is too long")
+    if pw.lower() in ("password123", "1234567890", "qwertyuiop", "password12", "letmein123") or len(set(pw)) < 4:
+        raise HTTPException(400, "That password is too easy to guess, try another")
+    return pw
+
+
+def acct_guard(request, email):
+    """Slows password guessing: 6 wrong tries from one address, or 10 on one account, in a quarter of an hour, stops sign in for a while"""
+    now = time.time()
+    for k, lim in ((client_ip(request), 6), (("e", email), 10)):
+        ACCT_FAILS[k] = [t for t in ACCT_FAILS.get(k, []) if now - t < 900]
+        if len(ACCT_FAILS[k]) >= lim:
+            raise HTTPException(429, "Too many wrong tries, wait a few minutes")
+    if len(ACCT_FAILS) > 5000:
+        ACCT_FAILS.clear()
+
+
+def acct_fail(request, email):
+    now = time.time()
+    for k in (client_ip(request), ("e", email)):
+        ACCT_FAILS.setdefault(k, []).append(now)
+
+
+def norm_email(e):
+    e = str(e or "").strip().lower()
+    if not EMAIL_RX.fullmatch(e):
+        raise HTTPException(400, "That doesn't look like an email address")
+    return e
+
+
+ACCT_DUMMY = hash_pw(secrets.token_hex(8))
+
+
+@app.post("/api/account/login")
+async def acct_login(request: Request):
+    b = await json_obj(request)
+    email = str(b.get("email") or "").strip().lower()[:200]
+    acct_guard(request, email)
+    r = db().q("SELECT * FROM accounts WHERE email = ? AND status = 'active'", (email,))
+    ok = check_pw(str(b.get("password") or "")[:200], r[0]["pw"] if r else ACCT_DUMMY)
+    if not r or not ok:
+        acct_fail(request, email)
+        raise HTTPException(401, "That email or password isn't right")
+    resp = JSONResponse({"ok": True})
+    acct_start(resp, request, r[0]["id"])
+    log.info("kino account %s signed in from %s", logsafe(email), client_ip(request))
+    return resp
+
+
+@app.post("/api/account/logout")
+async def acct_logout(request: Request):
+    t = request.cookies.get(ACCT_COOKIE)
+    if t:
+        db().q("DELETE FROM acct_sessions WHERE token_hash = ?", (ahash(t),))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(ACCT_COOKIE, path="/")
+    return resp
+
+
+def acct_required(request):
+    a = acct_session(request)
+    if not a:
+        raise HTTPException(401, "Sign in first")
+    return a
+
+
+@app.get("/api/account")
+async def acct_me(request: Request):
+    a = acct_session(request)
+    if not a:
+        return {"account": None, "mail": mail_ready()}
+    cur = ahash(request.cookies.get(ACCT_COOKIE, ""))
+    sess = [{"id": s["token_hash"][:12], "ua": ua_family(s["ua"]), "ip": s["ip"], "last_seen": s["last_seen"], "created": s["created"], "this": s["token_hash"] == cur}
+            for s in db().q("SELECT * FROM acct_sessions WHERE account_id = ? ORDER BY last_seen DESC", (a["id"],))]
+    inv = [{"id": i["id"], "email": i["email"], "name": i["name"], "status": i["status"], "created": i["created"]}
+           for i in db().q("SELECT * FROM invites WHERE invited_by = ? AND status IN ('awaiting','sent') ORDER BY created DESC LIMIT 30", (a["id"],))]
+    return {"account": acct_public(a), "sessions": sess, "invites": inv, "mail": mail_ready()}
+
+
+@app.delete("/api/account/sessions/{sid}")
+async def acct_sign_out_device(sid: str, request: Request):
+    a = acct_required(request)
+    db().q("DELETE FROM acct_sessions WHERE account_id = ? AND substr(token_hash, 1, 12) = ?", (a["id"], sid[:12]))
+    return {"ok": True}
+
+
+@app.post("/api/account/password")
+async def acct_change_pw(request: Request):
+    a = acct_required(request)
+    b = await json_obj(request)
+    acct_guard(request, a["email"])
+    if not check_pw(str(b.get("current") or "")[:200], a["pw"]):
+        acct_fail(request, a["email"])
+        raise HTTPException(401, "Your current password isn't right")
+    db().q("UPDATE accounts SET pw = ? WHERE id = ?", (hash_pw(pw_ok(b.get("new"))), a["id"]))
+    cur = ahash(request.cookies.get(ACCT_COOKIE, ""))
+    db().q("DELETE FROM acct_sessions WHERE account_id = ? AND token_hash != ?", (a["id"], cur))  # every other device has to sign in again
+    return {"ok": True}
+
+
+# ---- invites
+def invite_link(token):
+    return f"{PUBLIC_URL}/join/{token}"
+
+
+async def invite_send(inv_id, token):
+    i = db().q("SELECT * FROM invites WHERE id = ?", (inv_id,))[0]
+    by = db().q("SELECT name FROM accounts WHERE id = ?", (i["invited_by"],)) if i["invited_by"] else None
+    who = by[0]["name"] if by else "The admin"
+    link = invite_link(token)
+    text = (f"Hi {i['name'] or 'there'},\n\n{who} invited you to Kino, the family's own place for films and shows.\n\nOpen this link to create your account (it works for "
+            f"{ACCT_INVITE_DAYS} days):\n{link}\n\nAfter that you sign in with this email address and the password you choose, on any phone, tablet, computer or TV.\n\n"
+            "If you weren't expecting this, you can ignore it.\n")
+    sent = await send_mail(i["email"], "You're invited to Kino", text, link)
+    return sent, link
+
+
+async def invite_make(email, name, by_id, approved, trust=False):
+    """Makes an invite. approved=False waits for the admin first. Returns the invite row id and, when it can go out now, the link"""
+    email = norm_email(email)
+    if db().q("SELECT 1 FROM accounts WHERE email = ? AND status != 'removed'", (email,)):
+        raise HTTPException(409, "That person already has an account")
+    if db().q("SELECT COUNT(*) AS n FROM invites WHERE invited_by = ? AND created > ?", (by_id, time.time() - 86400))[0]["n"] >= 10:
+        raise HTTPException(429, "That's a lot of invites for one day, try again tomorrow")
+    db().q("UPDATE invites SET status = 'expired' WHERE email = ? AND status IN ('awaiting','sent')", (email,))
+    tok, h = tok_new()
+    db().q("INSERT INTO invites (token_hash, email, name, invited_by, status, trust, created, expires) VALUES (?,?,?,?,?,?,?,?)",
+           (h, email, re.sub(r"\s+", " ", str(name or "")).strip()[:40], by_id, "sent" if approved else "awaiting", 1 if trust else 0, time.time(), time.time() + ACCT_INVITE_DAYS * 86400))
+    iid = db().q("SELECT last_insert_rowid() AS i")[0]["i"]
+    if not approved:
+        return iid, None, False
+    sent, link = await invite_send(iid, tok)
+    return iid, link, sent
+
+
+@app.post("/api/account/invite")
+async def acct_invite(request: Request):
+    """A person who is allowed to invite (trusted) adds a relative by email. It waits for the admin unless they may invite freely"""
+    a = acct_required(request)
+    if not a["trusted"]:
+        raise HTTPException(403, "Only people the admin has marked as trusted can invite")
+    b = await json_obj(request)
+    iid, link, sent = await invite_make(b.get("email"), b.get("name"), a["id"], bool(a["free_invite"]))
+    return {"ok": True, "id": iid, "waiting": link is None, "sent": sent}
+
+
+@app.post("/api/admin/accounts/invite")
+async def admin_invite(request: Request, admin=Depends(require_admin)):
+    b = await json_obj(request)
+    iid, link, sent = await invite_make(b.get("email"), b.get("name"), 0, True, bool(b.get("trusted")))
+    return {"ok": True, "id": iid, "sent": sent, "link": None if sent else link, "mail": mail_ready()}
+
+
+@app.get("/api/admin/accounts")
+async def admin_accounts(admin=Depends(require_admin)):
+    accts = []
+    for a in db().q("SELECT * FROM accounts WHERE status != 'removed' ORDER BY created"):
+        n = db().q("SELECT COUNT(*) AS n FROM acct_sessions WHERE account_id = ?", (a["id"],))[0]["n"]
+        accts.append({**acct_public(a), "devices": n})
+    waiting = [{"id": i["id"], "email": i["email"], "name": i["name"], "by": (db().q("SELECT name FROM accounts WHERE id = ?", (i["invited_by"],)) or [{"name": "admin"}])[0]["name"], "created": i["created"]}
+               for i in db().q("SELECT * FROM invites WHERE status = 'awaiting' ORDER BY created")]
+    sent = [{"id": i["id"], "email": i["email"], "name": i["name"], "expires": i["expires"]} for i in db().q("SELECT * FROM invites WHERE status = 'sent' AND expires > ? ORDER BY created DESC", (time.time(),))]
+    return {"accounts": accts, "waiting": waiting, "sent": sent, "mail": mail_ready(), "mail_from": SMTP_FROM}
+
+
+@app.post("/api/admin/accounts/invites/{iid}/{action}")
+async def admin_invite_act(iid: int, action: str, admin=Depends(require_admin)):
+    i = db().q("SELECT * FROM invites WHERE id = ?", (iid,))
+    if not i:
+        raise HTTPException(404, "That invite isn't there")
+    if action == "deny":
+        db().q("UPDATE invites SET status = 'denied' WHERE id = ?", (iid,))
+        return {"ok": True}
+    if action in ("approve", "resend"):
+        if i[0]["status"] not in ("awaiting", "sent"):
+            raise HTTPException(409, "That invite has already been used or has gone")
+        tok, h = tok_new()
+        db().q("UPDATE invites SET token_hash = ?, status = 'sent', expires = ? WHERE id = ?", (h, time.time() + ACCT_INVITE_DAYS * 86400, iid))
+        sent, link = await invite_send(iid, tok)
+        return {"ok": True, "sent": sent, "link": None if sent else link}
+    raise HTTPException(400, "Unknown action")
+
+
+@app.put("/api/admin/accounts/{aid}")
+async def admin_account_edit(aid: int, request: Request, admin=Depends(require_admin)):
+    b = await json_obj(request)
+    if not db().q("SELECT 1 FROM accounts WHERE id = ?", (aid,)):
+        raise HTTPException(404, "No such account")
+    for k, col in (("trusted", "trusted"), ("free", "free_invite")):
+        if k in b:
+            db().q(f"UPDATE accounts SET {col} = ? WHERE id = ?", (1 if b[k] else 0, aid))
+    if "free" in b and b["free"]:
+        db().q("UPDATE accounts SET trusted = 1 WHERE id = ?", (aid,))
+    return {"ok": True}
+
+
+@app.delete("/api/admin/accounts/{aid}")
+async def admin_account_remove(aid: int, admin=Depends(require_admin)):
+    a = db().q("SELECT email FROM accounts WHERE id = ?", (aid,))
+    if not a:
+        raise HTTPException(404, "No such account")
+    db().q("UPDATE accounts SET status = 'removed' WHERE id = ?", (aid,))
+    db().q("DELETE FROM acct_sessions WHERE account_id = ?", (aid,))
+    log.info("kino account %s removed by %s", logsafe(a[0]["email"]), admin)
+    return {"ok": True}
+
+
+@app.post("/api/admin/accounts/{aid}/reset")
+async def admin_account_reset(aid: int, admin=Depends(require_admin)):
+    a = db().q("SELECT * FROM accounts WHERE id = ? AND status = 'active'", (aid,))
+    if not a:
+        raise HTTPException(404, "No such account")
+    sent, link = await reset_send(a[0])
+    return {"ok": True, "sent": sent, "link": None if sent else link}
+
+
+# ---- joining and passwords, the pages people open from their email (open to anyone with the link, nginx lets them through)
+ACCOUNT_HTML = (Path(__file__).with_name("account.html")).read_text()
+
+
+def account_page(mode, token, extra=""):
+    return Response(ACCOUNT_HTML.replace("__V__", STATIC_VERSION["v"]).replace("__MODE__", mode).replace("__TOKEN__", html.escape(token)).replace("__WORDMARK__", GATE_WORDMARK).replace("__EXTRA__", html.escape(extra)),
+                    media_type="text/html", headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"})
+
+
+def invite_by_token(token):
+    r = db().q("SELECT * FROM invites WHERE token_hash = ? AND status = 'sent' AND expires > ?", (ahash(token), time.time()))
+    return dict(r[0]) if r else None
+
+
+@app.get("/join/{token}")
+async def join_page(token: str):
+    i = invite_by_token(token) if re.fullmatch(r"[A-Za-z0-9_-]{20,80}", token) else None
+    return account_page("join" if i else "gone", token, (i or {}).get("email", ""))
+
+
+@app.post("/api/account/join")
+async def acct_join(request: Request):
+    b = await json_obj(request)
+    token = str(b.get("token") or "")
+    i = invite_by_token(token)
+    if not i:
+        raise HTTPException(410, "This invite has expired or was already used. Ask for a new one")
+    pw = pw_ok(b.get("password"))
+    name = re.sub(r"\s+", " ", str(b.get("name") or i["name"] or "")).strip()[:40]
+    if len(name) < 2:
+        raise HTTPException(400, "Tell us your name")
+    if db().q("SELECT 1 FROM accounts WHERE email = ? AND status != 'removed'", (i["email"],)):
+        raise HTTPException(409, "That email already has an account, sign in instead")
+    trusted = 1 if i["trust"] else 0  # the admin can make somebody trusted (allowed to invite) when inviting them
+    db().q("DELETE FROM accounts WHERE email = ? AND status = 'removed'", (i["email"],))
+    db().q("INSERT INTO accounts (email, name, pw, status, trusted, free_invite, invited_by, created) VALUES (?,?,?,?,?,0,?,?)", (i["email"], name, hash_pw(pw), "active", trusted, i["invited_by"], time.time()))
+    aid = db().q("SELECT last_insert_rowid() AS i")[0]["i"]
+    db().q("UPDATE invites SET status = 'used', used_account = ? WHERE id = ?", (aid, i["id"]))
+    resp = JSONResponse({"ok": True})
+    acct_start(resp, request, aid)
+    log.info("kino account %s created", logsafe(i["email"]))
+    return resp
+
+
+async def reset_send(a):
+    tok, h = tok_new()
+    db().q("DELETE FROM reset_tokens WHERE account_id = ?", (a["id"],))
+    db().q("INSERT INTO reset_tokens (token_hash, account_id, expires) VALUES (?,?,?)", (h, a["id"], time.time() + ACCT_RESET_MINUTES * 60))
+    link = f"{PUBLIC_URL}/reset/{tok}"
+    sent = await send_mail(a["email"], "Reset your Kino password", f"Hi {a['name']},\n\nOpen this link to choose a new password (it works for {ACCT_RESET_MINUTES} minutes):\n{link}\n\n"
+                           "If you didn't ask for this, ignore it, your password stays as it is.\n", link)
+    return sent, link
+
+
+@app.post("/api/account/forgot")
+async def acct_forgot(request: Request):
+    b = await json_obj(request)
+    email = str(b.get("email") or "").strip().lower()[:200]
+    acct_guard(request, email)
+    ACCT_FAILS.setdefault(client_ip(request), []).append(time.time())  # counts as a try, so the form can't be used to flood somebody's inbox
+    a = db().q("SELECT * FROM accounts WHERE email = ? AND status = 'active'", (email,))
+    if a:
+        await reset_send(dict(a[0]))
+    return {"ok": True}  # the same answer whether the account exists or not
+
+
+@app.get("/reset/{token}")
+async def reset_page(token: str):
+    ok = bool(re.fullmatch(r"[A-Za-z0-9_-]{20,80}", token) and db().q("SELECT 1 FROM reset_tokens WHERE token_hash = ? AND expires > ?", (ahash(token), time.time())))
+    return account_page("reset" if ok else "gone", token)
+
+
+@app.post("/api/account/reset")
+async def acct_reset(request: Request):
+    b = await json_obj(request)
+    r = db().q("SELECT * FROM reset_tokens WHERE token_hash = ? AND expires > ?", (ahash(str(b.get("token") or "")), time.time()))
+    if not r:
+        raise HTTPException(410, "This link has expired, ask for a new one")
+    pw = pw_ok(b.get("password"))
+    db().q("UPDATE accounts SET pw = ? WHERE id = ?", (hash_pw(pw), r[0]["account_id"]))
+    db().q("DELETE FROM reset_tokens WHERE account_id = ?", (r[0]["account_id"],))
+    db().q("DELETE FROM acct_sessions WHERE account_id = ?", (r[0]["account_id"],))  # signed out everywhere, in case somebody else had it
+    resp = JSONResponse({"ok": True})
+    acct_start(resp, request, r[0]["account_id"])
+    return resp
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

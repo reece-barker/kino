@@ -1187,6 +1187,7 @@ body.tv .gate-form .btn:focus-visible, body.tv .gate-form input:focus-visible { 
 .page.narrow.settings > * { max-width: none; margin-left: 0; margin-right: 0; }
 .page.settings { columns: 2 460px; column-gap: 20px; }
 .page.settings > .large-title { column-span: all; }
+.page.settings > .admin-tabs { column-span: all; }
 .page.settings #adminSettings { display: contents; }
 .page.settings .card { break-inside: avoid; margin: 0 0 20px; display: block; width: 100%; }
 @media (min-width: 2200px) { .page.settings { columns: 3 460px; } }

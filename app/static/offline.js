@@ -27,6 +27,27 @@
   const put = (rec) => run("downloads", "readwrite", (s) => s.put(rec));
   const del = (id) => run("downloads", "readwrite", (s) => s.delete(id));
 
+  // In the iPhone and iPad app the device part is done by the app itself (it carries on with the screen locked and keeps the files in its own folder)
+  const NAT = () => !!(window.KinoIOS && window.KinoIOS.native && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.kinoDL);
+  const nat = (m) => window.webkit.messageHandlers.kinoDL.postMessage(m);
+  const NOWORKER = { postMessage() {}, terminate() {}, addEventListener() {}, removeEventListener() {} };
+  // Asks the app to fetch the file and waits for it, showing how far along it is
+  async function nativeGet(rec, ctl) {
+    const url = location.origin + `/api/offline/file/${rec.jobId}`;
+    await nat({ cmd: "start", id: rec.id, url, total: rec.size || 0 });
+    for (let polls = 0; ; polls++) {
+      if (ctl.stop) { await nat({ cmd: "pause", id: rec.id }); return "stopped"; }
+      const s = await nat({ cmd: "status", id: rec.id });
+      if (s.state === "done") { rec.size = s.total || rec.size; return "done"; }
+      if (s.state === "gone") throw Object.assign(new Error("The server no longer has that copy"), { gone: true });
+      if (s.state === "failed") throw new Error(s.error || "The download failed");
+      if (s.state === "interrupted") { rec.waiting = true; await save(rec); await sleep(2000); await nat({ cmd: "start", id: rec.id, url, total: rec.size || 0 }); continue; }
+      rec.waiting = s.state === "waiting"; rec.got = s.got; rec.size = s.total || rec.size; rec.speed = s.speed || 0; rec.retries = 0;
+      await save(rec);
+      await sleep(1000);
+    }
+  }
+
   const supported = () => !!(window.isSecureContext && navigator.storage && navigator.storage.getDirectory && window.Worker && window.indexedDB);
 
   // ---- files (OPFS), read on the page
@@ -87,11 +108,15 @@
       // The subtitles are small, they go first
       for (let i = 0; i < (rec.subs || []).length; i++) {
         if (ctl.stop) return;
+        if (rec.native) {
+          try { const body = await (await fetch(`/api/offline/sub/${rec.jobId}/${i}`, { credentials: "same-origin" })).text(); await nat({ cmd: "text", id: rec.id, n: i, body }); } catch (_) {}
+          continue;
+        }
         await new Promise((ok) => { const h = (e) => { if (e.data.type === "text") { ctl.worker.removeEventListener("message", h); ok(); } }; ctl.worker.addEventListener("message", h); ctl.worker.postMessage({ cmd: "text", url: `/api/offline/sub/${rec.jobId}/${i}`, name: `${rec.id}.${i}.vtt` }); });
       }
       rec.state = "downloading"; await save(rec);
       keepAwake();
-      const result = await new Promise((ok, no) => {
+      const result = rec.native ? await nativeGet(rec, ctl) : await new Promise((ok, no) => {
         ctl.worker.onmessage = (e) => {
           const m = e.data;
           if (m.type === "progress") { rec.retries = 0; rec.got = m.off; rec.size = m.total || rec.size; rec.speed = m.speed; rec.waiting = false; save(rec); }
@@ -111,6 +136,7 @@
       if (!e.requeue && !e.gone && !e.flaky && FLAKY.test(e.message || "") && (rec.retries || 0) < 12) e.flaky = true;
       if (e.requeue || e.gone) {
         // The copy on the server is gone (restart, clean up): start that one again from the queue, the part on this device is dropped
+        if (rec.native) { try { await nat({ cmd: "remove", id: rec.id }); } catch (_) {} }
         await dropFile(`${rec.id}.mp4`);
         Object.assign(rec, { jobId: null, state: "waiting", phase: "server", got: 0, speed: 0, server: null, waiting: false, error: null }); await save(rec);
       } else if (e.flaky) {
@@ -124,7 +150,8 @@
 
   function go(rec) {
     if (RUN.has(rec.id)) return;
-    const ctl = { stop: false, worker: new Worker("/static/offline-worker.js") };
+    if (NAT() && !rec.got && rec.phase !== "device") rec.native = true;  // a download that was part way in the browser storage finishes there
+    const ctl = { stop: false, worker: rec.native ? NOWORKER : new Worker("/static/offline-worker.js") };
     RUN.set(rec.id, ctl);
     drive(rec, ctl);
   }
@@ -225,6 +252,7 @@
       const c = RUN.get(id); if (c) { c.stop = true; c.worker.postMessage({ cmd: "stop" }); c.worker.terminate(); RUN.delete(id); }
       const r = await KinoOffline.get(id);
       if (r && r.state !== "ready" && r.jobId) api(`/api/offline/job/${r.jobId}`, undefined, "DELETE").catch(() => {});
+      if (NAT()) { try { await nat({ cmd: "remove", id }); } catch (_) {} }
       await dropFile(`${id}.mp4`);
       for (let i = 0; i < 10; i++) await dropFile(`${id}.${i}.vtt`);
       await del(id); letSleep(); emit();
@@ -236,11 +264,15 @@
       for (const r of await all()) if (r.profile_id === profileId && ["preparing", "queued", "downloading"].includes(r.state)) go(r);
       pump(); checkWants();
     },
+    native: NAT,
+    // Plays a copy that the app holds, in the system player. Resolves with where the person got to
+    playNative(id, start, title, subtitle) { return nat({ cmd: "play", id, start: start || 0, title: title || "", subtitle: subtitle || "" }); },
     async fileUrl(id) { return URL.createObjectURL(await fileOf(`${id}.mp4`)); },
     async subText(id, n) { try { return await (await fileOf(`${id}.${n}.vtt`)).text(); } catch (_) { return null; } },
     async storage() {
       const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate().catch(() => ({})) : {};
       const rows = await all();
+      if (NAT()) { try { const u = await nat({ cmd: "usage" }); e.usage = (e.usage || 0) + u.bytes; } catch (_) {} }
       return { usage: e.usage || 0, quota: e.quota || 0, files: rows.filter((r) => r.state === "ready").reduce((a, r) => a + (r.size || 0), 0), persisted: navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted().catch(() => false) : false };
     },
     // Where somebody got to while offline, sent to the server when there is a connection again

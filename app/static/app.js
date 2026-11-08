@@ -1636,8 +1636,12 @@
       if (touched.length) {
         const last = touched.reduce((a, b) => (b.last > a.last ? b : a));
         if (!last.watched) return last;
-        const after = files.slice(files.indexOf(last) + 1).find((f) => !f.watched) || files.find((f) => !f.watched);
-        return after || last;
+        const after = files.slice(files.indexOf(last) + 1).find((f) => !f.watched);
+        if (after) return after;
+        // Nothing further in the Library: the next episode from the addons (a season that isn't saved yet), before going back to the start
+        const later = (t.future || []).find((x) => x.season > last.season || (x.season === last.season && x.episode > last.episode));
+        if (later) return { id: null, addon: later.video_id, season: later.season, episode: later.episode, ep_name: later.ep_name, watched: false, progress: null, badges: [] };
+        return files.find((f) => !f.watched) || last;
       }
       return files.find((f) => !f.watched) || files[0];
     }
@@ -2112,13 +2116,13 @@
           <div class="actions">
             ${up ? `<button class="btn primary" id="playMain">${ic("play")} ${esc(playLabel)}</button>` : ""}
             ${resume ? `<button class="btn secondary" id="playStart">Start Over</button>` : ""}
-            ${up && t.imdb ? `<button class="btn secondary" id="srcMain">${ic("link")} Sources</button>` : ""}
+            ${up && !up.addon && t.imdb ? `<button class="btn secondary" id="srcMain">${ic("link")} Sources</button>` : ""}
             ${t.imdb ? `<button class="btn secondary" id="trailerBtn" type="button" hidden>${ic("trailer")} Trailer</button>` : ""}
-            ${up ? `<button class="btn secondary" id="castBtn" type="button" hidden>${ic("cast")} Cast</button>` : ""}
+            ${up && !up.addon ? `<button class="btn secondary" id="castBtn" type="button" hidden>${ic("cast")} Cast</button>` : ""}
             ${listBtn(t.in_list)}
             <button class="round-btn ${t.watched ? "on" : ""}" id="watchedBtn" aria-pressed="${t.watched}" aria-label="${t.watched ? "Mark as unwatched" : "Mark as watched"}" title="${t.watched ? "Watched" : "Mark as Watched"}">${ic(t.watched ? "check" : "eye")}</button>
             <span class="rate-group" role="group" aria-label="Rate this">${rateBtn(-1, "down", "Not for me")}${rateBtn(1, "up", "I like this")}${rateBtn(2, "love", "Love this")}</span>
-            ${inCont ? `<button class="round-btn" id="contHide" aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
+            ${inCont && !up.addon ? `<button class="round-btn" id="contHide" aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
             ${t.kind === "movie" && up && !TV && !kidsMode() ? `<button class="round-btn" id="dlMain" aria-label="Download" title="Download">${ic("download")}</button>` : ""}
             ${t.is_admin ? `<div class="menu-wrap"><button class="round-btn" id="adminMore" aria-haspopup="true" aria-label="Admin options" title="Admin options">${ic("more")}</button>
               <div class="menu drop up-left" id="adminMenu" hidden>
@@ -2204,7 +2208,7 @@
     } else wireFileButtons();
 
     const pm = $("#playMain");
-    if (pm) pm.onclick = () => playFile(up.id, { title: t, from: resume ? up.progress.pos : 0 });
+    if (pm) pm.onclick = () => (up.addon ? playEpisode(up.addon, null) : playFile(up.id, { title: t, from: resume ? up.progress.pos : 0 }));
     const ps = $("#playStart");
     if (ps) ps.onclick = () => playFile(up.id, { title: t, from: 0 });
     const sm = $("#srcMain");

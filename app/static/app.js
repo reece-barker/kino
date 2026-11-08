@@ -2134,7 +2134,7 @@
       </section>
       <main class="page under-hero" style="padding-top:12px">
         ${t.kind === "series" ? `<section class="section" style="margin-top:0">
-          <div class="seasons">${seasonPick(seasons, curSeason, t.files, t.pd_streams && t.imdb ? t.more_seasons || [] : [])}</div>
+          <div class="seasons">${seasonPick(seasons, curSeason, [...t.files, ...(t.missing || [])], t.pd_streams && t.imdb ? t.more_seasons || [] : [])}</div>
           <div class="episodes" id="eps"></div>
           ${t.pd_streams ? `<a class="btn secondary small pd-more" href="#/discover/series/${encodeURIComponent(t.imdb)}?all=1">${ic("globe")} More Episodes</a>` : ""}</section>` : ""}
         ${t.kind === "movie" && t.files.length > 1 ? `<section class="section"><h2 class="section-title">Versions</h2><div class="versions">${t.files.map((f) => `
@@ -2154,7 +2154,11 @@
 
     const drawEps = (season) => {
       const eps = t.files.filter((f) => (f.season ?? 0) === season);
-      $("#eps").innerHTML = eps.map((f) => {
+      // Episodes that aren't in the Library (only part of the season was saved) sit in their place and play from the addons
+      const gone = (t.missing || []).filter((m) => m.season === season).map((m) => ({ n: m.episode, html: `<div class="ep"><button class="tile landscape" data-playaddon="${esc(m.video_id)}" aria-label="Play ${esc(epLabel(m.season, m.episode))} ${esc(m.ep_name || "")}"><div class="art">${m.thumbnail ? `<img loading="lazy" decoding="async" src="${img(m.thumbnail, 0, WW())}" alt="" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(m.season, m.episode))}</div>`}<span class="tile-play">${ic("play")}</span></div></button>
+          <div class="ep-row"><div class="num">${esc(epLabel(m.season, m.episode))} · from addons</div></div>
+          <div class="cap">${esc(nice(m.ep_name) || epLabel(m.season, m.episode))}</div>${m.ep_overview ? `<div class="ov">${esc(m.ep_overview)}</div>` : ""}</div>` }));
+      $("#eps").innerHTML = [...eps.map((f) => ({ n: f.episode ?? 0, html: (() => {
         const p = f.progress && f.progress.dur ? f.progress.pos / f.progress.dur : null;
         const art = f.thumbnail ? `<img loading="lazy" decoding="async" src="${img(f.thumbnail, 0, WW())}" alt="${esc(f.ep_name || f.name)}" data-fallback="ph">` : `<div class="ph" style="--h:${hue(t.name)}">${esc(epLabel(f.season, f.episode))}</div>`;
         return `<div class="ep"><button class="tile landscape ${f.watched ? "is-watched" : ""}" data-playfile="${f.id}" aria-label="Play ${esc(epLabel(f.season, f.episode))} ${esc(f.ep_name || "")}"><div class="art">${art}${p != null ? `<div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div>` : ""}${f.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
@@ -2164,11 +2168,12 @@
             <button class="ep-mark" data-epwatch="${f.id}" data-state="${f.watched ? 1 : 0}" aria-label="${f.watched ? "Mark as unwatched" : "Mark as watched"}" title="${f.watched ? "Watched, click to unmark" : "Mark as watched"}">${ic(f.watched ? "check" : "plus")}</button>
             ${t.is_admin ? `<button class="ep-mark" data-delfile="${f.id}" aria-label="Delete this episode" title="Delete this episode">${ic("trash")}</button>` : ""}</div>
           <div class="cap">${esc(nice(f.ep_name) || f.name)}</div>${f.ep_overview ? `<div class="ov">${esc(f.ep_overview)}</div>` : ""}</div>`;
-      }).join("");
+      })() })), ...gone].sort((x, y) => x.n - y.n).map((x) => x.html).join("");
       wireFileButtons();
     };
     const wireFileButtons = () => {
       $$("[data-epdl]").forEach((b) => (b.onclick = () => offlineSheet(b.dataset.epdl, t)));
+      $$("[data-playaddon]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playaddon, null)));
       $$("[data-playfile]").forEach((b) => (b.onclick = () => {
         const f = t.files.find((x) => x.id === b.dataset.playfile);
         playFile(f.id, { title: t, from: f.progress ? f.progress.pos : 0 });

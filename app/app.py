@@ -4683,9 +4683,15 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
     have = {f["season"] for f in files}
     today = time.strftime("%Y-%m-%d")
     more = sorted({v["season"] for v in (meta or {}).get("videos", []) if v.get("season") and v["season"] not in have and str(v.get("released") or "9999")[:10] <= today}) if t["kind"] == "series" else []
+    # Aired episodes of the seasons that do have files but not all of them (a season downloaded in part): they stay on the page and play from the addons
+    got = {(f["season"], f["episode"]) for f in files}
+    pd_ok = bool(meta and t["kind"] == "series" and any(supports(a["m"], "stream", "series", meta["id"] + ":1:1") for a in addon_rows()))
+    missing = [{"season": v["season"], "episode": v["episode"], "video_id": ep_video_id(meta["id"], v), "ep_name": v.get("name"), "ep_overview": v.get("overview"), "thumbnail": v.get("thumbnail")}
+               for v in sorted((meta or {}).get("videos", []), key=lambda v: (v.get("season") or 0, v.get("episode") or 0))
+               if pd_ok and v.get("season") in have and v.get("episode") and (v["season"], v["episode"]) not in got and str(v.get("released") or "9999")[:10] <= today]
     lk = list_key_for(t, meta)
     mylist_checked(p["id"], lk)
-    out.update(more_seasons=more, in_list=in_list(p["id"], lk), list_key=lk, kids_key=kid_key((meta or {}).get("id"), t["id"]),
+    out.update(more_seasons=more, missing=missing, in_list=in_list(p["id"], lk), list_key=lk, kids_key=kid_key((meta or {}).get("id"), t["id"]),
                kids_allowed=kids_ok((meta or {}).get("genres"), kid_key((meta or {}).get("id"), t["id"])), files=files, cast=(meta or {}).get("cast", []), director=(meta or {}).get("director"),
                guess_name=t["guess_name"], is_admin=bool(admin_user(request)),
                pd_streams=bool(meta and t["kind"] == "series" and any(supports(a["m"], "stream", "series", meta["id"] + ":1:1") for a in addon_rows())))

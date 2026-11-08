@@ -879,7 +879,7 @@ body.blur-watched .tile.is-watched .tile-check { z-index: 2; }
 html { scrollbar-gutter: stable; }
 body, .card, .sheet, .side, .tabbar, .menu { transition: background-color 0.35s ease, color 0.35s ease, box-shadow 0.35s ease; }
 body:not(.with-side) #chrome { display: none; }
-body.with-side { --side: calc(var(--rail) + 16px); --pad-l: calc(var(--side) + clamp(20px, 2.6vw, 44px)); }
+body.with-side { --side: calc(var(--rail) + 16px + env(safe-area-inset-left)); --pad-l: calc(var(--side) + clamp(20px, 2.6vw, 44px)); }
 body.with-side .page { padding-top: 44px; padding-left: var(--pad-l); }
 body.with-side .page.under-hero { padding-top: 0; }
 body.with-side .hero-content { left: var(--pad-l); }
@@ -903,7 +903,7 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 
 /* ---- sidebar */
 .side {
-  position: fixed; z-index: 50; left: 16px; top: 16px; width: var(--rail); max-height: calc(100vh - 32px);
+  position: fixed; z-index: 50; left: calc(16px + env(safe-area-inset-left)); top: 16px; width: var(--rail); max-height: calc(100vh - 32px);
   display: flex; flex-direction: column; padding: 8px; border-radius: 28px; overflow: hidden;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02) 40%), var(--side-bg);
   -webkit-backdrop-filter: blur(40px) saturate(190%); backdrop-filter: blur(40px) saturate(190%);
@@ -1998,7 +1998,7 @@ body.tv .player .scrub:focus-visible { outline-offset: 6px; }
 }
 
 /* Back button for every touch screen without a tab bar (iPad, landscape phones), it sits clear of the rail there */
-@media (hover: none) and (pointer: coarse) and (min-width: 761px) { .page-back { display: grid; left: calc(92px + env(safe-area-inset-left)); } }
+@media (hover: none) and (pointer: coarse) and (min-width: 761px) { .page-back { display: grid; top: max(16px, env(safe-area-inset-top)); left: calc(var(--side) + 4px); } }
 body.tv .page-back { display: none !important; }
 
 /* Admin menu on a title page flips to open leftwards when the right side is off screen (app.js picks) */
@@ -2101,3 +2101,6 @@ body.tv #heroMute, body.tv #trSnd, body.tv .tile-snd { display: none !important;
 .dl-group-acts { justify-content: flex-end; }
 #dlSeason { margin-left: 10px; }
 @media (max-width: 560px) { .dl-head { grid-template-columns: 54px 1fr 20px; gap: 12px; } #dlSeason { margin: 10px 0 0; } }
+
+/* Landscape phones with a notch or island: nothing sits under it on the right either */
+body.with-side .page { padding-right: max(var(--gutter), env(safe-area-inset-right)); }

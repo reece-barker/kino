@@ -28,6 +28,21 @@
   } else if (mode === "reset") {
     form("Choose a New Password", "You'll be signed out of your other devices.", field("acPw", "New password (at least 10 characters)", "password", 'minlength="10" autocomplete="new-password"') + field("acPw2", "Same password again", "password", 'autocomplete="new-password"'),
       "Save Password", async () => { match(); await post("/api/account/reset", { token, password: document.getElementById("acPw").value }); location.replace("/"); });
+  } else if (mode === "approve") {
+    const [who, em] = extra.split("|"), pre = new URLSearchParams(location.search).get("a") === "deny" ? "deny" : "approve";
+    box.innerHTML = `<h1>${pre === "deny" ? "Deny" : "Approve"} ${esc(who)}?</h1><p class="secondary"><b>${esc(who)}</b> (${esc(em)}) confirmed their email and wants to get into Kino. Only approve people you know.</p>
+      <div class="ac-form"><button class="btn primary" id="acYes">Approve</button><button class="btn secondary" id="acNo">Deny</button></div><p class="note" id="acMsg"></p>`;
+    const act = async (action) => {
+      document.querySelectorAll("#acYes, #acNo").forEach((b) => (b.disabled = true));
+      try { const r = await post("/api/account/decision", { token, action }); box.innerHTML = `<h1>${r.already ? "Already Done" : r.status === "approved" ? "Approved" : "Denied"}</h1><p class="secondary">${r.already ? `${esc(who)} was already ${esc(r.status)}.` : r.status === "approved" ? `${esc(who)} has been told and can sign in now.` : `${esc(who)} has been told.`}</p>`; }
+      catch (err) { document.getElementById("acMsg").textContent = err.message; document.querySelectorAll("#acYes, #acNo").forEach((b) => (b.disabled = false)); }
+    };
+    document.getElementById("acYes").onclick = () => act("approve");
+    document.getElementById("acNo").onclick = () => act("deny");
+    document.getElementById(pre === "deny" ? "acNo" : "acYes").focus();
+  } else if (mode === "decided") {
+    const [who, st] = extra.split("|");
+    box.innerHTML = `<h1>Already Done</h1><p class="secondary">${esc(who)} was already ${esc(st === "approved" ? "approved" : st)}.</p>`;
   } else {
     box.innerHTML = `<h1>This Link Has Expired</h1><p class="secondary">It may have been used already or it ran out. Ask for a new invite, or use Forgot Password on the sign in page.</p><a class="btn primary" href="/gate">Go to Sign In</a>`;
   }

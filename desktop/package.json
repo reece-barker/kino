@@ -3,7 +3,7 @@
   "productName": "Kino",
   "version": "1.0.0",
   "description": "Kino for Mac, a desktop wrapper around the family media site",
-  "author": "Reece Barker",
+  "author": "Kino",
   "license": "UNLICENSED",
   "private": true,
   "main": "src/main.js",

@@ -63,7 +63,7 @@
           if (ctl.stop) return;
           let j;
           try { j = await api(`/api/offline/job/${rec.jobId}`); } catch (e) {
-            if (e.status === 404) throw new Error("The server lost track of that one, please start it again");
+            if (e.status === 404) throw Object.assign(new Error("requeue"), { requeue: true });  // the server forgot it (an update, a clean up): ask for it again
             rec.waiting = true; await save(rec); await sleep(3000); continue;
           }
           rec.waiting = false;
@@ -73,7 +73,8 @@
           rec.subs = j.subs || rec.subs;
           await save(rec);
           if (j.state === "done") break;
-          if (j.state === "failed" || j.state === "gone") throw new Error(j.error || "The server couldn't make that copy");
+          if (j.state === "gone") throw Object.assign(new Error("requeue"), { requeue: true });
+          if (j.state === "failed") throw new Error(j.error || "The server couldn't make that copy");
           await sleep(2000);
         }
         rec.phase = "device"; rec.got = 0; await save(rec);
@@ -92,7 +93,7 @@
           else if (m.type === "wait") { rec.waiting = true; save(rec); }
           else if (m.type === "done") ok("done");
           else if (m.type === "stopped") ok("stopped");
-          else if (m.type === "error") no(new Error(m.message));
+          else if (m.type === "error") no(Object.assign(new Error(m.message), { gone: /no longer has/.test(m.message), flaky: /kept dropping/.test(m.message) }));
         };
         ctl.worker.postMessage({ cmd: "get", url: `/api/offline/file/${rec.jobId}`, name: `${rec.id}.mp4`, total: rec.size || 0 });
       });
@@ -102,9 +103,15 @@
       api(`/api/offline/job/${rec.jobId}/done`, {}).catch(() => {});  // the copy on the server can go now
       if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     } catch (e) {
-      rec.state = "failed"; rec.error = e.message; await save(rec);
+      if (e.requeue || e.gone) {
+        // The copy on the server is gone (restart, clean up): start that one again from the queue, the part on this device is dropped
+        await dropFile(`${rec.id}.mp4`);
+        Object.assign(rec, { jobId: null, state: "waiting", phase: "server", got: 0, speed: 0, server: null, waiting: false, error: null }); await save(rec);
+      } else if (e.flaky) {
+        rec.state = "downloading"; rec.waiting = true; rec.speed = 0; await save(rec);  // picked up again by itself when the connection is back
+      } else { rec.state = "failed"; rec.error = e.message; await save(rec); }
     } finally {
-      RUN.delete(rec.id); ctl.worker.terminate(); letSleep(); emit();
+      RUN.delete(rec.id); ctl.worker.terminate(); letSleep(); emit(); pump();
     }
   }
 
@@ -115,33 +122,77 @@
     drive(rec, ctl);
   }
 
+  // The queue lives on the device: everything asked for is saved here first and handed to the server a couple at a time (it only makes a few copies at once),
+  // so a whole season keeps going through restarts, a server that is down for a while and a closed page
+  const MAX_SERVER = 2;
+  let pumping = false, pumpT = 0, PROFILE = null;
+  async function pump() {
+    if (pumping || !navigator.onLine) return;
+    pumping = true;
+    let again = false;
+    try {
+      for (;;) {
+        const rows = (await all()).filter((r) => !PROFILE || r.profile_id === PROFILE);
+        const onServer = rows.filter((r) => r.jobId && r.phase !== "device" && ["queued", "preparing"].includes(r.state)).length;
+        const next = rows.filter((r) => r.state === "waiting").sort((x, y) => x.added - y.added)[0];
+        if (!next) break;
+        if (onServer >= MAX_SERVER) { again = true; break; }
+        try {
+          const o = await api(`/api/offline/options/${next.file_id}`);
+          const q = o.qualities.some((x) => x.quality === next.quality) ? next.quality : (o.qualities[0] || {}).quality;
+          if (!q) throw new Error("That one can't be made for offline");
+          const subs = o.subs.filter((x) => (next.subLabels || []).includes(x.label)).map((x) => x.id);
+          const job = await api("/api/offline/prepare", { file_id: next.file_id, quality: q, audio: next.audio || 0, subs });
+          Object.assign(next, { jobId: job.id, quality: q, size: job.size, subs: job.subs || [], meta: { ...next.meta, ...(job.meta || {}) }, state: job.state === "queued" ? "queued" : "preparing", phase: "server", error: null,
+                                server: { state: job.state, progress: job.progress, eta: job.eta, queue: job.queue } });
+          await save(next);
+          go(next);
+        } catch (e) {
+          // Busy, no room right now or no connection: it stays in the queue and is tried again. Anything else is that one's own problem
+          if (!e.status || e.status === 429 || e.status === 503 || e.status >= 500) { again = true; break; }
+          next.state = "failed"; next.error = e.message; await save(next);
+        }
+      }
+    } finally { pumping = false; }
+    if (again && !pumpT) pumpT = setTimeout(() => { pumpT = 0; pump(); }, 12000);
+  }
+  // Every half minute: anything that should be running but isn't (the server was down, the connection dropped) is picked up again
+  setInterval(async () => {
+    if (!navigator.onLine || !PROFILE) return;
+    for (const r of await all()) if (r.profile_id === PROFILE && ["preparing", "queued", "downloading"].includes(r.state) && !RUN.has(r.id)) go(r);
+    pump();
+  }, 30000);
+
   const KinoOffline = {
     supported,
     on(f) { subs.add(f); return () => subs.delete(f); },
     list: all,
     get: (id) => run("downloads", "readonly", (s) => s.get(id)),
     active: () => RUN.size,
-    // Asks the server for a copy and starts it
-    async start({ file_id, quality, audio, subs: sub, meta, profile_id, images }) {
+    // Adds films or episodes to the queue. items: [{ file_id, meta }], one set of choices for all of them
+    async startMany(items, { quality, audio, subLabels, profile_id, images }) {
       if (!supported()) throw new Error("This browser can't keep downloads");
-      const job = await api("/api/offline/prepare", { file_id, quality, audio: audio || 0, subs: sub || [] });
-      const old = await run("downloads", "readonly", (s) => s.get(job.id));
-      if (old && old.state === "ready") return old;
-      const rec = { id: job.id, jobId: job.id, file_id, profile_id, quality, audio: audio || 0, meta: { ...(meta || {}), ...(job.meta || {}) }, state: "preparing", phase: "server", size: job.size, got: 0,
-                    subs: job.subs || [], server: { state: job.state, progress: job.progress, eta: job.eta, queue: job.queue }, added: Date.now() };
-      // The pictures, kept as they are so the Downloads screen has them offline
-      rec.poster = await blobOf(images && images.poster); rec.background = await blobOf(images && images.background);
-      await save(rec);
-      go(rec);
-      return rec;
+      PROFILE = profile_id;
+      const have = (await all()).filter((r) => r.profile_id === profile_id && r.state !== "failed");
+      const poster = await blobOf(images && images.poster), background = await blobOf(images && images.background);
+      let n = 0;
+      for (const it of items) {
+        if (have.some((r) => r.file_id === it.file_id)) continue;
+        await save({ id: "d" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36), jobId: null, file_id: it.file_id, profile_id, quality, audio: audio || 0, subLabels: subLabels || [], meta: it.meta || {},
+                     state: "waiting", phase: "server", size: it.est || 0, got: 0, subs: [], server: null, added: Date.now() + n++, poster, background });
+      }
+      pump();
+      return n;
     },
-    pause(id) { const c = RUN.get(id); if (!c) return; c.stop = true; c.worker.postMessage({ cmd: "stop" }); setTimeout(async () => { const r = await KinoOffline.get(id); if (r && r.state !== "ready" && r.state !== "failed") { r.state = "paused"; await save(r); } }, 400); },
-    async resume(id) { const r = await KinoOffline.get(id); if (!r) return; r.state = r.phase === "device" ? "downloading" : "preparing"; r.error = null; await save(r); go(r); },
+    start({ file_id, quality, audio, subLabels, meta, profile_id, images, est }) { return KinoOffline.startMany([{ file_id, meta, est }], { quality, audio, subLabels, profile_id, images }); },
+    pause(id) { const c = RUN.get(id); if (!c) { KinoOffline.get(id).then(async (r) => { if (r && ["waiting", "queued", "preparing", "downloading"].includes(r.state)) { r.state = "paused"; await save(r); } }); return; } c.stop = true; c.worker.postMessage({ cmd: "stop" }); setTimeout(async () => { const r = await KinoOffline.get(id); if (r && r.state !== "ready" && r.state !== "failed") { r.state = "paused"; await save(r); } }, 400); },
+    async resume(id) { const r = await KinoOffline.get(id); if (!r) return; r.state = !r.jobId ? "waiting" : r.phase === "device" ? "downloading" : "preparing"; r.error = null; await save(r); if (r.state === "waiting") pump(); else go(r); },
     async retry(id) { return KinoOffline.resume(id); },
+    async removeMany(ids) { for (const id of ids) await KinoOffline.remove(id); },
     async remove(id) {
       const c = RUN.get(id); if (c) { c.stop = true; c.worker.postMessage({ cmd: "stop" }); c.worker.terminate(); RUN.delete(id); }
       const r = await KinoOffline.get(id);
-      if (r && r.state !== "ready") api(`/api/offline/job/${r.jobId}`, undefined, "DELETE").catch(() => {});
+      if (r && r.state !== "ready" && r.jobId) api(`/api/offline/job/${r.jobId}`, undefined, "DELETE").catch(() => {});
       await dropFile(`${id}.mp4`);
       for (let i = 0; i < 10; i++) await dropFile(`${id}.${i}.vtt`);
       await del(id); letSleep(); emit();
@@ -149,7 +200,9 @@
     // After the page was closed: carries on whatever was part way, if there is a connection
     async resumeAll(profileId) {
       if (!supported() || !navigator.onLine) return;
-      for (const r of await all()) if (r.profile_id === profileId && ["preparing", "queued", "downloading", "paused"].includes(r.state) && r.state !== "paused") go(r);
+      PROFILE = profileId;
+      for (const r of await all()) if (r.profile_id === profileId && ["preparing", "queued", "downloading"].includes(r.state)) go(r);
+      pump();
     },
     async fileUrl(id) { return URL.createObjectURL(await fileOf(`${id}.mp4`)); },
     async subText(id, n) { try { return await (await fileOf(`${id}.${n}.vtt`)).text(); } catch (_) { return null; } },

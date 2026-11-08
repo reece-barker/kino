@@ -2084,3 +2084,17 @@ body.tv #heroMute, body.tv #trSnd, body.tv .tile-snd { display: none !important;
 .pl-close, .page-back, .tile-x { z-index: 7; -webkit-transform: translateZ(0); transform: translateZ(0); isolation: isolate; }
 .page-back, .page-back.glass, .glass-btn.round.pl-close { background: rgba(58, 58, 62, 0.86); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 2px 10px rgba(0, 0, 0, 0.45); color: #fff; }
 .pl-close svg, .page-back svg { filter: none; opacity: 1; }
+
+/* Downloads page: shows are one card with their episodes inside, with how far along everything is */
+.dl-all { padding: 14px 16px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
+.dl-all .dl-hint { font-size: 13px; }
+.dl-show { display: block; padding: 0; }
+.dl-show > summary { display: grid; grid-template-columns: 64px 1fr; gap: 14px; align-items: center; padding: 12px; cursor: pointer; list-style: none; }
+.dl-show > summary::-webkit-details-marker { display: none; }
+.dl-eps { padding: 0 12px 10px; display: flex; flex-direction: column; }
+.dl-ep { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--fill-2); flex-wrap: wrap; }
+.dl-ep-body { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1 1 150px; }
+.dl-ep-body b { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-group-acts { justify-content: flex-end; }
+#dlSeason { margin-left: 10px; }
+@media (max-width: 560px) { .dl-show > summary { grid-template-columns: 54px 1fr; } #dlSeason { margin: 10px 0 0; } }

@@ -10136,7 +10136,7 @@ iloveyou1 iloveyou123 monkey dragon master sunshine princess football baseball s
 manutd mancity tottenham starwars pokemon minecraft fortnite netflix kinokino kino123 kino1234 kinofamily family familyfamily family123 changeme changeme123 default guest test
 test123 test1234 testtest secret secret123 passpass passwordpassword hello hello123 hellohello freedom whatever nothing computer internet samsung apple apple123 google google123
 love1234 lovelove summer2020 summer2021 summer2022 summer2023 summer2024 summer2025 summer2026 winter2024 winter2025 winter2026 spring2025 spring2026 autumn2025 autumn2026
-london london123 england britain britain123 reece reece123 reecebarker""".split())
+london london123 england britain britain123""".split())
 
 
 async def pwned_count(pw):

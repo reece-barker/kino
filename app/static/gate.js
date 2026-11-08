@@ -4,6 +4,16 @@
   const H = { "X-Kino": "1", "Content-Type": "application/json" };
   const msg = (t) => ($("#gateMsg").textContent = t);
 
+  // What went wrong, in words: the server's own message when there is one, otherwise from the status (nginx and the proxy answer with plain pages)
+  const why = (r, j) => {
+    if (!r) return "Couldn't reach Kino, check your connection.";
+    if (j && j.detail) return j.detail;
+    if (r.status === 429) return "Too many tries in a short time, wait a minute and try again.";
+    if (r.status === 502 || r.status === 503 || r.status === 504) return "Kino is restarting or busy, try again in a moment.";
+    if (r.status === 403) return "That was blocked (error 403), tell the admin.";
+    return `That didn't work (error ${r.status}), try again.`;
+  };
+
   async function check() {
     const r = await fetch("/api/gate/status", { credentials: "same-origin" }).then((x) => x.json()).catch(() => null);
     if (!r) return msg("Couldn't reach Kino, check your connection.");
@@ -34,7 +44,7 @@
     const r = await fetch("/api/account/login", { method: "POST", headers: H, credentials: "same-origin", body: JSON.stringify({ email: $("#gateEmail").value, password: $("#gatePw").value }) }).catch(() => null);
     const j = r ? await r.json().catch(() => ({})) : {};
     if (r && r.ok) { location.replace("/"); return; }
-    m.textContent = r ? j.detail || "That didn't work, try again" : "Couldn't reach Kino, check your connection.";
+    m.textContent = why(r, j);
     b.disabled = false;
   });
   $("#forgotBtn").addEventListener("click", async () => {
@@ -42,7 +52,7 @@
     if (!em) { m.textContent = "Type your email above first, then tap Forgot your password."; $("#gateEmail").focus(); return; }
     const r = await fetch("/api/account/forgot", { method: "POST", headers: H, credentials: "same-origin", body: JSON.stringify({ email: em }) }).catch(() => null);
     const j = r ? await r.json().catch(() => ({})) : {};
-    m.textContent = r && r.ok ? "If that email has an account, a link to choose a new password is on its way." : (j.detail || "Couldn't send that, try again in a minute.");
+    m.textContent = r && r.ok ? "If that email has an account, a link to choose a new password is on its way." : why(r, j);
   });
 
   // Tabs: sign in, or ask for an account
@@ -73,7 +83,7 @@
     const r = await fetch("/api/account/signup", { method: "POST", headers: H, credentials: "same-origin", body: JSON.stringify({ name: $("#upName").value, email: $("#upEmail").value, password: $("#upPw").value, website: $("#upWebsite").value }) }).catch(() => null);
     const j = r ? await r.json().catch(() => ({})) : {};
     b.disabled = false; b.textContent = was;
-    if (!r || !r.ok) { m.textContent = r ? j.detail || "That didn't work, try again" : "Couldn't reach Kino, check your connection."; return; }
+    if (!r || !r.ok) { m.textContent = why(r, j); return; }
     upEmail = $("#upEmail").value.trim().toLowerCase();
     $("#upTo").textContent = upEmail; $("#upForm").hidden = true; $("#upCode").hidden = false; $("#upCodeIn").focus();
   });
@@ -85,7 +95,7 @@
     const j = r ? await r.json().catch(() => ({})) : {};
     b.disabled = false;
     if (r && r.ok) { $("#upCode").hidden = true; $("#upWait").hidden = false; return; }
-    m.textContent = r ? j.detail || "That code isn't right" : "Couldn't reach Kino, check your connection.";
+    m.textContent = why(r, j);
   });
   $("#resendBtn").addEventListener("click", async () => {
     await fetch("/api/account/signup/resend", { method: "POST", headers: H, credentials: "same-origin", body: JSON.stringify({ email: upEmail }) }).catch(() => null);

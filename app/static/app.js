@@ -4635,6 +4635,8 @@
     NATIVE = { fid, info, opts };
     pl.title = t || null;
     const n = info.next;
+    // The page can be let go while the player is open (a TV low on memory), what is needed to move on to the next episode afterwards is kept
+    try { sessionStorage.setItem("kino-native", JSON.stringify({ fid, next: n || null, autoplay: prefs.autoplay !== false, titleId: info.title_id || (t && t.id) || null, at: Date.now() })); } catch (_) {}
     const art = { background: (t && t.background) || (info.art && info.art.background) || null, logo: (t && t.logo) || (info.art && info.art.logo) || null };
     setTimeout(() => (NATIVE_BUSY = 0), 3000);
     window.KinoAndroid.playNative(JSON.stringify({
@@ -4670,7 +4672,11 @@
     if (r.sourceFailed && nextSource(r.fid, r.fake ? 0 : r.pos, r.why || null, true)) return;
     // Otherwise the player only hands back an error when someone picked Web Player in its error box
     if (r.error && !r.sourceFailed) return playFile(r.fid, { ...(cur ? cur.opts : {}), from: r.pos, web: true });
-    const n = cur ? cur.info.next : r.next, auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : r.autoplay !== false;
+    let kept = null;
+    if (!cur) { try { kept = JSON.parse(sessionStorage.getItem("kino-native") || "null"); if (kept && (kept.fid !== r.fid || Date.now() - kept.at > 6 * 3600000)) kept = null; } catch (_) {} }
+    try { sessionStorage.removeItem("kino-native"); } catch (_) {}
+    const n = cur ? cur.info.next : r.next || (kept && kept.next), auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : kept ? kept.autoplay : r.autoplay !== false;
+    if (!r.titleId && kept) r.titleId = kept.titleId;
     // The player says it ran to the end (or moved on to the next episode): that one is finished
     if (r.ended && r.fid && !String(r.fid).startsWith("s")) api("/api/watched", { file_id: r.fid, watched: true }).catch(() => {});
     if (r.ended && n && auto) return nextFrom(n, cur ? cur.opts.title : null, r.titleId);
@@ -5356,6 +5362,8 @@
     if (!d || p < at || p < d * 0.5) return;
     pl.upNextShown = true;
     const n = info.next, box = $("#upNext");
+    // For an episode from the addons, the sources are asked for now so the next episode starts straight away when the countdown ends
+    if (n.video_id) api(`/api/streams/series/${encodeURIComponent(n.video_id)}?quick=1`).catch(() => {});
     const auto = !info.prefs || info.prefs.autoplay !== false;
     let left = 10;
     box.innerHTML = `<div class="un-thumb">${n.thumbnail ? `<img src="${img(n.thumbnail, 0, 480)}" alt="" data-fallback="hide">` : ""}${auto ? `<svg class="un-ring" viewBox="0 0 36 36"><circle cx="18" cy="18" r="16" /></svg>` : ""}</div>
@@ -6112,10 +6120,11 @@
     const free = await freeSpace();
     // The other episodes of the same season in the Library, so the whole season can be asked for at once
     const sibs = t && t.kind === "series" && m.season != null ? t.files.filter((f) => f.season === m.season) : [];
-    const season = sibs.length > 1;
+    const later = t && t.kind === "series" && m.season != null ? (t.missing || []).filter((x) => x.season === m.season) : [];  // aired but not in the Library yet
+    const season = sibs.length + later.length > 1;
     const sh = sheet(`<h2>Download for offline</h2><p class="secondary">${esc(m.name)}${m.kind === "series" ? " · " + esc(epLabel(m.season, m.episode)) : ""}${m.ep_name ? " · " + esc(nice(m.ep_name)) : ""}</p>
       ${season ? `<div class="dl-opts" role="radiogroup" aria-label="What to download"><label class="dl-opt"><input type="radio" name="dls" value="one" ${scope === "season" ? "" : "checked"}><span><b>Just this episode</b></span></label>
-        <label class="dl-opt"><input type="radio" name="dls" value="season" ${scope === "season" ? "checked" : ""}><span><b>The whole of season ${m.season}</b> <span class="secondary">${sibs.length} episodes in the Library</span></span></label></div>` : ""}
+        <label class="dl-opt"><input type="radio" name="dls" value="season" ${scope === "season" ? "checked" : ""}><span><b>The whole of season ${m.season}</b> <span class="secondary">${sibs.length} episode${sibs.length === 1 ? "" : "s"} in the Library now${later.length ? `, ${later.length} more still to be saved to the Library. Those are added to your downloads by themselves as they arrive` : ""}</span></span></label></div>` : ""}
       <div class="dl-opts" role="radiogroup" aria-label="Quality">${o.qualities.map((q) => `<label class="dl-opt"><input type="radio" name="dlq" value="${q.quality}" ${q.quality === o.default ? "checked" : ""}>
         <span><b>${esc(q.quality)}</b> <span class="secondary">about ${bytes(q.est_bytes)} each</span><span class="secondary dl-note">${esc(q.note)}</span></span></label>`).join("")}</div>
       ${o.audio.length > 1 ? `<div class="set-row"><span><b>Sound</b></span><select class="plain" id="dlAudio">${o.audio.map((a) => `<option value="${a.n}" ${a.default ? "selected" : ""}>${esc(a.label)}</option>`).join("")}</select></div>` : ""}
@@ -6133,6 +6142,14 @@
         const n = await KinoOffline.startMany(list.map((f) => ({ file_id: f.id, est: each, meta: { ...m, season: f.season ?? m.season, episode: f.episode ?? m.episode, ep_name: f.ep_name || (f.id === fid ? m.ep_name : null) } })),
           { quality: q, audio: Number(($("#dlAudio", sh.el) || {}).value || 0), subLabels: $$(".dl-sub input:checked", sh.el).map((x) => x.value), profile_id: ME.profile.id,
             images: { poster: m.poster ? img(m.poster, 0, 342) : null, background: m.background ? img(m.background, 0, 640) : null } });
+        // The episodes that aren't in the Library yet are watched for, and added when they turn up
+        if (all && later.length) {
+          const blob = (u) => (u ? fetch(u, { credentials: "same-origin" }).then((r) => (r.ok ? r.blob() : null)).catch(() => null) : null);
+          await KinoOffline.want({ profile_id: ME.profile.id, title_id: t.id, season: m.season, quality: q, audio: Number(($("#dlAudio", sh.el) || {}).value || 0), subLabels: $$(".dl-sub input:checked", sh.el).map((x) => x.value),
+            episodes: [...sibs.map((f) => f.episode), ...later.map((x) => x.episode)], meta: { ...m, season: m.season, episode: null, ep_name: null },
+            poster: await blob(m.poster ? img(m.poster, 0, 342) : null), background: await blob(m.background ? img(m.background, 0, 640) : null),
+            names: Object.fromEntries([...sibs.map((f) => [f.episode, f.ep_name]), ...later.map((x) => [x.episode, x.ep_name])]) });
+        }
         sh.close();
         toast(n ? `${n} added to Downloads` : "Already in Downloads", 3000);
         location.hash = "#/downloads";
@@ -6151,8 +6168,8 @@
     if (r.state === "ready") return { ...o, text: "Ready to watch offline", pct: 100 };
     if (r.state === "failed") return { ...o, text: r.error || "That didn't work", bad: true };
     if (r.state === "paused") return { ...o, text: dev ? `Paused at ${o.pct}%` : "Paused" };
-    if (r.state === "waiting") return { ...o, text: place ? `Waiting for its turn, ${ordinal(place)} in line` : "Waiting for its turn" };
-    if (r.state === "queued") return { ...o, text: `Waiting on the server${s.queue > 1 ? `, ${s.queue - 1} ahead` : ""}` };
+    if (r.state === "waiting") return { ...o, text: place ? `Queued · waiting for another download to finish (${ordinal(place)} in line)` : "Queued · waiting for another download to finish" };
+    if (r.state === "queued") return { ...o, text: `Queued on the server${s.queue > 1 ? ` · ${s.queue - 1} ahead` : " · next up"}` };
     if (r.state === "preparing") { const p = Math.round((s.progress || 0) * 100); return { ...o, pct: p, frac: 0, text: r.waiting ? "Waiting for a connection" : `Getting it ready on the server ${p}%${s.eta ? " · " + dlEta(s.eta) : ""}` }; }
     const eta = o.speed && size ? (size - (r.got || 0)) / o.speed : 0;
     return { ...o, text: r.waiting ? "Waiting for a connection" : `Downloading ${bytes(r.got || 0)} of ${bytes(size)}${o.speed ? " · " + bytes(o.speed) + "/s" : ""}${eta ? " · " + dlEta(eta) : ""}` };
@@ -6185,16 +6202,21 @@
     }
     try { await loadOffline(); } catch (e) { $("#dlList").innerHTML = `<div class="empty"><h2>Couldn't load downloads</h2><p>${esc(e.message)}</p></div>`; return; }
     if (n !== ROUTE_N) return;
-    const urls = new Map();
-    const open = new Set();  // shows left open by the person, they stay open when the page redraws
+    const urls = new Map();  // the pictures keep their address between redraws, so nothing flickers while the numbers move
+    const open = new Map();  // key -> open or shut, only changed when the person taps a show
+    let last = 0, later = 0;
     const draw = async () => {
       if (n !== ROUTE_N || !$("#dlList")) return;
+      // The numbers move many times a second, the page only redraws about once a second
+      const gap = 900 - (Date.now() - last);
+      if (gap > 0) { if (!later) later = setTimeout(() => { later = 0; draw(); }, gap); return; }
+      last = Date.now();
       const rows = (await KinoOffline.list()).filter((r) => r.profile_id === ME.profile.id).sort((a, b) => a.added - b.added);
+      const wanted = (await KinoOffline.wants()).filter((w) => w.profile_id === ME.profile.id);
       const st = await KinoOffline.storage();
       // Where each waiting one is in the line on this device
       const place = new Map(); rows.filter((r) => r.state === "waiting").forEach((r, i) => place.set(r.id, i + 1));
-      urls.forEach((u) => URL.revokeObjectURL(u)); urls.clear();
-      const art = (r) => { if (!r.poster) return `<div class="ph" style="--h:${hue(r.meta.name)}">${esc(r.meta.name)}</div>`; const u = URL.createObjectURL(r.poster); urls.set(r.id, u); return `<img src="${u}" alt="">`; };
+      const art = (r) => { if (!r.poster) return `<div class="ph" style="--h:${hue(r.meta.name)}">${esc(r.meta.name)}</div>`; if (!urls.has(r.id)) urls.set(r.id, URL.createObjectURL(r.poster)); return `<img src="${urls.get(r.id)}" alt="">`; };
       const sum = dlSummary(rows, place);
       $("#dlTop").innerHTML = `${OFFLINE ? `<div class="note dl-off">${ic("info")} You're offline. These are saved on this device and play without a connection.</div>` : ""}
         ${sum.live ? `<div class="card dl-all"><b>${sum.live} still to come</b><div class="dl-prog"><i style="width:${sum.pct}%"></i></div><span class="dl-state">${esc(sum.text)} · ${esc(sum.eta)}</span><span class="secondary dl-hint">Keep Kino open. If the connection or the server drops, it carries on by itself.</span></div>` : ""}
@@ -6216,13 +6238,17 @@
             <div class="dl-body"><b>${esc(m.name)}</b><span class="secondary">${esc(r.quality)} · ${bytes(r.size || 0)}</span>${r.state === "ready" ? "" : bar(s)}<span class="dl-state ${s.bad ? "bad" : ""}">${esc(s.text)}</span></div>
             <div class="dl-acts">${acts(r)}</div></div>`; }
         const sm = dlSummary(g, place), seasons = [...new Set(g.map((r) => r.meta.season))].sort((a, b) => a - b);
-        const sorted = [...g].sort((a, b) => (a.meta.season ?? 0) - (b.meta.season ?? 0) || (a.meta.episode ?? 0) - (b.meta.episode ?? 0));
-        return `<details class="dl-card dl-show" data-key="${esc(k)}" ${open.has(k) || (sm.live && !open.size) ? "open" : ""}><summary><div class="dl-art">${art(g[0])}</div>
-            <div class="dl-body"><b>${esc(m.name)}</b><span class="secondary">${seasons.length === 1 ? "Season " + seasons[0] : "Seasons " + seasons.join(", ")} · ${g.length} episode${g.length === 1 ? "" : "s"}</span>${sm.live ? `<div class="dl-prog"><i style="width:${sm.pct}%"></i></div>` : ""}
-            <span class="dl-state">${esc(sm.text)}${sm.live ? " · " + esc(sm.eta) : ""}</span></div></summary>
-          <div class="dl-eps">${sorted.map((r) => { const s = dlState(r, place.get(r.id)); return `<div class="dl-ep" data-id="${esc(r.id)}"><div class="dl-ep-body"><b>${esc(epLabel(r.meta.season, r.meta.episode))}${r.meta.ep_name ? " · " + esc(nice(r.meta.ep_name)) : ""}</b>
+        // Episodes asked for as part of a season that the Library doesn't have yet
+        const gone = wanted.filter((w) => w.meta.name === m.name).flatMap((w) => w.episodes.filter((e) => !g.some((r) => r.meta.season === w.season && r.meta.episode === e)).map((e) => ({ season: w.season, episode: e, name: (w.names || {})[e], wait: true })));
+        const items = [...g.map((r) => ({ season: r.meta.season ?? 0, episode: r.meta.episode ?? 0, r })), ...gone.map((x) => ({ season: x.season, episode: x.episode, x }))].sort((a, b) => a.season - b.season || a.episode - b.episode);
+        const total = g.length + gone.length, shut = open.has(k) ? !open.get(k) : !sm.live && sm.ready === g.length;
+        return `<div class="dl-card dl-show ${shut ? "" : "is-open"}" data-key="${esc(k)}" data-name="${esc(m.name)}"><button class="dl-head" type="button" aria-expanded="${!shut}"><div class="dl-art">${art(g[0])}</div>
+            <div class="dl-body"><b>${esc(m.name)}</b><span class="dl-season">${seasons.map((x) => `<span class="dl-chip">Season ${x}</span>`).join("")}<span class="secondary">${sm.ready} of ${total} ready</span></span>${sm.live || gone.length ? `<div class="dl-prog"><i style="width:${Math.round((sm.done / (sm.total || 1)) * 100 * g.length / total)}%"></i></div>` : ""}
+            <span class="dl-state">${esc(sm.text.replace(/^\d+ of \d+ ready( · )?/, ""))}${gone.length ? ` · ${gone.length} not in the Library yet` : ""}${sm.live ? " · " + esc(sm.eta) : ""}</span></div><span class="dl-chev" aria-hidden="true">${ic("chevron")}</span></button>
+          <div class="dl-eps" ${shut ? "hidden" : ""}>${items.map((it) => { if (it.x) return `<div class="dl-ep"><div class="dl-ep-body"><b>${esc(epLabel(it.season, it.episode))}${it.x.name ? " · " + esc(nice(it.x.name)) : ""}</b><span class="dl-state">Not in the Library yet · it downloads by itself when the server has saved it</span></div></div>`;
+            const r = it.r, s = dlState(r, place.get(r.id)); return `<div class="dl-ep" data-id="${esc(r.id)}"><div class="dl-ep-body"><b>${esc(epLabel(r.meta.season, r.meta.episode))}${r.meta.ep_name ? " · " + esc(nice(r.meta.ep_name)) : ""}</b>
               ${r.state === "ready" ? "" : bar(s)}<span class="dl-state ${s.bad ? "bad" : ""}">${esc(s.text)}</span></div><div class="dl-acts">${acts(r)}</div></div>`; }).join("")}
-            <div class="dl-ep dl-group-acts" data-ids="${g.map((r) => esc(r.id)).join(",")}">${sm.live ? `<button class="btn secondary small" data-dlpauseall>Pause all</button>` : ""}${g.some((r) => ["paused", "failed"].includes(r.state)) ? `<button class="btn secondary small" data-dlgoall>Resume all</button>` : ""}<button class="btn secondary small" data-dlrmall>Remove all</button></div></div></details>`;
+            <div class="dl-ep dl-group-acts" data-ids="${g.map((r) => esc(r.id)).join(",")}">${sm.live ? `<button class="btn secondary small" data-dlpauseall>Pause all</button>` : ""}${g.some((r) => ["paused", "failed"].includes(r.state)) ? `<button class="btn secondary small" data-dlgoall>Resume all</button>` : ""}<button class="btn secondary small" data-dlrmall>Remove all</button></div></div></div>`;
       }).join("")
         : `<div class="empty"><h2>No downloads yet</h2><p>Open a film or an episode and tap the download button. For a show you can pick the whole season. Downloads play with no connection, so they're good for a trip.</p></div>`;
       const idOf = (b) => b.closest("[data-id]").dataset.id;
@@ -6236,9 +6262,9 @@
       $$("[data-dlpauseall]").forEach((b) => (b.onclick = () => ids(b).forEach((id) => KinoOffline.pause(id))));
       $$("[data-dlgoall]").forEach((b) => (b.onclick = async () => { for (const id of ids(b)) { const r = await KinoOffline.get(id); if (r && ["paused", "failed"].includes(r.state)) await KinoOffline.resume(id); } }));
       $$("[data-dlrmall]").forEach((b) => (b.onclick = async () => {
-        if (await confirmSheet("Remove all of these?", "They're deleted from this device. You can download them again later.", "Remove all", true)) { await KinoOffline.removeMany(ids(b)); toast("Removed"); }
+        if (await confirmSheet("Remove all of these?", "They're deleted from this device. You can download them again later.", "Remove all", true)) { const nm = b.closest(".dl-show").dataset.name; await KinoOffline.removeMany(ids(b)); await KinoOffline.unwant(nm, ME.profile.id); toast("Removed"); }
       }));
-      $$("details.dl-show").forEach((d) => d.addEventListener("toggle", () => { d.open ? open.add(d.dataset.key) : open.delete(d.dataset.key); }));
+      $$(".dl-show .dl-head").forEach((b) => (b.onclick = () => { const c = b.closest(".dl-show"), now = !c.classList.contains("is-open"); open.set(c.dataset.key, now); c.classList.toggle("is-open", now); b.setAttribute("aria-expanded", now); c.querySelector(".dl-eps").hidden = !now; }));
     };
     DL_UNSUB = KinoOffline.on(draw);
     await draw();

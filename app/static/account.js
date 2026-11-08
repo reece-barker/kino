@@ -1,5 +1,7 @@
 // The pages that open from an email: creating an account from an invite, and choosing a new password
 (() => {
+  // On a TV (the app, or ?tv=1 to try it) the page uses the TV sizes: bigger text, 5 percent away from the edges, nothing running off the screen
+  if (/KinoTV/.test(navigator.userAgent) || /[?&]tv=1/.test(location.search)) document.body.classList.add("tv");
   const g = document.getElementById("gate"), mode = g.dataset.mode, token = g.dataset.token, extra = g.dataset.extra, box = document.getElementById("acBox");
   const H = { "X-Kino": "1", "Content-Type": "application/json" };
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);

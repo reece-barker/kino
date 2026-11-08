@@ -1,5 +1,7 @@
 // The page a device sees when its not on an allowed network and the admin hasnt approved it yet
 (() => {
+  // On a TV (the app, or ?tv=1 to try it) the page uses the TV sizes: bigger text, 5 percent away from the edges, nothing running off the screen
+  if (/KinoTV/.test(navigator.userAgent) || /[?&]tv=1/.test(location.search)) document.body.classList.add("tv");
   const $ = (s) => document.querySelector(s);
   const H = { "X-Kino": "1", "Content-Type": "application/json" };
   const msg = (t) => ($("#gateMsg").textContent = t);

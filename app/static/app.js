@@ -3435,9 +3435,13 @@
     const sel = (id, opts, val) => `<select class="plain" id="${id}">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === val ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
     const toggle = (id, on, label, hint) => `<label class="set-row"><span><b>${label}</b>${hint ? `<span class="secondary">${hint}</span>` : ""}</span><input type="checkbox" class="switch" id="${id}" ${on ? "checked" : ""}></label>`;
 
-    app.innerHTML = topbar("settings") + `<main class="page narrow settings">
+    const SET_TABS = [["you", "You"], ["playback", "Playback"], ["access", "Access"], ...(isAdmin() ? [["addons", "Live TV & Addons"]] : [])];
+    let curTab = "you";
+    try { const v = localStorage.getItem("kino-settings-tab"); if (SET_TABS.some((t) => t[0] === v)) curTab = v; } catch (_) {}
+    app.innerHTML = topbar("settings") + `<main class="page narrow settings" data-active="${curTab}">
       <h1 class="large-title">Settings</h1>
-      <section class="card set-card">
+      <div class="set-tabs" role="tablist" aria-label="Settings">${SET_TABS.map(([k, l]) => `<button role="tab" data-stab="${k}" aria-selected="${k === curTab}">${l}</button>`).join("")}</div>
+      <section class="card set-card" data-tab="you">
         <h2 class="set-title">Profile</h2>
         <div class="set-profile">${pav(p, "lg")}<div class="grow"><div class="set-name">${esc(p.name)}</div><div class="secondary">${p.members ? `A joint profile for ${esc(p.members.map((m) => m.name).join(" and "))}. It sees both of their history and what they like, and what you watch here counts for both of them.` : "Everyone on this profile shares the watch history and these settings."}</div></div>
           <button class="btn secondary small" id="editMe">${ic("pencil")} Edit</button></div>
@@ -3446,14 +3450,14 @@
         : `<div class="set-row"><span><b>Profile Lock</b><span class="secondary">${p.locked ? "A 4 digit code is needed to open this profile" : "Ask for a 4 digit code when someone picks this profile"}</span></span>
           <span class="actions">${p.locked ? `<button class="btn secondary small" id="pinChange">Change Code</button><button class="btn secondary small" id="pinOff">Remove</button>` : `<button class="btn secondary small" id="pinSet">${ic("lock")} Set Code</button>`}</span></div>`}
       </section>
-      <section class="card set-card" id="intCard"><h2 class="set-title">Your Interests</h2><div class="sk sk-line" style="width:60%"></div></section>
-      <section class="card set-card">
+      <section class="card set-card" id="intCard" data-tab="you"><h2 class="set-title">Your Interests</h2><div class="sk sk-line" style="width:60%"></div></section>
+      <section class="card set-card" data-tab="you">
         <h2 class="set-title">Appearance</h2>
         <div class="set-row"><span><b>Theme</b><span class="secondary">Automatic follows this device's light or dark setting</span></span>${themePicker("setTheme")}</div>
         ${toggle("setSound", window.KinoSound ? KinoSound.on : false, "Interface Sounds", "Soft clicks and chimes as you move around Kino, and in Kino Wrapped. This device only, and never while a video is playing")}
         <div class="set-row"><span><b>Test Sound</b><span class="secondary" id="setSoundMsg">Plays a short chime. If you hear nothing, check the volume and the silent switch on this device</span></span><button class="btn secondary small" id="setSoundTest">Play</button></div>
       </section>
-      <section class="card set-card">
+      <section class="card set-card" data-tab="you">
         <h2 class="set-title">Android App</h2>
         ${ANDROID ? `<div class="set-row"><span><b>Kino for Android ${esc(window.KinoAndroid.version())}</b><span class="secondary">You're using the app${TV ? " on a TV" : ""}. Get updates from the same link below.</span></span></div>` : ""}
         ${ANDROID && playerBroken() ? `<div class="set-row"><span><b>Kino Player</b><span class="secondary">The Kino Player crashed on this device, so videos play in the web player for now. Try it again if the app has been updated.</span></span><button class="btn secondary small" id="pTryNative">Try Again</button></div>` : ""}
@@ -3463,7 +3467,7 @@
           <a class="btn secondary small" href="/app" download>${ic("download")} Download</a></div>
         <div class="set-row"><span><b>Fire TV</b><span class="secondary">Install the free Downloader app, then type <b class="mono">${esc(location.host)}/app</b> into it</span></span></div>
       </section>
-      <section class="card set-card">
+      <section class="card set-card" data-tab="playback">
         <h2 class="set-title">Playback</h2>
         <div class="set-row"><span><b>Audio Language</b><span class="secondary">Picked automatically when a film has more than one</span></span>${sel("pAudioL", [["", "Original"], ...LANG_OPTS.map((l) => [l, l])], pr.audio_lang)}</div>
         <div class="set-row"><span><b>Subtitles</b><span class="secondary">Turned on automatically when the language is there</span></span>${sel("pSubL", [["", "Off"], ...LANG_OPTS.map((l) => [l, l])], pr.sub_lang)}</div>
@@ -3483,10 +3487,12 @@
         ${toggle("pShare", pr.share_events, "Share Watch Activity with Addons", "Lets tracking addons like Trakt see what this profile watches")}
         <div class="actions end"><span class="secondary" id="prefSaved"></span></div>
       </section>
-      ${isAdmin() ? `<div id="adminSettings"><div class="card skel" style="height:160px"></div></div>` : `
-      <section class="card set-card"><h2 class="set-title">Admin</h2><div class="set-row"><span><b>Admin Tools</b><span class="secondary">Profiles, allowed networks, addons, sync and server</span></span><button class="btn secondary small" id="setAdminIn">${ic("lock")} Sign In</button></div></section>`}
+      ${isAdmin() ? `<div id="adminSettings"><div class="card skel" data-tab="access" style="height:160px"></div></div>` : `
+      <section class="card set-card" data-tab="access"><h2 class="set-title">Admin</h2><div class="set-row"><span><b>Admin Tools</b><span class="secondary">Profiles, allowed networks, addons, sync and server</span></span><button class="btn secondary small" id="setAdminIn">${ic("lock")} Sign In</button></div></section>`}
     </main>`;
     wireTopbar();
+    const setTab = (k) => { const m = $("main.settings"); if (!m) return; m.dataset.active = k; $$("[data-stab]", m).forEach((b) => b.setAttribute("aria-selected", String(b.dataset.stab === k))); try { localStorage.setItem("kino-settings-tab", k); } catch (_) {} };
+    $$("[data-stab]").forEach((b) => (b.onclick = () => setTab(b.dataset.stab)));
     $("#editMe").onclick = () => editProfile(p, () => route());
     const setPin = async (remove) => {
       let old = "";
@@ -3547,15 +3553,15 @@
     try { r = await api("/api/admin/accounts"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
     const badge = $("#peopleBadge"); if (badge) { const nw = r.waiting.length + (r.signups || []).length; badge.hidden = !nw; badge.textContent = `${nw} waiting`; }
     box.innerHTML = `${r.mail ? "" : `<div class="note">${ic("info")} Email isn't set up on the server yet, so invites can't be sent. You'll get a link to pass on yourself. Set SMTP_HOST, SMTP_USER and SMTP_PASS in /etc/kino/kino.env.</div>`}
-      ${(r.signups || []).length ? `<h3 class="sr-sub">Asked To Join</h3><div class="list">${r.signups.map((i) => `<div class="li"><span class="grow"><b>${esc(i.name)}</b> <span class="secondary">${esc(i.email)} · confirmed their email ${esc(acWhen(i.created))}</span></span>
+      ${(r.signups || []).length ? `<h3 class="sr-sub">Asked To Join</h3><div class="list">${r.signups.map((i) => `<div class="li li-acct"><span class="grow"><b>${esc(i.name)}</b> <span class="secondary">${esc(i.email)} · confirmed their email ${esc(acWhen(i.created))}</span></span>
         <button class="btn primary small" data-sapprove="${i.id}">Approve</button><button class="btn secondary small" data-sdeny="${i.id}">Deny</button></div>`).join("")}</div>` : ""}
-      ${r.waiting.length ? `<h3 class="sr-sub">Waiting For You</h3><div class="list">${r.waiting.map((i) => `<div class="li"><span class="grow"><b>${esc(i.name || i.email)}</b> <span class="secondary">${esc(i.email)} · asked by ${esc(i.by)}</span></span>
+      ${r.waiting.length ? `<h3 class="sr-sub">Waiting For You</h3><div class="list">${r.waiting.map((i) => `<div class="li li-acct"><span class="grow"><b>${esc(i.name || i.email)}</b> <span class="secondary">${esc(i.email)} · asked by ${esc(i.by)}</span></span>
         <button class="btn primary small" data-iapprove="${i.id}">Approve</button><button class="btn secondary small" data-ideny="${i.id}">Deny</button></div>`).join("")}</div>` : ""}
-      ${listFold("peopleList", `Accounts (${r.accounts.length})`, `<div class="list">${r.accounts.map((a) => `<div class="li"><span class="grow"><b>${esc(a.name)}</b> <span class="secondary">${esc(a.email)} · signed in on ${a.devices} device${a.devices === 1 ? "" : "s"} · last ${esc(acWhen(a.last_login))}</span></span>
+      ${listFold("peopleList", `Accounts (${r.accounts.length})`, `<div class="list">${r.accounts.map((a) => `<div class="li li-acct"><span class="grow"><b>${esc(a.name)}</b> <span class="secondary">${esc(a.email)} · signed in on ${a.devices} device${a.devices === 1 ? "" : "s"} · last ${esc(acWhen(a.last_login))}</span></span>
         <label class="inline-check" title="Trusted people can invite their family, you approve each one"><input type="checkbox" class="switch" data-atrust="${a.id}" ${a.trusted ? "checked" : ""}> Can invite</label>
         <button class="btn secondary small" data-areset="${a.id}">Reset Password</button><button class="btn secondary small" data-aremove="${a.id}">Remove</button></div>`).join("") || `<p class="secondary">Nobody has an account yet. Invite someone below.</p>`}</div>`)}
-      ${r.sent.length ? `<h3 class="sr-sub">Invites Sent</h3><div class="list">${r.sent.map((i) => `<div class="li"><span class="grow">${esc(i.name || i.email)} <span class="secondary">${esc(i.email)} · open until ${esc(acWhen(i.expires))}</span></span><button class="btn secondary small" data-iresend="${i.id}">Send Again</button></div>`).join("")}</div>` : ""}
-      <form class="actions end" id="inviteForm" style="gap:8px;flex-wrap:wrap"><input class="plain" id="invName" placeholder="Name" maxlength="40" style="max-width:150px"><input class="plain" id="invEmail" type="email" placeholder="Email to invite" required style="min-width:200px;flex:1">
+      ${r.sent.length ? `<h3 class="sr-sub">Invites Sent</h3><div class="list">${r.sent.map((i) => `<div class="li li-acct"><span class="grow">${esc(i.name || i.email)} <span class="secondary">${esc(i.email)} · open until ${esc(acWhen(i.expires))}</span></span><button class="btn secondary small" data-iresend="${i.id}">Send Again</button></div>`).join("")}</div>` : ""}
+      <form class="invite-form" id="inviteForm"><input class="plain" id="invName" placeholder="Name" maxlength="40" autocomplete="off"><input class="plain" id="invEmail" type="email" placeholder="Email to invite" required autocomplete="off">
         <label class="inline-check"><input type="checkbox" class="switch" id="invTrust"> Can invite</label><button class="btn primary small" type="submit">${ic("plus")} Invite</button></form>
       <p class="secondary" style="font-size:13px;margin-top:6px">Mail comes from ${esc(r.mail_from)}. People who ask to join are emailed to ${esc((r.approvers || []).join(", ") || "nobody yet (set APPROVER_EMAIL)")}. The old device and network approvals keep working next to accounts.</p>`;
     const showLink = (res) => { if (res.link) { const sh = sheet(`<h2>Invite link</h2><p class="secondary">Email isn't set up, so send this link yourself. It works once, for 7 days.</p><input class="plain" readonly value="${esc(res.link)}" style="width:100%" id="invLinkBox"><div class="actions end"><button class="btn primary" data-close>Done</button></div>`); setTimeout(() => $("#invLinkBox", sh.el).select(), 60); } };
@@ -3578,14 +3584,14 @@
   // The signed in person's own account: devices, password, and inviting family when they are allowed to
   async function drawAccountCard() {
     const r = await api("/api/account").catch(() => null);
-    const host = $("#acctCard") || (() => { const sec = document.createElement("section"); sec.className = "card set-card"; sec.id = "acctCard"; const first = $(".set-card"); if (first && first.parentElement) first.parentElement.insertBefore(sec, first); return sec; })();
+    const host = $("#acctCard") || (() => { const sec = document.createElement("section"); sec.className = "card set-card"; sec.id = "acctCard"; sec.dataset.tab = "access"; const first = $(".set-card"); if (first && first.parentElement) first.parentElement.insertBefore(sec, first); return sec; })();
     if (!r || !r.account) { host.remove(); return; }
     const a = r.account;
     host.innerHTML = `<h2 class="set-title">Your Account</h2>
       <div class="set-row"><span><b>${esc(a.name)}</b><span class="secondary">${esc(a.email)}</span></span><span class="actions"><button class="btn secondary small" id="acPw">Change Password</button><button class="btn secondary small" id="acOut">Sign Out</button></span></div>
       ${listFold("acDevs", `Signed in on ${r.sessions.length} device${r.sessions.length === 1 ? "" : "s"}`, `<div class="list">${r.sessions.map((s) => `<div class="li"><span class="grow">${esc(s.ua || "A browser")}${s.this ? " <span class=\"badge\">This device</span>" : ""} <span class="secondary">last used ${esc(acWhen(s.last_seen))}</span></span>${s.this ? "" : `<button class="btn secondary small" data-sout="${esc(s.id)}">Sign Out</button>`}</div>`).join("")}</div>`)}
       ${a.trusted ? `<h3 class="sr-sub">Invite Family</h3>${r.invites.length ? `<div class="list">${r.invites.map((i) => `<div class="li"><span class="grow">${esc(i.name || i.email)} <span class="secondary">${esc(i.email)} · ${i.status === "awaiting" ? "waiting for the admin to approve" : "invite sent"}</span></span></div>`).join("")}</div>` : ""}
-        <form class="actions end" id="acInvite" style="gap:8px;flex-wrap:wrap"><input class="plain" id="aiName" placeholder="Name" maxlength="40" style="max-width:150px"><input class="plain" id="aiEmail" type="email" placeholder="Their email" required style="min-width:200px;flex:1"><button class="btn primary small" type="submit">${ic("plus")} Invite</button></form>
+        <form class="invite-form" id="acInvite"><input class="plain" id="aiName" placeholder="Name" maxlength="40" autocomplete="off"><input class="plain" id="aiEmail" type="email" placeholder="Their email" required autocomplete="off"><span></span><button class="btn primary small" type="submit">${ic("plus")} Invite</button></form>
         <p class="secondary" style="font-size:13px">${a.free ? "They get the invite straight away." : "The admin approves each invite before it is sent."}</p>` : ""}`;
     $("#acOut").onclick = async () => { await api("/api/account/logout", {}); location.href = "/gate"; };
     $("#acPw").onclick = () => {
@@ -3614,18 +3620,18 @@
     const applied = al.applied;
     // Profiles, networks and devices fold away (closed to start with), a redraw keeps the ones that were open
     const wasOpen = new Set($$("details.set-fold[open]", box).map((d) => d.id));
-    const fold = (id, title, badge, body) => `<details class="card set-card set-fold" id="${id}" ${wasOpen.has(id) || foldOpen(id) ? "open" : ""}><summary><h2 class="set-title">${title}</h2>
+    const fold = (id, title, badge, body, tab = "access") => `<details class="card set-card set-fold" data-tab="${tab}" id="${id}" ${wasOpen.has(id) || foldOpen(id) ? "open" : ""}><summary><h2 class="set-title">${title}</h2>
       <span class="badge fold-badge" ${badge ? "" : "hidden"}>${badge || ""}</span><span class="fold-chev" aria-hidden="true">${ic("chevron")}</span></summary><div class="fold-body">${body}</div></details>`;
     box.innerHTML = `
-      <section class="card set-card" id="profCard"><div class="set-card-head"><h2 class="set-title">Profiles</h2><span class="badge" ${pr.pending && pr.pending.length ? "" : "hidden"}>${pr.pending ? pr.pending.length : 0} asked</span></div>
+      <section class="card set-card" id="profCard" data-tab="access"><div class="set-card-head"><h2 class="set-title">Profiles</h2><span class="badge" ${pr.pending && pr.pending.length ? "" : "hidden"}>${pr.pending ? pr.pending.length : 0} asked</span></div>
         ${pr.pending && pr.pending.length ? `<h3 class="sr-sub">Asked For</h3><div class="list">${pr.pending.map((p) => `<div class="li">${pav(p, "xs")}<span class="grow">${esc(p.name)}</span>
           <button class="btn primary small" data-papprove="${p.id}">Approve</button><button class="btn secondary small" data-pdeny="${p.id}">Deny</button></div>`).join("")}</div>` : ""}
         ${listFold("profList", `Profiles (${pr.profiles.length})`, `<div class="list">${pr.profiles.map((p) => `<div class="li">${pav(p, "xs")}<span class="grow">${esc(p.name)}${p.folder ? ` <span class="secondary">${esc(p.folder)}</span>` : ""}${p.locked ? ` <span class="badge">${ic("lock")} Locked</span>` : ""}</span>
           ${p.locked && !p.members ? `<button class="btn secondary small" data-unlock="${p.id}" title="Takes the code off, you never see what it was">Remove Lock</button>` : ""}
           <button class="btn secondary small" data-editp="${p.id}">${ic("pencil")} Edit</button></div>`).join("")}</div>`)}
         <div class="actions end"><button class="btn secondary small" id="addP">${ic("plus")} Add Profile</button></div></section>
-      <section class="card set-card" id="peopleCard"><div class="set-card-head"><h2 class="set-title">People</h2><span class="badge" id="peopleBadge" hidden></span></div><div id="peopleBody"><div class="skel" style="height:80px"></div></div></section>
-      <section class="card set-card" id="netCard"><h2 class="set-title">Allowed Networks</h2>
+      <section class="card set-card" id="peopleCard" data-tab="access"><div class="set-card-head"><h2 class="set-title">People</h2><span class="badge" id="peopleBadge" hidden></span></div><div id="peopleBody"><div class="skel" style="height:80px"></div></div></section>
+      <section class="card set-card" id="netCard" data-tab="access"><h2 class="set-title">Allowed Networks</h2>
         <p class="secondary set-hint">Only these internet addresses can open Kino. Add the home IP of each family member. Changes apply within a few seconds.</p>
         ${listFold("netList", `Networks (${al.entries.length})`, `<div class="list">${al.entries.map((e) => `<div class="li"><span class="grow"><b>${esc(e.label)}</b> <span class="secondary mono">${esc(e.cidr)}</span></span>
           <span class="r">${e.added ? ago(e.added) : ""}</span><button class="round-btn sm" data-rmip="${esc(e.cidr)}" aria-label="Remove ${esc(e.label)}" title="Remove">${ic("trash")}</button></div>`).join("")}</div>`)}
@@ -3637,12 +3643,12 @@
         <div class="note">Your current address is <b class="mono">${esc(mine)}</b>. <button class="linkish" id="fillMine">Use This Address</button>
           ${applied ? `<span class="${applied.ok ? "" : "err-note"}"> · nginx ${applied.ok ? `updated ${ago(applied.applied_at)}` : `not updated: ${esc(applied.error || "unknown error")}`}</span>` : ""}</div>
         <div class="form-err" id="ipErr" role="alert"></div></section>
-      <section class="card set-card" id="devicesCard"><div class="set-card-head"><h2 class="set-title">Allowed Devices</h2><span class="badge" id="devBadge" hidden></span></div><div id="devicesBody"><div class="skel" style="height:80px"></div></div></section>
-      <section class="card set-card" id="sessCard"><h2 class="set-title">Admin Sign-ins</h2><div id="sessBody"><div class="skel" style="height:80px"></div></div></section>
-      ${fold("liveCard", "Live TV", "", `<div id="liveBody"><div class="skel" style="height:80px"></div></div>`)}
-      ${fold("liveFilterCard", "Hide Channels", "", `<div id="liveFilterBody"><div class="skel" style="height:80px"></div></div>`)}
-      ${fold("embedCard", "Live TV Embed Sources", "", `<div id="embedBody"></div>`)}
-      ${fold("addonsCard", "Addons", "", `<div id="addonsBody"><div class="skel" style="height:80px"></div></div>`)}`;
+      <section class="card set-card" id="devicesCard" data-tab="access"><div class="set-card-head"><h2 class="set-title">Allowed Devices</h2><span class="badge" id="devBadge" hidden></span></div><div id="devicesBody"><div class="skel" style="height:80px"></div></div></section>
+      <section class="card set-card" id="sessCard" data-tab="access"><h2 class="set-title">Admin Sign-ins</h2><div id="sessBody"><div class="skel" style="height:80px"></div></div></section>
+      ${fold("liveCard", "Live TV", "", `<div id="liveBody"><div class="skel" style="height:80px"></div></div>`, "addons")}
+      ${fold("liveFilterCard", "Hide Channels", "", `<div id="liveFilterBody"><div class="skel" style="height:80px"></div></div>`, "addons")}
+      ${fold("embedCard", "Live TV Embed Sources", "", `<div id="embedBody"></div>`, "addons")}
+      ${fold("addonsCard", "Addons", "", `<div id="addonsBody"><div class="skel" style="height:80px"></div></div>`, "addons")}`;
     drawDevices();
     drawPeople();
     drawSessions();

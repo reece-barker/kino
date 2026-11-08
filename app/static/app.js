@@ -4767,6 +4767,7 @@
     pl.audio = pickAudio(info, prefs.audio_lang);
     const t = opts.title;
     $("#pTitle").textContent = t ? t.name : info.name;
+    nowPlaying(info, t);
     if (info.stream && info.src) {
       $("#pSub").textContent = [info.season != null ? epLabel(info.season, info.episode) : "", nice(info.ep_name || "")].filter(Boolean).join("  ");
       buildMenus();
@@ -4995,6 +4996,34 @@
     api("/api/event", { file_id: pl.info.id, action, pos: pos(), dur: total() }).catch(() => {});
   }
 
+  // What the lock screen, Control Centre and AirPlay show for what's playing, and what their buttons do
+  function nowPlaying(info, t) {
+    const ms = navigator.mediaSession;
+    if (!ms || !window.MediaMetadata) return;
+    const abs = (u) => { try { return new URL(u, location.href).href; } catch (_) { return u; } };
+    const art = info.art || {}, pic = art.poster || art.background || (t && (t.poster || t.background));
+    const show = info.show || (t && t.name) || info.name;
+    const ep = info.season != null ? [epLabel(info.season, info.episode), nice(info.ep_name || "")].filter(Boolean).join(" ") : "";
+    try {
+      ms.metadata = new MediaMetadata({ title: ep ? (nice(info.ep_name || "") || ep) : show, artist: ep ? show : "", album: ep ? epLabel(info.season, info.episode) : "Kino",
+        artwork: pic ? [{ src: abs(img(pic, 0, 512)), sizes: "512x512" }, { src: abs(img(pic, 0, 256)), sizes: "256x256" }] : [] });
+      const h = (a, f) => { try { ms.setActionHandler(a, f); } catch (_) {} };
+      h("play", () => pl.v.play().catch(() => {}));
+      h("pause", () => { pl.hold = true; pl.v.pause(); });
+      h("seekbackward", (d) => seekTo(pos() - ((d && d.seekOffset) || 10)));
+      h("seekforward", (d) => seekTo(pos() + ((d && d.seekOffset) || 10)));
+      h("seekto", (d) => { if (d && d.seekTime != null) seekTo(d.seekTime); });
+      h("nexttrack", info.next && !info.live ? () => playNext(info.next) : null);
+    } catch (_) {}
+  }
+  let msAt = 0;
+  document.addEventListener("timeupdate", (e) => {
+    if (e.target !== pl.v || !navigator.mediaSession || !navigator.mediaSession.setPositionState || Date.now() - msAt < 4000) return;
+    msAt = Date.now();
+    const d = total();
+    try { if (d > 0 && !(pl.info && pl.info.live)) navigator.mediaSession.setPositionState({ duration: d, position: Math.min(d, Math.max(0, pos())), playbackRate: pl.v.playbackRate || 1 }); } catch (_) {}
+  }, true);
+
   function closePlayer(keepOpen, keepLoading) {
     const wasOpen = !pl.el.hidden;
     if (pl.info) { saveProgress(); if (pl.evStarted) sendEvent("stop"); pl.evStarted = false; }
@@ -5003,10 +5032,12 @@
     if (pl.hls) { pl.hls.destroy(); pl.hls = null; }
     if (pl.sid) { api(`/api/play/${pl.sid}/stop`, {}).catch(() => {}); pl.sid = null; }
     if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+    pl.hold = true;
     pl.v.pause();
     pl.v.removeAttribute("src");
     pl.v.load();
     pl.info = null; pl.mode = null;
+    if (navigator.mediaSession) { try { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = "none"; } catch (_) {} }
     const wasLive = pl.el.classList.contains("live");
     const lastLive = wasLive && LIVE_NOW && LIVE_NOW.list[LIVE_NOW.i] ? LIVE_NOW.list[LIVE_NOW.i].id : null;
     if (wasLive) {
@@ -5167,11 +5198,12 @@
     if (window.WebKitPlaybackTargetAvailabilityEvent) {
       pl.v.addEventListener("webkitplaybacktargetavailabilitychanged", (e) => { air.hidden = e.availability !== "available"; });
       // An Apple TV fetches the video itself, without this page's login, so before the list of screens opens the film gets a stream with a signed link
-      pl.v.addEventListener("webkitcurrentplaybacktargetiswirelesschanged", () => { if (!pl.v.webkitCurrentPlaybackTargetIsWireless) pl.cookieless = false; });
-      air.onclick = async () => {
+      pl.v.addEventListener("webkitcurrentplaybacktargetiswirelesschanged", async () => {
+        if (!pl.v.webkitCurrentPlaybackTargetIsWireless) { pl.cookieless = false; return; }
+        // Picking a screen is when the film gets a stream with a signed link (restarting it before the list opened broke picking a speaker)
         try { if (pl.info && !pl.info.live && !pl.cookieless && (pl.mode === "hls" || pl.mode === "direct")) { pl.cookieless = true; await startHls(pos()); } } catch (_) {}
-        if (pl.v.webkitShowPlaybackTargetPicker) pl.v.webkitShowPlaybackTargetPicker();
-      };
+      });
+      air.onclick = () => { if (pl.v.webkitShowPlaybackTargetPicker) pl.v.webkitShowPlaybackTargetPicker(); };
     }
     const canPip = (document.pictureInPictureEnabled && !pl.v.disablePictureInPicture) || (pl.v.webkitSupportsPresentationMode && pl.v.webkitSupportsPresentationMode("picture-in-picture"));
     pip.hidden = !canPip;
@@ -5570,6 +5602,19 @@
     v.addEventListener("playing", () => window.KinoAndroid.setPlaying(true));
     ["pause", "ended", "emptied"].forEach((ev) => v.addEventListener(ev, () => window.KinoAndroid.setPlaying(false)));
   }
+  v.addEventListener("play", () => { pl.hold = false; if (navigator.mediaSession) navigator.mediaSession.playbackState = "playing"; });
+  // Locking the phone or leaving the app makes the system pause the video. It isn't a pause the person asked for, so it starts again
+  // (the audio carries on in the background, and the lock screen controls are there for the rest)
+  v.addEventListener("pause", () => {
+    if (navigator.mediaSession) navigator.mediaSession.playbackState = v.ended ? "none" : "paused";
+    if (document.hidden && !pl.hold && !v.ended && v.currentSrc && pl.info && !pl.info.live) setTimeout(() => { if (!pl.hold && v.paused && v.currentSrc) v.play().catch(() => {}); }, 200);
+  });
+  // The full screen player on an iPhone is the system's: leaving it pauses the video, so it carries on where it was
+  v.addEventListener("webkitbeginfullscreen", () => { pl.fsPlaying = !v.paused; });
+  v.addEventListener("webkitendfullscreen", () => {
+    const was = pl.fsPlaying; pl.fsPlaying = false;
+    setTimeout(() => { playIcon(); if (was && v.paused && v.currentSrc && !pl.hold) v.play().catch(() => {}); }, 250);
+  });
   v.addEventListener("pause", () => {
     pl.pausedAt = Date.now();
     playIcon(); wakeUi();
@@ -5596,7 +5641,7 @@
     if (pl.mode === "direct" && pl.info && !pl.info.stream) startHls(pos());  // If direct play fails the server converts it instead
   });
 
-  const toggle = () => (v.paused ? v.play().catch(() => {}) : v.pause());
+  const toggle = () => (v.paused ? v.play().catch(() => {}) : (pl.hold = true, v.pause()));
   $("#pPlay").onclick = toggle;
   $("#pBack").onclick = () => (pl.info && pl.info.live ? switchLive(-1) : seekTo(pos() - 10));
   $("#pFwd").onclick = () => (pl.info && pl.info.live ? switchLive(1) : seekTo(pos() + 10));
@@ -5911,7 +5956,7 @@
     wakeUi();
     if (cmd === "playpause") toggle();
     else if (cmd === "play") pl.v.play().catch(() => {});
-    else if (cmd === "pause") pl.v.pause();
+    else if (cmd === "pause") { pl.hold = true; pl.v.pause(); }
     else if (cmd === "forward") pl.info && pl.info.live ? switchLive(1) : seekTo(pos() + 10);
     else if (cmd === "back") pl.info && pl.info.live ? switchLive(-1) : seekTo(pos() - 10);
     else if (cmd === "stop") closePlayer();

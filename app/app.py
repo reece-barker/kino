@@ -2647,6 +2647,19 @@ def continue_list(summ, wm, pid=None):
             if show and hidden.get(show, 0) >= r["updated"]:
                 seen.add(show)
                 continue
+            if st and st[0]["kind"] == "series" and show not in seen and (r["watched"] or (r["dur"] and r["pos"] / r["dur"] >= 0.93)):
+                # Finished an episode of an addon show: the next one goes in Continue Watching (from the details already cached, no lookup here)
+                st = dict(st[0])
+                mm = (cached_meta(f"ext:series:{show}")[0] or {})
+                eps = sorted([v for v in mm.get("videos") or [] if v.get("season")], key=lambda v: (v["season"], v["episode"] or 0))
+                ids = [ep_video_id(show, v) for v in eps]
+                if st["video_id"] in ids and ids.index(st["video_id"]) + 1 < len(eps):
+                    nv = eps[ids.index(st["video_id"]) + 1]
+                    seen.add(show)
+                    out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]),
+                                "file_id": st["id"], "stream": True, "pos": 0, "dur": 0, "season": nv["season"],
+                                "episode": nv["episode"], "next_episode": True})
+                continue
             if st and not r["watched"] and r["dur"] and 0.02 < r["pos"] / r["dur"] < 0.93 and show not in seen:
                 st = dict(st[0])
                 seen.add(show)

@@ -213,6 +213,9 @@ CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_email ON accounts (email) WHERE status != 'removed';
 CREATE TABLE IF NOT EXISTS invites (id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT, email TEXT, name TEXT, invited_by INTEGER, status TEXT, trust INTEGER DEFAULT 0, created REAL, expires REAL, used_account INTEGER);
 CREATE TABLE IF NOT EXISTS acct_sessions (token_hash TEXT PRIMARY KEY, account_id INTEGER, created REAL, last_seen REAL, ua TEXT, ip TEXT);
+CREATE TABLE IF NOT EXISTS signups (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT, name TEXT, pw TEXT, code_hash TEXT, code_expires REAL, tries INTEGER DEFAULT 0, sends INTEGER DEFAULT 1,
+  last_sent REAL, status TEXT, ip TEXT, ua TEXT, created REAL, verified_at REAL, token_hash TEXT, decided_by TEXT, decided_at REAL);
+CREATE INDEX IF NOT EXISTS signups_email ON signups (email);
 CREATE TABLE IF NOT EXISTS reset_tokens (token_hash TEXT PRIMARY KEY, account_id INTEGER, expires REAL);
 CREATE TABLE IF NOT EXISTS wrapped_cache (profile_id INTEGER, period TEXT, data TEXT, at REAL, PRIMARY KEY (profile_id, period));
 CREATE TABLE IF NOT EXISTS wrapped_shares (code TEXT PRIMARY KEY, profile_id INTEGER, period TEXT, data TEXT, hide_name INTEGER DEFAULT 0, created REAL, views INTEGER DEFAULT 0, revoked INTEGER DEFAULT 0);
@@ -332,16 +335,16 @@ def migrate():
 
 # ---------------------------------------------------------------- passwords, sessions, ip list
 
-def hash_pw(pw):
+def hash_pw(pw, n=2**14):
     salt = secrets.token_bytes(16)
-    h = hashlib.scrypt(pw.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
-    return f"scrypt$16384$8$1${salt.hex()}${h.hex()}"
+    h = hashlib.scrypt(pw.encode(), salt=salt, n=n, r=8, p=1, dklen=32, maxmem=256 * 1024 * 1024)
+    return f"scrypt${n}$8$1${salt.hex()}${h.hex()}"
 
 
 def check_pw(pw, stored):
     try:
         _, n, r, p, salt, h = stored.split("$")
-        got = hashlib.scrypt(pw.encode(), salt=bytes.fromhex(salt), n=int(n), r=int(r), p=int(p), dklen=len(h) // 2)
+        got = hashlib.scrypt(pw.encode(), salt=bytes.fromhex(salt), n=int(n), r=int(r), p=int(p), dklen=len(h) // 2, maxmem=256 * 1024 * 1024)
         return hmac.compare_digest(got.hex(), h)
     except Exception:
         return False
@@ -1593,7 +1596,7 @@ async def guard(request: Request, call_next):
     # Every change request needs this header, other websites cant add it so they cant trick your browser into doing stuff
     if request.method in ("POST", "PUT", "DELETE") and request.headers.get("x-kino") != "1":
         return JSONResponse({"detail": "Missing request header"}, status_code=403)
-    if path.startswith("/api/") and not path.startswith(("/api/dl/", "/api/gate", "/api/x/", "/api/account/login", "/api/account/forgot", "/api/account/join", "/api/account/reset")) and not access_ok(request):
+    if path.startswith("/api/") and not path.startswith(("/api/dl/", "/api/gate", "/api/x/", "/api/account/login", "/api/account/forgot", "/api/account/join", "/api/account/reset", "/api/account/signup", "/api/account/decision")) and not access_ok(request):
         log.warning("kino blocked ip=%s path=%s", client_ip(request), path)
         return JSONResponse({"detail": "This network or device isn't on the allow list"}, status_code=403)
     resp = await call_next(request)
@@ -7998,12 +8001,26 @@ GATE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta 
 <meta name="color-scheme" content="dark light"><meta name="robots" content="noindex, nofollow"><title>Kino</title>
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml"><link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png"><link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="stylesheet" href="/static/app.css?v=__V__"></head><body class="gate-body"><main class="gate" id="gate">
-<div class="gate-card glass-card"><div class="gate-mark">__WORDMARK__</div><h1>Sign In to Kino</h1>
-<p class="secondary">Use the email and password you chose when you were invited.</p>
+<div class="gate-card glass-card"><div class="gate-mark">__WORDMARK__</div>
+<div class="gate-tabs" role="tablist"><button type="button" role="tab" id="tabIn" aria-selected="true">Sign In</button><button type="button" role="tab" id="tabUp" aria-selected="false">Create Account</button></div>
+<section id="paneIn"><p class="secondary">Use the email and password you chose when you signed up.</p>
 <form id="signForm" class="gate-form"><input id="gateEmail" type="email" autocomplete="username" maxlength="200" placeholder="Email" required>
 <input id="gatePw" type="password" autocomplete="current-password" maxlength="200" placeholder="Password" required>
 <button class="btn primary" type="submit">Sign In</button></form>
-<p class="note" id="signMsg"></p><button class="link-btn" id="forgotBtn" type="button">Forgot your password?</button>
+<p class="note" id="signMsg"></p><button class="link-btn" id="forgotBtn" type="button">Forgot your password?</button></section>
+<section id="paneUp" hidden><div id="upForm"><p class="secondary">Ask to join. You confirm your email with a code, then somebody approves you.</p>
+<form id="upFormEl" class="gate-form" autocomplete="on"><input id="upName" maxlength="40" autocomplete="name" placeholder="Your name" required>
+<input id="upEmail" type="email" maxlength="200" autocomplete="email" placeholder="Email" required>
+<input id="upPw" type="password" maxlength="200" autocomplete="new-password" placeholder="Password (10 characters or more)" required>
+<input id="upPw2" type="password" maxlength="200" autocomplete="new-password" placeholder="Same password again" required>
+<input id="upWebsite" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;height:0;width:0;opacity:0">
+<div class="pw-meter" id="pwMeter" aria-live="polite"></div>
+<button class="btn primary" type="submit">Send Me a Code</button></form><p class="note" id="upMsg"></p></div>
+<div id="upCode" hidden><p class="secondary">We sent a 6 digit code to <b id="upTo"></b>. Type it here.</p>
+<form id="codeForm" class="gate-form"><input id="upCodeIn" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 digit code" required style="text-align:center;letter-spacing:0.4em;font-size:22px">
+<button class="btn primary" type="submit">Confirm</button></form><p class="note" id="codeMsg"></p>
+<button class="link-btn" id="resendBtn" type="button">Send a new code</button></div>
+<div id="upWait" hidden><h1>You're on the list</h1><p class="secondary">Your email is confirmed. Somebody has been asked to approve you, and you'll get an email as soon as they do. You can close this page.</p></div></section>
 <details class="gate-old"><summary>Ask for access with a device code instead</summary>
 <p class="secondary">Kino also opens on devices the admin has approved. Give the admin this code.</p>
 <div class="gate-code" id="gateCode">···-···</div>
@@ -9636,7 +9653,7 @@ def mail_ready():
     return bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
 
 
-def send_mail_now(to, subject, text):
+def send_mail_now(to, subject, text, html_body=None):
     import smtplib
     import ssl
     from email.message import EmailMessage
@@ -9646,6 +9663,8 @@ def send_mail_now(to, subject, text):
     m["Subject"] = subject
     m["Message-ID"] = f"<{secrets.token_hex(12)}@{SMTP_FROM.split('@')[-1]}>"
     m.set_content(text)
+    if html_body:
+        m.add_alternative(html_body, subtype="html")
     ctx = ssl.create_default_context()
     if SMTP_HOST in ("127.0.0.1", "localhost", "::1"):
         # a mail bridge on this same machine has a certificate of its own, nothing leaves the machine
@@ -9667,14 +9686,14 @@ def send_mail_now(to, subject, text):
             pass
 
 
-async def send_mail(to, subject, text, link=None):
+async def send_mail(to, subject, text, link=None, html_body=None):
     """Sends an email in the background thread. Without a mail server the link is only kept in the log and for the admin to copy. True when it was sent"""
     MAIL_LOG.append({"to": to, "subject": subject, "link": link, "at": time.time()})
     if not mail_ready():
         log.warning("kino mail not set up, would have sent %r to %s", subject, logsafe(to))
         return False
     try:
-        await asyncio.to_thread(send_mail_now, to, subject, text)
+        await asyncio.to_thread(send_mail_now, to, subject, text, html_body)
         return True
     except Exception as e:
         log.warning("kino mail to %s failed: %s", logsafe(to), type(e).__name__)
@@ -9714,17 +9733,6 @@ def acct_start(resp, request, aid):
         db().q("DELETE FROM acct_sessions WHERE token_hash = ?", (r["token_hash"],))  # a person keeps at most 12 devices signed in
 
 
-def pw_ok(pw):
-    pw = str(pw or "")
-    if len(pw) < 10:
-        raise HTTPException(400, "Use at least 10 characters for the password")
-    if len(pw) > 200:
-        raise HTTPException(400, "That password is too long")
-    if pw.lower() in ("password123", "1234567890", "qwertyuiop", "password12", "letmein123") or len(set(pw)) < 4:
-        raise HTTPException(400, "That password is too easy to guess, try another")
-    return pw
-
-
 def acct_guard(request, email):
     """Slows password guessing: 6 wrong tries from one address, or 10 on one account, in a quarter of an hour, stops sign in for a while"""
     now = time.time()
@@ -9761,6 +9769,9 @@ async def acct_login(request: Request):
     ok = check_pw(str(b.get("password") or "")[:200], r[0]["pw"] if r else ACCT_DUMMY)
     if not r or not ok:
         acct_fail(request, email)
+        pend = db().q("SELECT pw FROM signups WHERE email = ? AND status = 'awaiting'", (email,))
+        if pend and check_pw(str(b.get("password") or "")[:200], pend[0]["pw"] or ACCT_DUMMY):
+            raise HTTPException(403, "Your request is still waiting to be approved, you'll get an email when it is")
         raise HTTPException(401, "That email or password isn't right")
     resp = JSONResponse({"ok": True})
     acct_start(resp, request, r[0]["id"])
@@ -9813,7 +9824,7 @@ async def acct_change_pw(request: Request):
     if not check_pw(str(b.get("current") or "")[:200], a["pw"]):
         acct_fail(request, a["email"])
         raise HTTPException(401, "Your current password isn't right")
-    db().q("UPDATE accounts SET pw = ? WHERE id = ?", (hash_pw(pw_ok(b.get("new"))), a["id"]))
+    db().q("UPDATE accounts SET pw = ? WHERE id = ?", (hash_pw(await pw_check(b.get("new"), a["email"], a["name"]), 2**15), a["id"]))
     cur = ahash(request.cookies.get(ACCT_COOKIE, ""))
     db().q("DELETE FROM acct_sessions WHERE account_id = ? AND token_hash != ?", (a["id"], cur))  # every other device has to sign in again
     return {"ok": True}
@@ -9881,7 +9892,8 @@ async def admin_accounts(admin=Depends(require_admin)):
     waiting = [{"id": i["id"], "email": i["email"], "name": i["name"], "by": (db().q("SELECT name FROM accounts WHERE id = ?", (i["invited_by"],)) or [{"name": "admin"}])[0]["name"], "created": i["created"]}
                for i in db().q("SELECT * FROM invites WHERE status = 'awaiting' ORDER BY created")]
     sent = [{"id": i["id"], "email": i["email"], "name": i["name"], "expires": i["expires"]} for i in db().q("SELECT * FROM invites WHERE status = 'sent' AND expires > ? ORDER BY created DESC", (time.time(),))]
-    return {"accounts": accts, "waiting": waiting, "sent": sent, "mail": mail_ready(), "mail_from": SMTP_FROM}
+    signups = [{"id": x["id"], "name": x["name"], "email": x["email"], "created": x["created"]} for x in db().q("SELECT * FROM signups WHERE status = 'awaiting' ORDER BY created")]
+    return {"accounts": accts, "waiting": waiting, "sent": sent, "signups": signups, "mail": mail_ready(), "mail_from": SMTP_FROM, "approvers": approver_emails()}
 
 
 @app.post("/api/admin/accounts/invites/{iid}/{action}")
@@ -9962,7 +9974,6 @@ async def acct_join(request: Request):
     i = invite_by_token(token)
     if not i:
         raise HTTPException(410, "This invite has expired or was already used. Ask for a new one")
-    pw = pw_ok(b.get("password"))
     name = re.sub(r"\s+", " ", str(b.get("name") or i["name"] or "")).strip()[:40]
     if len(name) < 2:
         raise HTTPException(400, "Tell us your name")
@@ -9970,7 +9981,8 @@ async def acct_join(request: Request):
         raise HTTPException(409, "That email already has an account, sign in instead")
     trusted = 1 if i["trust"] else 0  # the admin can make somebody trusted (allowed to invite) when inviting them
     db().q("DELETE FROM accounts WHERE email = ? AND status = 'removed'", (i["email"],))
-    db().q("INSERT INTO accounts (email, name, pw, status, trusted, free_invite, invited_by, created) VALUES (?,?,?,?,?,0,?,?)", (i["email"], name, hash_pw(pw), "active", trusted, i["invited_by"], time.time()))
+    pw = await pw_check(b.get("password"), i["email"], name)
+    db().q("INSERT INTO accounts (email, name, pw, status, trusted, free_invite, invited_by, created) VALUES (?,?,?,?,?,0,?,?)", (i["email"], name, hash_pw(pw, 2**15), "active", trusted, i["invited_by"], time.time()))
     aid = db().q("SELECT last_insert_rowid() AS i")[0]["i"]
     db().q("UPDATE invites SET status = 'used', used_account = ? WHERE id = ?", (aid, i["id"]))
     resp = JSONResponse({"ok": True})
@@ -10013,13 +10025,271 @@ async def acct_reset(request: Request):
     r = db().q("SELECT * FROM reset_tokens WHERE token_hash = ? AND expires > ?", (ahash(str(b.get("token") or "")), time.time()))
     if not r:
         raise HTTPException(410, "This link has expired, ask for a new one")
-    pw = pw_ok(b.get("password"))
-    db().q("UPDATE accounts SET pw = ? WHERE id = ?", (hash_pw(pw), r[0]["account_id"]))
+    who = db().q("SELECT email, name FROM accounts WHERE id = ?", (r[0]["account_id"],))
+    pw = await pw_check(b.get("password"), who[0]["email"] if who else "", who[0]["name"] if who else "")
+    db().q("UPDATE accounts SET pw = ? WHERE id = ?", (hash_pw(pw, 2**15), r[0]["account_id"]))
     db().q("DELETE FROM reset_tokens WHERE account_id = ?", (r[0]["account_id"],))
     db().q("DELETE FROM acct_sessions WHERE account_id = ?", (r[0]["account_id"],))  # signed out everywhere, in case somebody else had it
     resp = JSONResponse({"ok": True})
     acct_start(resp, request, r[0]["account_id"])
     return resp
+
+
+# ---------------------------------------------------------------- sign up (name, email, a code from the email, then somebody approves)
+# Anyone can ask for an account at the gate: name, email and a password, then a 6 digit code that was sent to that email proves the address is theirs. After that
+# it waits for approval: the admin and the people marked as trusted get an email saying who wants in, with Approve and Deny buttons. Nothing exists as an account
+# until somebody approves, so a request can't sign in (and can't see anything). The password is hashed from the first moment, the code is stored only as a keyed
+# hash, has 5 tries and runs out after 15 minutes, and the buttons in the email open a page that asks once more (mail programs open links by themselves to check
+# them, a single click link would approve people on its own).
+SIGNUP_CODE_MINUTES = 15
+SIGNUP_CODE_TRIES = 5
+SIGNUP_FAILS = {}  # address -> times of sign up requests
+APPROVER_EMAIL = env("APPROVER_EMAIL", "").strip().lower() or SMTP_USER.strip().lower()
+# The most used passwords and the usual words around them, turned down before anything else (the full leaked-password check below needs the internet)
+COMMON_PW = set("""password passw0rd p@ssword p@ssw0rd password1 password12 password123 password1234 123456 1234567 12345678 123456789 1234567890 12345678910 0123456789 111111 11111111
+1111111111 000000 00000000 123123 123123123 654321 987654321 qwerty qwerty1 qwerty12 qwerty123 qwertyuiop qwertyuiop123 asdfgh asdfghjkl asdfghjkl123 zxcvbnm zxcvbnm123 1q2w3e4r
+1q2w3e4r5t 1qaz2wsx 1qazxsw2 qazwsxedc abc123 abc12345 abcd1234 abcdefg abcdefgh abcdefghij letmein letmein123 welcome welcome1 welcome123 admin admin123 administrator iloveyou
+iloveyou1 iloveyou123 monkey dragon master sunshine princess football baseball superman batman trustno1 shadow michael jennifer charlie liverpool arsenal chelsea manchester
+manutd mancity tottenham starwars pokemon minecraft fortnite netflix kinokino kino123 kino1234 kinofamily family familyfamily family123 changeme changeme123 default guest test
+test123 test1234 testtest secret secret123 passpass passwordpassword hello hello123 hellohello freedom whatever nothing computer internet samsung apple apple123 google google123
+love1234 lovelove summer2020 summer2021 summer2022 summer2023 summer2024 summer2025 summer2026 winter2024 winter2025 winter2026 spring2025 spring2026 autumn2025 autumn2026
+london london123 england britain britain123 reece reece123 reecebarker""".split())
+
+
+async def pwned_count(pw):
+    """How many times this password shows up in known leaks, by the k-anonymity call (only the first 5 characters of its SHA-1 leave the server). 0 when it is not
+    there or the check can't be made right now (it never blocks anyone because the internet is down)"""
+    h = hashlib.sha1(pw.encode()).hexdigest().upper()
+    try:
+        async with httpx.AsyncClient(timeout=3.5, headers={"User-Agent": "kino-dashboard", "Add-Padding": "true"}) as c:
+            r = await c.get(f"https://api.pwnedpasswords.com/range/{h[:5]}")
+        if r.status_code != 200:
+            return 0
+        for line in r.text.splitlines():
+            suf, _, n = line.partition(":")
+            if suf.strip() == h[5:]:
+                return int(n.strip() or 0)
+    except Exception:
+        return 0
+    return 0
+
+
+def pw_weak(pw, email="", name=""):
+    """Why a password is too weak, or None. At least 10 characters, nothing from the most used list, nothing made of the person's own name or email, and not one
+    or two characters repeated or a plain run (abcdef, 123456)"""
+    low = pw.lower()
+    stripped = re.sub(r"[^a-z0-9]", "", low.translate(str.maketrans("01345@$!", "oleasasi")))
+    if len(pw) < 10:
+        return "Use at least 10 characters for the password"
+    if len(pw) > 200:
+        return "That password is too long"
+    if low in COMMON_PW or stripped in COMMON_PW or re.sub(r"\d+$", "", stripped) in COMMON_PW:
+        return "That password is one of the most used ones, pick something harder to guess"
+    if len(set(low)) < 5:
+        return "That password repeats the same few characters, pick something harder to guess"
+    run = "abcdefghijklmnopqrstuvwxyz0123456789qwertyuiopasdfghjklzxcvbnm"
+    if any(low[i:i + 6] in run or low[i:i + 6][::-1] in run for i in range(len(low) - 5)) and len(set(low)) < 9:
+        return "That password is a plain run of letters or numbers, pick something harder to guess"
+    local = re.sub(r"[^a-z0-9]", "", (email or "").split("@")[0].lower())
+    nm = re.sub(r"[^a-z0-9]", "", (name or "").lower())
+    if (len(local) >= 4 and local in stripped) or (len(nm) >= 4 and nm in stripped):
+        return "Don't use your name or email in the password"
+    return None
+
+
+async def pw_check(pw, email="", name=""):
+    pw = str(pw or "")
+    why = pw_weak(pw, email, name)
+    if why:
+        raise HTTPException(400, why)
+    if await pwned_count(pw):
+        raise HTTPException(400, "That password has shown up in a data breach, so it isn't safe to use. Pick another")
+    return pw
+
+
+def code_hash(sid, code):
+    return hmac.new(SECRET, f"signup:{sid}:{code}".encode(), hashlib.sha256).hexdigest()
+
+
+def approver_emails():
+    """Who is told about a request: the admin's address and every trusted person"""
+    out = []
+    if APPROVER_EMAIL:
+        out.append(APPROVER_EMAIL)
+    for a in db().q("SELECT email FROM accounts WHERE status = 'active' AND trusted = 1"):
+        if a["email"] not in out:
+            out.append(a["email"])
+    return out
+
+
+def mail_html(title, lines, buttons=None, small=""):
+    """A plain, mail-program-safe html version: a heading, some lines and big buttons (the plain text part carries the same links)"""
+    esc_ = html.escape
+    btn = "".join(f'<a href="{esc_(u)}" style="display:inline-block;margin:6px 8px 6px 0;padding:13px 26px;border-radius:12px;background:{c};color:#fff;font-weight:700;'
+                  f'font-size:16px;text-decoration:none">{esc_(l)}</a>' for l, u, c in (buttons or []))
+    body = "".join(f'<p style="margin:0 0 14px;font-size:16px;line-height:1.5;color:#1c1c1e">{l}</p>' for l in lines)
+    return (f'<!doctype html><html><body style="margin:0;background:#f2f2f7;font-family:-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif"><div style="max-width:520px;'
+            f'margin:0 auto;padding:28px 18px"><div style="background:#fff;border-radius:20px;padding:28px 26px"><div style="font-size:26px;font-weight:900;letter-spacing:-0.03em;'
+            f'color:#000;margin-bottom:18px">KINO</div><h1 style="margin:0 0 16px;font-size:21px;color:#000">{esc_(title)}</h1>{body}<div style="margin-top:8px">{btn}</div>'
+            f'<p style="margin:22px 0 0;font-size:13px;color:#8e8e93">{small}</p></div></div></body></html>')
+
+
+def signup_open():
+    """Self sign up can be switched off (SIGNUP=off in kino.env), then the gate only offers sign in"""
+    return env("SIGNUP", "on").strip().lower() != "off"
+
+
+@app.post("/api/account/signup")
+async def signup_start(request: Request):
+    b = await json_obj(request)
+    if not signup_open():
+        raise HTTPException(403, "Sign up is closed, ask for an invite")
+    if str(b.get("website") or ""):
+        return {"ok": True, "step": "code"}  # a hidden field only a program fills in
+    name = re.sub(r"\s+", " ", str(b.get("name") or "")).strip()
+    if not 2 <= len(name) <= 40 or re.search(r"[<>@/\\]", name):
+        raise HTTPException(400, "Type your name (2 to 40 letters)")
+    email = norm_email(b.get("email"))
+    pw = await pw_check(b.get("password"), email, name)
+    now = time.time()
+    ip = client_ip(request)
+    # requests per address and per email are limited, and only so many can wait at once
+    for k, lim, win in ((("s", ip), 4, 3600), (("se", email), 3, 86400)):
+        SIGNUP_FAILS[k] = [t for t in SIGNUP_FAILS.get(k, []) if now - t < win]
+        if len(SIGNUP_FAILS[k]) >= lim:
+            raise HTTPException(429, "Too many sign up tries, wait a while and try again")
+        SIGNUP_FAILS[k].append(now)
+    if len(SIGNUP_FAILS) > 5000:
+        SIGNUP_FAILS.clear()
+    if db().q("SELECT COUNT(*) AS n FROM signups WHERE status IN ('unverified','awaiting')")[0]["n"] >= 60:
+        raise HTTPException(429, "A lot of people are waiting to get in, ask the admin")
+    resp = {"ok": True, "step": "code"}  # the same answer whatever happens next, so this can't be used to find out who has an account
+    if db().q("SELECT 1 FROM accounts WHERE email = ? AND status = 'active'", (email,)):
+        await send_mail(email, "You already have a Kino account", f"Hi {name},\n\nSomeone (hopefully you) tried to sign up to Kino with this email, but it already has an account.\n\n"
+                        f"Sign in at {PUBLIC_URL}/gate, or choose Forgot your password there if you've lost it.\n\nIf this wasn't you, ignore this email.\n")
+        return resp
+    db().q("UPDATE signups SET status = 'expired' WHERE email = ? AND status IN ('unverified','awaiting')", (email,))
+    code = f"{secrets.randbelow(1000000):06d}"
+    db().q("INSERT INTO signups (email, name, pw, status, ip, ua, created, code_expires, tries, sends, last_sent) VALUES (?,?,?,?,?,?,?,?,0,1,?)",
+           (email, name, hash_pw(pw, 2**15), "unverified", ip, request.headers.get("user-agent", "")[:200], now, now + SIGNUP_CODE_MINUTES * 60, now))
+    sid = db().q("SELECT last_insert_rowid() AS i")[0]["i"]
+    db().q("UPDATE signups SET code_hash = ? WHERE id = ?", (code_hash(sid, code), sid))
+    await send_signup_code(email, name, code)
+    return resp
+
+
+async def send_signup_code(email, name, code):
+    text = (f"Hi {name},\n\nYour Kino code is {code}\n\nType it into the sign up page to confirm this email. It works for {SIGNUP_CODE_MINUTES} minutes.\n\n"
+            "If you didn't ask for this, ignore this email, nothing happens without the code.\n")
+    h = mail_html("Your Kino code", [f"Hi {html.escape(name)},", f'<span style="font-size:34px;font-weight:800;letter-spacing:0.18em;font-family:ui-monospace,Menlo,monospace">{code}</span>',
+                                     f"Type it into the sign up page to confirm this email. It works for {SIGNUP_CODE_MINUTES} minutes."], small="If you didn't ask for this, ignore this email.")
+    await send_mail(email, f"Your Kino code is {code}", text, None, h)
+
+
+@app.post("/api/account/signup/resend")
+async def signup_resend(request: Request):
+    b = await json_obj(request)
+    email = str(b.get("email") or "").strip().lower()[:200]
+    r = db().q("SELECT * FROM signups WHERE email = ? AND status = 'unverified' ORDER BY id DESC LIMIT 1", (email,))
+    now = time.time()
+    if r and r[0]["sends"] < 5 and now - (r[0]["last_sent"] or 0) >= 60:
+        code = f"{secrets.randbelow(1000000):06d}"
+        db().q("UPDATE signups SET code_hash = ?, code_expires = ?, tries = 0, sends = sends + 1, last_sent = ? WHERE id = ?", (code_hash(r[0]["id"], code), now + SIGNUP_CODE_MINUTES * 60, now, r[0]["id"]))
+        await send_signup_code(email, r[0]["name"], code)
+    return {"ok": True}  # the same whether or not there was anything to send
+
+
+@app.post("/api/account/signup/verify")
+async def signup_verify(request: Request):
+    b = await json_obj(request)
+    email = str(b.get("email") or "").strip().lower()[:200]
+    code = re.sub(r"\D", "", str(b.get("code") or ""))[:6]
+    acct_guard(request, email)
+    r = db().q("SELECT * FROM signups WHERE email = ? AND status = 'unverified' ORDER BY id DESC LIMIT 1", (email,))
+    bad = HTTPException(400, "That code isn't right, or it has run out. Ask for a new one")
+    if not r or time.time() > r[0]["code_expires"] or r[0]["tries"] >= SIGNUP_CODE_TRIES:
+        acct_fail(request, email)
+        raise bad
+    s = r[0]
+    if len(code) != 6 or not hmac.compare_digest(code_hash(s["id"], code), s["code_hash"] or ""):
+        db().q("UPDATE signups SET tries = tries + 1 WHERE id = ?", (s["id"],))
+        acct_fail(request, email)
+        raise bad
+    tok, h = tok_new()
+    db().q("UPDATE signups SET status = 'awaiting', verified_at = ?, token_hash = ?, code_hash = NULL WHERE id = ?", (time.time(), h, s["id"]))
+    await signup_tell(s, tok)
+    return {"ok": True, "step": "waiting"}
+
+
+async def signup_tell(s, tok):
+    """Tells the admin and the trusted people who wants in, with the buttons, and the person that it is waiting"""
+    base = f"{PUBLIC_URL}/approve/{tok}"
+    when = time.strftime("%A %-d %B, %H:%M", time.localtime(s["created"]))
+    lines = [f"<b>{html.escape(s['name'])}</b> ({html.escape(s['email'])}) wants to get into Kino.", f"They confirmed their email address. Asked on {when}.",
+             "Only approve people you know. Nothing is open to them until you do."]
+    text = (f"{s['name']} ({s['email']}) wants to get into Kino. They confirmed their email address. Asked on {when}.\n\nOnly approve people you know.\n\n"
+            f"Approve: {base}?a=approve\nDeny: {base}?a=deny\n\n(Each link asks you to confirm on a page first.)\n")
+    h = mail_html(f"{s['name']} wants access to Kino", lines, [("Approve", base + "?a=approve", "#30a14e"), ("Deny", base + "?a=deny", "#d1453b")],
+                  "Each button opens a page that asks you to confirm. Whoever answers first decides, the others are told it's done.")
+    for to in approver_emails():
+        await send_mail(to, f"{s['name']} wants access to Kino", text, base, h)
+    await send_mail(s["email"], "Your Kino request is waiting", f"Hi {s['name']},\n\nThanks for confirming your email. Your request is waiting for somebody to approve it, and you'll get an email as soon as they do.\n",
+                    None, mail_html("You're on the list", [f"Hi {html.escape(s['name'])},", "Thanks for confirming your email. Your request is waiting for somebody to approve it, and you'll get an email as soon as they do."]))
+
+
+def signup_by_token(tok):
+    r = db().q("SELECT * FROM signups WHERE token_hash = ?", (ahash(tok),))
+    return dict(r[0]) if r else None
+
+
+@app.get("/approve/{token}")
+async def approve_page(token: str):
+    s = signup_by_token(token) if re.fullmatch(r"[A-Za-z0-9_-]{20,80}", token) else None
+    if not s:
+        return account_page("gone", token)
+    if s["status"] != "awaiting":
+        return account_page("decided", token, f"{s['name']}|{s['status']}")
+    return account_page("approve", token, f"{s['name']}|{s['email']}")
+
+
+async def signup_decide(s, approve, by):
+    if approve:
+        db().q("DELETE FROM accounts WHERE email = ? AND status = 'removed'", (s["email"],))
+        db().q("INSERT INTO accounts (email, name, pw, status, trusted, free_invite, invited_by, created) VALUES (?,?,?,?,0,0,0,?)", (s["email"], s["name"], s["pw"], "active", time.time()))
+        db().q("UPDATE signups SET status = 'approved', pw = NULL, decided_by = ?, decided_at = ? WHERE id = ?", (by, time.time(), s["id"]))
+        await send_mail(s["email"], "You're in, welcome to Kino", f"Hi {s['name']},\n\nYour request was approved. Sign in with your email and the password you chose:\n{PUBLIC_URL}/gate\n",
+                        None, mail_html("You're in", [f"Hi {html.escape(s['name'])},", "Your request was approved. Sign in with your email and the password you chose."], [("Open Kino", f"{PUBLIC_URL}/gate", "#0a84ff")]))
+    else:
+        db().q("UPDATE signups SET status = 'denied', pw = NULL, decided_by = ?, decided_at = ? WHERE id = ?", (by, time.time(), s["id"]))
+        await send_mail(s["email"], "About your Kino request", f"Hi {s['name']},\n\nYour request to get into Kino wasn't approved this time.\n", None,
+                        mail_html("About your request", [f"Hi {html.escape(s['name'])},", "Your request to get into Kino wasn't approved this time."]))
+    log.info("kino sign up %s %s by %s", logsafe(s["email"]), "approved" if approve else "denied", logsafe(by))
+
+
+@app.post("/api/account/decision")
+async def signup_decision(request: Request):
+    b = await json_obj(request)
+    tok = str(b.get("token") or "")
+    acct_guard(request, "decision")
+    s = signup_by_token(tok) if re.fullmatch(r"[A-Za-z0-9_-]{20,80}", tok) else None
+    if not s:
+        acct_fail(request, "decision")
+        raise HTTPException(410, "This link isn't valid any more")
+    if s["status"] != "awaiting":
+        return {"ok": True, "status": s["status"], "already": True}
+    if b.get("action") not in ("approve", "deny"):
+        raise HTTPException(400, "Choose Approve or Deny")
+    await signup_decide(s, b["action"] == "approve", "email link")
+    return {"ok": True, "status": "approved" if b["action"] == "approve" else "denied"}
+
+
+@app.post("/api/admin/accounts/signups/{sid}/{action}")
+async def admin_signup_act(sid: int, action: str, admin=Depends(require_admin)):
+    r = db().q("SELECT * FROM signups WHERE id = ? AND status = 'awaiting'", (sid,))
+    if not r or action not in ("approve", "deny"):
+        raise HTTPException(404, "That request has already been dealt with")
+    await signup_decide(dict(r[0]), action == "approve", f"admin {admin}")
+    return {"ok": True}
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

@@ -3528,8 +3528,10 @@
     if (!box) return;
     let r;
     try { r = await api("/api/admin/accounts"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
-    const badge = $("#peopleBadge"); if (badge) { badge.hidden = !r.waiting.length; badge.textContent = `${r.waiting.length} waiting`; }
+    const badge = $("#peopleBadge"); if (badge) { const nw = r.waiting.length + (r.signups || []).length; badge.hidden = !nw; badge.textContent = `${nw} waiting`; }
     box.innerHTML = `${r.mail ? "" : `<div class="note">${ic("info")} Email isn't set up on the server yet, so invites can't be sent. You'll get a link to pass on yourself. Set SMTP_HOST, SMTP_USER and SMTP_PASS in /etc/kino/kino.env.</div>`}
+      ${(r.signups || []).length ? `<h3 class="sr-sub">Asked To Join</h3><div class="list">${r.signups.map((i) => `<div class="li"><span class="grow"><b>${esc(i.name)}</b> <span class="secondary">${esc(i.email)} · confirmed their email ${esc(acWhen(i.created))}</span></span>
+        <button class="btn primary small" data-sapprove="${i.id}">Approve</button><button class="btn secondary small" data-sdeny="${i.id}">Deny</button></div>`).join("")}</div>` : ""}
       ${r.waiting.length ? `<h3 class="sr-sub">Waiting For You</h3><div class="list">${r.waiting.map((i) => `<div class="li"><span class="grow"><b>${esc(i.name || i.email)}</b> <span class="secondary">${esc(i.email)} · asked by ${esc(i.by)}</span></span>
         <button class="btn primary small" data-iapprove="${i.id}">Approve</button><button class="btn secondary small" data-ideny="${i.id}">Deny</button></div>`).join("")}</div>` : ""}
       ${listFold("peopleList", `Accounts (${r.accounts.length})`, `<div class="list">${r.accounts.map((a) => `<div class="li"><span class="grow"><b>${esc(a.name)}</b> <span class="secondary">${esc(a.email)} · signed in on ${a.devices} device${a.devices === 1 ? "" : "s"} · last ${esc(acWhen(a.last_login))}</span></span>
@@ -3538,12 +3540,14 @@
       ${r.sent.length ? `<h3 class="sr-sub">Invites Sent</h3><div class="list">${r.sent.map((i) => `<div class="li"><span class="grow">${esc(i.name || i.email)} <span class="secondary">${esc(i.email)} · open until ${esc(acWhen(i.expires))}</span></span><button class="btn secondary small" data-iresend="${i.id}">Send Again</button></div>`).join("")}</div>` : ""}
       <form class="actions end" id="inviteForm" style="gap:8px;flex-wrap:wrap"><input class="plain" id="invName" placeholder="Name" maxlength="40" style="max-width:150px"><input class="plain" id="invEmail" type="email" placeholder="Email to invite" required style="min-width:200px;flex:1">
         <label class="inline-check"><input type="checkbox" class="switch" id="invTrust"> Can invite</label><button class="btn primary small" type="submit">${ic("plus")} Invite</button></form>
-      <p class="secondary" style="font-size:13px;margin-top:6px">Mail comes from ${esc(r.mail_from)}. The old device and network approvals keep working next to accounts.</p>`;
+      <p class="secondary" style="font-size:13px;margin-top:6px">Mail comes from ${esc(r.mail_from)}. People who ask to join are emailed to ${esc((r.approvers || []).join(", ") || "nobody yet (set APPROVER_EMAIL)")}. The old device and network approvals keep working next to accounts.</p>`;
     const showLink = (res) => { if (res.link) { const sh = sheet(`<h2>Invite link</h2><p class="secondary">Email isn't set up, so send this link yourself. It works once, for 7 days.</p><input class="plain" readonly value="${esc(res.link)}" style="width:100%" id="invLinkBox"><div class="actions end"><button class="btn primary" data-close>Done</button></div>`); setTimeout(() => $("#invLinkBox", sh.el).select(), 60); } };
     $("#inviteForm").onsubmit = async (e) => {
       e.preventDefault();
       try { const res = await api("/api/admin/accounts/invite", { email: $("#invEmail").value, name: $("#invName").value, trusted: $("#invTrust").checked }); toast(res.sent ? "Invite sent" : "Invite made"); showLink(res); drawPeople(); } catch (err) { toast(err.message, 5000); }
     };
+    $$("[data-sapprove]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/accounts/signups/${b.dataset.sapprove}/approve`, {}).catch((e) => toast(e.message)); toast("Approved, they've been told"); drawPeople(); }));
+    $$("[data-sdeny]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/accounts/signups/${b.dataset.sdeny}/deny`, {}).catch((e) => toast(e.message)); drawPeople(); }));
     $$("[data-iapprove]", box).forEach((b) => (b.onclick = async () => { const res = await api(`/api/admin/accounts/invites/${b.dataset.iapprove}/approve`, {}).catch((e) => toast(e.message)); if (res) { toast(res.sent ? "Approved, the invite is on its way" : "Approved"); showLink(res); drawPeople(); } }));
     $$("[data-ideny]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/accounts/invites/${b.dataset.ideny}/deny`, {}); drawPeople(); }));
     $$("[data-iresend]", box).forEach((b) => (b.onclick = async () => { const res = await api(`/api/admin/accounts/invites/${b.dataset.iresend}/resend`, {}).catch((e) => toast(e.message)); if (res) { toast(res.sent ? "Sent again" : "New link made"); showLink(res); } }));

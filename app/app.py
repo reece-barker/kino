@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS embeds (key TEXT PRIMARY KEY, h TEXT, vec BLOB, at RE
 CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER, ref TEXT, kind TEXT, name TEXT, sub TEXT, title_id TEXT,
   device TEXT, ip TEXT, started REAL, last REAL, secs REAL DEFAULT 0, pos REAL, dur REAL);
 CREATE INDEX IF NOT EXISTS activity_last ON activity (last);
+CREATE TABLE IF NOT EXISTS file_overrides (rel TEXT PRIMARY KEY, imdb_id TEXT, season INTEGER, episode INTEGER, at REAL);
 CREATE TABLE IF NOT EXISTS offline_jobs (id TEXT PRIMARY KEY, profile_id INTEGER, file_id TEXT, quality TEXT, audio INTEGER DEFAULT 0, state TEXT, progress REAL DEFAULT 0, eta REAL, size INTEGER,
   error TEXT, subs TEXT, meta TEXT, created REAL, updated REAL);
 CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, name TEXT, pw TEXT, status TEXT DEFAULT 'active', trusted INTEGER DEFAULT 0,
@@ -709,6 +710,10 @@ def scan_fs():
     by_dir = {}
     for v in vids:
         by_dir.setdefault(v.parent, []).append(v)
+    # Files the admin said are one particular episode of a show (Fix Match > This is one episode): they join that show whatever the file is called
+    hand = {r["rel"]: r for r in db().q("SELECT * FROM file_overrides")}
+    for r in hand.values():
+        db().q("INSERT OR IGNORE INTO overrides VALUES (?,?,?,?)", (f"series:{r['imdb_id'].casefold()}", "series", r["imdb_id"], time.time()))
     for p in vids:
         try:
             st = p.stat()
@@ -723,6 +728,11 @@ def scan_fs():
         name = str(first(g.get("title")) or p.stem)
         year = first(g.get("year"))
         key = title_key(kind, name, year)
+        hd = hand.get(rel)
+        if hd:
+            # its own title for now (named after the show's id), and merge_same_show joins it to the show once Cinemeta says which show that is
+            kind, name, year, key = "series", hd["imdb_id"], None, f"series:{hd['imdb_id'].casefold()}"
+            g = {**g, "season": hd["season"], "episode": hd["episode"]}
         tid = short_id(key)
         fid = short_id(rel)
 
@@ -2400,6 +2410,10 @@ def put_watch(pid, fid, pos, dur, done, now=None):
     # Watching on a joint profile counts for both people in it
     for i in group_ids(pid):
         db().q("INSERT OR REPLACE INTO watch VALUES (?,?,?,?,?,?)", (i, fid, pos, dur, done, now or time.time()))
+
+
+def HAND_RELS():
+    return {r["rel"] for r in db().q("SELECT rel FROM file_overrides")}
 
 
 def title_summary(t, meta, wm=None, rm=None):
@@ -4638,6 +4652,7 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
     wm, rm = watch_map(p["id"]), rating_map(p["id"])
     eps = {(v["season"], v["episode"]): v for v in (meta or {}).get("videos", [])}
     files = []
+    hand_rels = HAND_RELS()
     for fid in t["files"]:
         f = LIB["files"][fid]
         pr = cached_probe(f)
@@ -4647,7 +4662,7 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
                       "ep_name": ep.get("name"), "ep_overview": ep.get("overview"), "thumbnail": ep.get("thumbnail"),
                       "duration": pr["duration"] if pr else None, "badges": badges(pr),
                       "progress": {"pos": w["pos"], "dur": w["dur"], "updated": w["updated"]} if w and not w["watched"] else None,
-                      "watched": bool(w and w["watched"]), "last": w["updated"] if w else None})  # last: when it was last played, finished or not, so the page knows which episode you are on
+                      "watched": bool(w and w["watched"]), "last": w["updated"] if w else None, "hand": f["rel"] in hand_rels})  # last: when it was last played, finished or not, so the page knows which episode you are on
     out = title_summary(t, meta, wm, rm)
     # Seasons that have aired but have no file here, they can still be played from the addons
     have = {f["season"] for f in files}
@@ -8337,6 +8352,42 @@ async def match_search(q: str, kind: str = "movie", admin=Depends(require_admin)
             out.append({"id": m["id"], "name": unesc(m.get("name")), "releaseInfo": m.get("releaseInfo"),
                         "poster": ext_poster(m), "kind": kind, "source": a["m"].get("name")})
     return {"results": out[:30]}
+
+
+@app.post("/api/admin/match/episode")
+async def match_episode(request: Request, admin=Depends(require_admin)):
+    """One file that is really one episode of a show (a clip, or a file whose name has no season and episode): it is filed under that show as that episode"""
+    b = await json_obj(request)
+    f = LIB["files"].get(str(b.get("file_id") or ""))
+    imdb = str(b.get("imdb_id") or "")
+    try:
+        season, episode = int(b.get("season")), int(b.get("episode"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Give the season and the episode as numbers")
+    if not f or not re.fullmatch(r"[A-Za-z0-9:_.-]{2,80}", imdb) or not (0 <= season <= 200) or not (0 <= episode <= 5000):
+        raise HTTPException(400, "Pick a show from the search results and give a season and an episode")
+    db().q("INSERT OR REPLACE INTO file_overrides VALUES (?,?,?,?,?)", (f["rel"], imdb, season, episode, time.time()))
+    for _ in range(40):  # a scan that is running now is waited for, so this one isn't skipped
+        if not LIB["scanning"]:
+            break
+        await asyncio.sleep(0.5)
+    await rescan()
+    nf = LIB["files"].get(f["id"])
+    log.info("kino episode match for %s set to %s S%sE%s by %s", logsafe(f["rel"]), imdb, season, episode, admin)
+    return {"ok": True, "title_id": nf["title_id"] if nf else None}
+
+
+@app.delete("/api/admin/match/episode/{fid}")
+async def match_episode_undo(fid: str, admin=Depends(require_admin)):
+    f = file_or_404(fid)
+    db().q("DELETE FROM file_overrides WHERE rel = ?", (f["rel"],))
+    for _ in range(40):
+        if not LIB["scanning"]:
+            break
+        await asyncio.sleep(0.5)
+    await rescan()
+    nf = LIB["files"].get(fid)
+    return {"ok": True, "title_id": nf["title_id"] if nf else None}
 
 
 @app.post("/api/admin/match")

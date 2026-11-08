@@ -108,8 +108,8 @@ body.tv .theme-pick button span, body.tv .mono, body.tv b.mono { font-size: 16px
 body.tv .card .secondary, body.tv .card label, body.tv .card span, body.tv .card .state-line, body.tv .set-hint { font-size: 16px; }
 body.tv .card .big, body.tv .card .num { font-size: inherit; }
 /* ---- the Admin page switch: 44px to tap, 16px text on a tv */
-@media (pointer: coarse) { .admin-tabs a { min-height: 44px; } }
-body.tv .admin-tabs a { font-size: 16px; min-height: 44px; }
+@media (pointer: coarse) { .admin-tabs a, .admin-tabs button { min-height: 44px; } }
+body.tv .admin-tabs a, body.tv .admin-tabs button { font-size: 16px; min-height: 44px; }
 /* ---- Settings list folds: 44px to tap, 16px text on a tv */
 @media (pointer: coarse) { .list-fold > summary { min-height: 44px; } }
 body.tv .list-fold > summary { font-size: 16px; min-height: 44px; }
@@ -117,4 +117,3 @@ body.tv .list-fold > summary { font-size: 16px; min-height: 44px; }
 /* tv: small hint lines and the lists in settings reach the 16px minimum too */
 body.tv .secondary, body.tv .li .secondary, body.tv .set-card .secondary, body.tv .dl-state, body.tv .dl-body .secondary, body.tv .invite-form + .secondary, body.tv .settings .secondary { font-size: 16px !important; }
 body.tv .list-fold summary, body.tv .set-fold summary { font-size: 16px; }
-body.tv .set-tabs button { height: 44px; font-size: 17px; }

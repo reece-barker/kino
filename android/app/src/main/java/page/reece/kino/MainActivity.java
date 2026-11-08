@@ -385,10 +385,12 @@ public class MainActivity extends Activity {
         String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'><style>"
                 + "body{margin:0;height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:sans-serif;text-align:center}"
                 + "h1{font-size:22px;margin:0 0 8px}p{color:#999;margin:0 0 24px;padding:0 24px}"
-                + "button{font-size:17px;font-weight:600;padding:12px 28px;border-radius:12px;border:0;background:#fff;color:#000}"
+                + "button{font-size:17px;font-weight:600;padding:12px 28px;border-radius:12px;border:0;background:#fff;color:#000;margin:6px}"
+                + "button.two{background:#2c2c2e;color:#fff}"
                 + "button:focus{outline:3px solid #0a84ff;outline-offset:3px}</style></head><body><div>"
-                + "<h1>Kino can't be reached</h1><p>Check your internet connection, then try again.</p>"
-                + "<button autofocus onclick='KinoAndroid.retry()'>Try Again</button></div></body></html>";
+                + "<h1>Kino can't be reached</h1><p>Check your internet connection, then try again. Films you downloaded still play.</p>"
+                + "<button autofocus onclick='KinoAndroid.retry()'>Try Again</button>"
+                + (isTv ? "" : "<button class='two' onclick='KinoAndroid.openDownloads()'>Open Downloads</button>") + "</div></body></html>";
         web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
     }
 
@@ -667,6 +669,12 @@ public class MainActivity extends Activity {
                 if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             });
+        }
+
+        // Straight to the downloads page, which Kino's service worker keeps ready for when there is no connection
+        @JavascriptInterface
+        public void openDownloads() {
+            runOnUiThread(() -> { loadFailed = false; web.loadUrl(HOME + "#/downloads"); });
         }
 
         @JavascriptInterface

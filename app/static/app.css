@@ -1299,7 +1299,13 @@ body.tv .gate-old summary { padding: 6px 0; }
 .page.settings[data-active="you"] [data-tab="you"], .page.settings[data-active="playback"] [data-tab="playback"], .page.settings[data-active="access"] [data-tab="access"], .page.settings[data-active="addons"] [data-tab="addons"] { display: block; }
 /* people: the invite form and the rows line up on a phone too */
 .invite-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; align-items: center; margin-top: 14px; }
-.invite-form input.plain { width: 100%; min-width: 0; height: 44px; box-sizing: border-box; }
+/* text boxes with the plain class (the invite forms, the invite link box) had no style and showed as the browser's own boxes, one with a hard border and the focused one
+   with a double ring. They match the other fields now: no border, soft fill, round corners, one blue ring when focused */
+input.plain { height: 46px; box-sizing: border-box; border: 0; border-radius: 12px; padding: 0 14px; background: var(--fill-2); color: var(--label); font: inherit; font-size: 16px; outline: none; -webkit-appearance: none; appearance: none; transition: box-shadow 0.15s; }
+input.plain::placeholder { color: var(--label-3); }
+input.plain:focus, input.plain:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.65); }
+input.plain[readonly] { color: var(--label-2); }
+.invite-form input.plain { width: 100%; min-width: 0; height: 46px; box-sizing: border-box; }
 .invite-form .btn { justify-self: end; min-width: 110px; }
 .li-acct { flex-wrap: wrap; row-gap: 10px; }
 .li-acct .grow { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }

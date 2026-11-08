@@ -1630,10 +1630,16 @@
     const files = t.files;
     if (!files.length) return null;
     if (t.kind === "series") {
-      const started = files.filter((f) => f.progress);
-      if (started.length) return started.sort((a, b) => b.progress.updated - a.progress.updated)[0];
-      const firstUnwatched = files.find((f) => !f.watched);
-      return firstUnwatched || files[0];
+      // The episode you are on: the one played last. Part way through it is that one, finished it is the next one after it (also into the next season),
+      // never the oldest half watched one, and never the first unwatched one when you skipped around
+      const touched = files.filter((f) => f.last);
+      if (touched.length) {
+        const last = touched.reduce((a, b) => (b.last > a.last ? b : a));
+        if (!last.watched) return last;
+        const after = files.slice(files.indexOf(last) + 1).find((f) => !f.watched) || files.find((f) => !f.watched);
+        return after || last;
+      }
+      return files.find((f) => !f.watched) || files[0];
     }
     return files[0];
   }
@@ -3511,7 +3517,63 @@
       if (v !== "web" && typeof window.KinoAndroid.setPlayer === "function") window.KinoAndroid.setPlayer(v);
       toast(v === "web" ? "Videos play in the web player" : v === "android" ? "Videos play in the Android player" : "Videos play in the Kino player");
     };
+    drawAccountCard();
     if (isAdmin()) drawAdminSettings();
+  }
+
+  // ---- accounts: each person signs in with their email and a password, on any device
+  const acWhen = (ts) => (ts ? new Date(ts * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "never");
+  async function drawPeople() {
+    const box = $("#peopleBody");
+    if (!box) return;
+    let r;
+    try { r = await api("/api/admin/accounts"); } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; return; }
+    const badge = $("#peopleBadge"); if (badge) { badge.hidden = !r.waiting.length; badge.textContent = `${r.waiting.length} waiting`; }
+    box.innerHTML = `${r.mail ? "" : `<div class="note">${ic("info")} Email isn't set up on the server yet, so invites can't be sent. You'll get a link to pass on yourself. Set SMTP_HOST, SMTP_USER and SMTP_PASS in /etc/kino/kino.env.</div>`}
+      ${r.waiting.length ? `<h3 class="sr-sub">Waiting For You</h3><div class="list">${r.waiting.map((i) => `<div class="li"><span class="grow"><b>${esc(i.name || i.email)}</b> <span class="secondary">${esc(i.email)} · asked by ${esc(i.by)}</span></span>
+        <button class="btn primary small" data-iapprove="${i.id}">Approve</button><button class="btn secondary small" data-ideny="${i.id}">Deny</button></div>`).join("")}</div>` : ""}
+      ${listFold("peopleList", `Accounts (${r.accounts.length})`, `<div class="list">${r.accounts.map((a) => `<div class="li"><span class="grow"><b>${esc(a.name)}</b> <span class="secondary">${esc(a.email)} · signed in on ${a.devices} device${a.devices === 1 ? "" : "s"} · last ${esc(acWhen(a.last_login))}</span></span>
+        <label class="inline-check" title="Trusted people can invite their family, you approve each one"><input type="checkbox" class="switch" data-atrust="${a.id}" ${a.trusted ? "checked" : ""}> Can invite</label>
+        <button class="btn secondary small" data-areset="${a.id}">Reset Password</button><button class="btn secondary small" data-aremove="${a.id}">Remove</button></div>`).join("") || `<p class="secondary">Nobody has an account yet. Invite someone below.</p>`}</div>`)}
+      ${r.sent.length ? `<h3 class="sr-sub">Invites Sent</h3><div class="list">${r.sent.map((i) => `<div class="li"><span class="grow">${esc(i.name || i.email)} <span class="secondary">${esc(i.email)} · open until ${esc(acWhen(i.expires))}</span></span><button class="btn secondary small" data-iresend="${i.id}">Send Again</button></div>`).join("")}</div>` : ""}
+      <form class="actions end" id="inviteForm" style="gap:8px;flex-wrap:wrap"><input class="plain" id="invName" placeholder="Name" maxlength="40" style="max-width:150px"><input class="plain" id="invEmail" type="email" placeholder="Email to invite" required style="min-width:200px;flex:1">
+        <label class="inline-check"><input type="checkbox" class="switch" id="invTrust"> Can invite</label><button class="btn primary small" type="submit">${ic("plus")} Invite</button></form>
+      <p class="secondary" style="font-size:13px;margin-top:6px">Mail comes from ${esc(r.mail_from)}. The old device and network approvals keep working next to accounts.</p>`;
+    const showLink = (res) => { if (res.link) { const sh = sheet(`<h2>Invite link</h2><p class="secondary">Email isn't set up, so send this link yourself. It works once, for 7 days.</p><input class="plain" readonly value="${esc(res.link)}" style="width:100%" id="invLinkBox"><div class="actions end"><button class="btn primary" data-close>Done</button></div>`); setTimeout(() => $("#invLinkBox", sh.el).select(), 60); } };
+    $("#inviteForm").onsubmit = async (e) => {
+      e.preventDefault();
+      try { const res = await api("/api/admin/accounts/invite", { email: $("#invEmail").value, name: $("#invName").value, trusted: $("#invTrust").checked }); toast(res.sent ? "Invite sent" : "Invite made"); showLink(res); drawPeople(); } catch (err) { toast(err.message, 5000); }
+    };
+    $$("[data-iapprove]", box).forEach((b) => (b.onclick = async () => { const res = await api(`/api/admin/accounts/invites/${b.dataset.iapprove}/approve`, {}).catch((e) => toast(e.message)); if (res) { toast(res.sent ? "Approved, the invite is on its way" : "Approved"); showLink(res); drawPeople(); } }));
+    $$("[data-ideny]", box).forEach((b) => (b.onclick = async () => { await api(`/api/admin/accounts/invites/${b.dataset.ideny}/deny`, {}); drawPeople(); }));
+    $$("[data-iresend]", box).forEach((b) => (b.onclick = async () => { const res = await api(`/api/admin/accounts/invites/${b.dataset.iresend}/resend`, {}).catch((e) => toast(e.message)); if (res) { toast(res.sent ? "Sent again" : "New link made"); showLink(res); } }));
+    $$("[data-atrust]", box).forEach((b) => (b.onchange = async () => { await api(`/api/admin/accounts/${b.dataset.atrust}`, { trusted: b.checked }, "PUT"); toast(b.checked ? "They can invite family now" : "They can't invite any more"); }));
+    $$("[data-areset]", box).forEach((b) => (b.onclick = async () => { const res = await api(`/api/admin/accounts/${b.dataset.areset}/reset`, {}).catch((e) => toast(e.message)); if (res) { toast(res.sent ? "A reset link is on its way" : "Reset link made"); showLink(res); } }));
+    $$("[data-aremove]", box).forEach((b) => (b.onclick = async () => {
+      if (await confirmSheet("Remove this person?", "Their account is deleted and every device they were signed in on stops working straight away.", "Remove", true)) { await api(`/api/admin/accounts/${b.dataset.aremove}`, undefined, "DELETE"); toast("Removed"); drawPeople(); }
+    }));
+  }
+
+  // The signed in person's own account: devices, password, and inviting family when they are allowed to
+  async function drawAccountCard() {
+    const r = await api("/api/account").catch(() => null);
+    const host = $("#acctCard") || (() => { const sec = document.createElement("section"); sec.className = "card set-card"; sec.id = "acctCard"; const first = $(".set-card"); if (first && first.parentElement) first.parentElement.insertBefore(sec, first); return sec; })();
+    if (!r || !r.account) { host.remove(); return; }
+    const a = r.account;
+    host.innerHTML = `<h2 class="set-title">Your Account</h2>
+      <div class="set-row"><span><b>${esc(a.name)}</b><span class="secondary">${esc(a.email)}</span></span><span class="actions"><button class="btn secondary small" id="acPw">Change Password</button><button class="btn secondary small" id="acOut">Sign Out</button></span></div>
+      ${listFold("acDevs", `Signed in on ${r.sessions.length} device${r.sessions.length === 1 ? "" : "s"}`, `<div class="list">${r.sessions.map((s) => `<div class="li"><span class="grow">${esc(s.ua || "A browser")}${s.this ? " <span class=\"badge\">This device</span>" : ""} <span class="secondary">last used ${esc(acWhen(s.last_seen))}</span></span>${s.this ? "" : `<button class="btn secondary small" data-sout="${esc(s.id)}">Sign Out</button>`}</div>`).join("")}</div>`)}
+      ${a.trusted ? `<h3 class="sr-sub">Invite Family</h3>${r.invites.length ? `<div class="list">${r.invites.map((i) => `<div class="li"><span class="grow">${esc(i.name || i.email)} <span class="secondary">${esc(i.email)} · ${i.status === "awaiting" ? "waiting for the admin to approve" : "invite sent"}</span></span></div>`).join("")}</div>` : ""}
+        <form class="actions end" id="acInvite" style="gap:8px;flex-wrap:wrap"><input class="plain" id="aiName" placeholder="Name" maxlength="40" style="max-width:150px"><input class="plain" id="aiEmail" type="email" placeholder="Their email" required style="min-width:200px;flex:1"><button class="btn primary small" type="submit">${ic("plus")} Invite</button></form>
+        <p class="secondary" style="font-size:13px">${a.free ? "They get the invite straight away." : "The admin approves each invite before it is sent."}</p>` : ""}`;
+    $("#acOut").onclick = async () => { await api("/api/account/logout", {}); location.href = "/gate"; };
+    $("#acPw").onclick = () => {
+      const sh = sheet(`<h2>Change Password</h2><div class="ac-form"><label class="ac-field"><span>Current password</span><input id="cpOld" type="password" autocomplete="current-password"></label><label class="ac-field"><span>New password (at least 10 characters)</span><input id="cpNew" type="password" autocomplete="new-password"></label></div>
+        <p class="secondary" style="font-size:13px">You'll be signed out of your other devices.</p><div class="actions end"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="cpGo">Save</button></div>`);
+      $("#cpGo", sh.el).onclick = async () => { try { await api("/api/account/password", { current: $("#cpOld").value, new: $("#cpNew").value }); sh.close(); toast("Password changed"); } catch (e) { toast(e.message, 5000); } };
+    };
+    $$("[data-sout]", host).forEach((b) => (b.onclick = async () => { await api(`/api/account/sessions/${b.dataset.sout}`, undefined, "DELETE"); drawAccountCard(); }));
+    const inv = $("#acInvite"); if (inv) inv.onsubmit = async (e) => { e.preventDefault(); try { const res = await api("/api/account/invite", { email: $("#aiEmail").value, name: $("#aiName").value }); toast(res.waiting ? "Sent to the admin to approve" : res.sent ? "Invite sent" : "Invite made"); drawAccountCard(); } catch (err) { toast(err.message, 5000); } };
   }
 
   // Which folds are open is remembered on this device (the lists inside the cards start open, the sections that are only for set up start closed)
@@ -3541,6 +3603,7 @@
           ${p.locked && !p.members ? `<button class="btn secondary small" data-unlock="${p.id}" title="Takes the code off, you never see what it was">Remove Lock</button>` : ""}
           <button class="btn secondary small" data-editp="${p.id}">${ic("pencil")} Edit</button></div>`).join("")}</div>`)}
         <div class="actions end"><button class="btn secondary small" id="addP">${ic("plus")} Add Profile</button></div></section>
+      <section class="card set-card" id="peopleCard"><div class="set-card-head"><h2 class="set-title">People</h2><span class="badge" id="peopleBadge" hidden></span></div><div id="peopleBody"><div class="skel" style="height:80px"></div></div></section>
       <section class="card set-card" id="netCard"><h2 class="set-title">Allowed Networks</h2>
         <p class="secondary set-hint">Only these internet addresses can open Kino. Add the home IP of each family member. Changes apply within a few seconds.</p>
         ${listFold("netList", `Networks (${al.entries.length})`, `<div class="list">${al.entries.map((e) => `<div class="li"><span class="grow"><b>${esc(e.label)}</b> <span class="secondary mono">${esc(e.cidr)}</span></span>
@@ -3560,6 +3623,7 @@
       ${fold("embedCard", "Live TV Embed Sources", "", `<div id="embedBody"></div>`)}
       ${fold("addonsCard", "Addons", "", `<div id="addonsBody"><div class="skel" style="height:80px"></div></div>`)}`;
     drawDevices();
+    drawPeople();
     drawSessions();
     drawAddons();
     drawLiveAdmin();
@@ -4571,6 +4635,8 @@
     // Otherwise the player only hands back an error when someone picked Web Player in its error box
     if (r.error && !r.sourceFailed) return playFile(r.fid, { ...(cur ? cur.opts : {}), from: r.pos, web: true });
     const n = cur ? cur.info.next : r.next, auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : r.autoplay !== false;
+    // The player says it ran to the end (or moved on to the next episode): that one is finished
+    if (r.ended && r.fid && !String(r.fid).startsWith("s")) api("/api/watched", { file_id: r.fid, watched: true }).catch(() => {});
     if (r.ended && n && auto) return nextFrom(n, cur ? cur.opts.title : null, r.titleId);
     // Redraws the page so resume bars and watched ticks are right
     if (ME.profile) setTimeout(softRoute, 300);
@@ -5261,7 +5327,8 @@
       <div class="actions"><button class="btn primary small" id="unPlay">${ic("play")} Play Now</button><button class="btn secondary small" id="unHide">${auto ? "Cancel" : "Hide"}</button></div></div>`;
     box.hidden = false;
     if (TV && !$(".player .menu:not([hidden])")) $("#unPlay").focus({ preventScroll: true });
-    const go = () => { clearInterval(pl.upNextT); box.hidden = true; saveProgress(); playNext(n); };
+    // Moving on to the next episode counts the one you were on as finished, even if the credits hadn't quite ended
+    const go = () => { clearInterval(pl.upNextT); box.hidden = true; if (pl.info && !pl.info.offline && total()) api("/api/progress", { file_id: pl.info.id, pos: total(), dur: total() }).catch(() => {}); else saveProgress(); playNext(n); };
     $("#unPlay").onclick = go;
     $("#unHide").onclick = () => { clearInterval(pl.upNextT); box.hidden = true; };
     if (auto) {

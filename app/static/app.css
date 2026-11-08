@@ -1262,7 +1262,15 @@ img, picture, video, canvas { -webkit-user-drag: none; -webkit-touch-callout: no
 .dl-sub { display: flex; gap: 10px; align-items: center; min-height: 36px; }
 .dl-info { margin: 10px 0; font-size: 13px; }
 .ep-mark[data-epdl] svg { width: 16px; height: 16px; }
-
+/* sign in and account pages */
+.inline-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; white-space: nowrap; color: var(--label-2); }
+.ac-form { display: flex; flex-direction: column; gap: 10px; }
+.ac-field { display: flex; flex-direction: column; gap: 4px; text-align: left; font-size: 13px; color: var(--label-2); }
+.ac-field input { height: 46px; border-radius: 12px; border: 0; padding: 0 14px; font-size: 16px; background: var(--fill-2); color: var(--label); }
+.link-btn { background: none; border: 0; color: var(--blue); font-size: 14px; padding: 8px; cursor: pointer; }
+.gate-old { margin-top: 14px; text-align: left; font-size: 14px; color: var(--label-2); }
+.gate-old summary { cursor: pointer; padding: 8px 0; text-align: center; }
+.gate-old .gate-code { margin: 10px auto; }
 /* back button on title pages for phones */
 .page-back { display: none; position: fixed; z-index: 45; top: calc(12px + env(safe-area-inset-top)); left: calc(12px + env(safe-area-inset-left));
   width: 40px; height: 40px; border-radius: 50%; place-items: center; font-size: 22px; color: #fff; background: rgba(0, 0, 0, 0.45); }

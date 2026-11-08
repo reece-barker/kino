@@ -9403,15 +9403,15 @@ async def wrapped_public_img(code: str, i: int):
 
 # ---------------------------------------------------------------- Offline downloads
 # For a trip with no connection: the person picks a film or episode, the server makes a copy that phones and laptops can play (mp4, h264 video, aac sound,
-# 720p or 1080p, 4K is always brought down) and the app on their device downloads it and keeps it. The copies are made one at a time (OFFLINE_MAX_JOBS, nice'd and
-# on 2 threads) so watching is never slowed, each person can have 2 waiting or running, and the copies on the server are thrown away as soon as the device has them
+# 720p or 1080p, 4K is always brought down) and the app on their device downloads it and keeps it. The copies are made a couple at a time (OFFLINE_MAX_JOBS, nice'd and
+# on 2 threads) so watching is never slowed, each person can have 3 waiting or running, and the copies on the server are thrown away as soon as the device has them
 # (or after a day or two) and never take more than OFFLINE_MAX_GB.
 OFFLINE_DIR = DATA_DIR / "offline"
-OFFLINE_MAX_JOBS = int(env("OFFLINE_MAX_JOBS", "1"))
+OFFLINE_MAX_JOBS = int(env("OFFLINE_MAX_JOBS", "2"))
 OFFLINE_MAX_GB = float(env("OFFLINE_MAX_GB", "30"))
 OFFLINE_KEEP_HOURS = float(env("OFFLINE_KEEP_HOURS", "36"))
 OFFLINE_THREADS = int(env("OFFLINE_THREADS", "2"))
-OFFLINE_PER_PROFILE = 2
+OFFLINE_PER_PROFILE = 3
 OFFLINE_Q = {"720p": {"h": 720, "mbps": 2.2}, "1080p": {"h": 1080, "mbps": 4.5}}  # the height and the typical video rate of what is made
 OFFLINE_WAKE = None  # made by the worker when it starts
 OFFLINE_RUN = {}  # job id -> the running ffmpeg process

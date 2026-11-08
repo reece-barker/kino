@@ -2089,12 +2089,15 @@ body.tv #heroMute, body.tv #trSnd, body.tv .tile-snd { display: none !important;
 .dl-all { padding: 14px 16px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
 .dl-all .dl-hint { font-size: 13px; }
 .dl-show { display: block; padding: 0; }
-.dl-show > summary { display: grid; grid-template-columns: 64px 1fr; gap: 14px; align-items: center; padding: 12px; cursor: pointer; list-style: none; }
-.dl-show > summary::-webkit-details-marker { display: none; }
+.dl-head { display: grid; grid-template-columns: 64px 1fr 24px; gap: 14px; align-items: center; width: 100%; padding: 12px; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.dl-chev { color: var(--label-2); transition: transform 0.2s; } .dl-show.is-open .dl-chev { transform: rotate(180deg); }
+.dl-season { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; }
+.dl-chip { padding: 2px 10px; border-radius: 999px; background: var(--fill-2); font-size: 12px; font-weight: 600; }
+.dl-show .dl-body b { white-space: normal; }
 .dl-eps { padding: 0 12px 10px; display: flex; flex-direction: column; }
 .dl-ep { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--fill-2); flex-wrap: wrap; }
 .dl-ep-body { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1 1 150px; }
 .dl-ep-body b { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dl-group-acts { justify-content: flex-end; }
 #dlSeason { margin-left: 10px; }
-@media (max-width: 560px) { .dl-show > summary { grid-template-columns: 54px 1fr; } #dlSeason { margin: 10px 0 0; } }
+@media (max-width: 560px) { .dl-head { grid-template-columns: 54px 1fr 20px; gap: 12px; } #dlSeason { margin: 10px 0 0; } }

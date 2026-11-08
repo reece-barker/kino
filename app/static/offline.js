@@ -5,12 +5,17 @@
   "use strict";
   const DB = "kino-offline", DIR = "kino-downloads";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // What a dropped or slow connection looks like in each browser ("Load failed" is Safari's), none of these should end a download
+  const FLAKY = /load failed|failed to fetch|network|connection|timed out|timeout|aborted|offline|kept dropping/i;
 
   // ---- the list (IndexedDB)
   let dbp = null;
   const idb = () => dbp || (dbp = new Promise((ok, no) => {
-    const r = indexedDB.open(DB, 1);
-    r.onupgradeneeded = () => { const d = r.result; d.createObjectStore("downloads", { keyPath: "id" }); d.createObjectStore("positions", { keyPath: "file_id" }); };
+    const r = indexedDB.open(DB, 2);
+    r.onupgradeneeded = () => { const d = r.result; const has = (n) => d.objectStoreNames.contains(n);
+      if (!has("downloads")) d.createObjectStore("downloads", { keyPath: "id" });
+      if (!has("positions")) d.createObjectStore("positions", { keyPath: "file_id" });
+      if (!has("wants")) d.createObjectStore("wants", { keyPath: "key" }); };
     r.onsuccess = () => ok(r.result);
     r.onerror = () => { dbp = null; no(r.error); };
   }));
@@ -89,11 +94,11 @@
       const result = await new Promise((ok, no) => {
         ctl.worker.onmessage = (e) => {
           const m = e.data;
-          if (m.type === "progress") { rec.got = m.off; rec.size = m.total || rec.size; rec.speed = m.speed; rec.waiting = false; save(rec); }
+          if (m.type === "progress") { rec.retries = 0; rec.got = m.off; rec.size = m.total || rec.size; rec.speed = m.speed; rec.waiting = false; save(rec); }
           else if (m.type === "wait") { rec.waiting = true; save(rec); }
           else if (m.type === "done") ok("done");
           else if (m.type === "stopped") ok("stopped");
-          else if (m.type === "error") no(Object.assign(new Error(m.message), { gone: /no longer has/.test(m.message), flaky: /kept dropping/.test(m.message) }));
+          else if (m.type === "error") no(Object.assign(new Error(m.message), { gone: /no longer has/.test(m.message), flaky: FLAKY.test(m.message) }));
         };
         ctl.worker.postMessage({ cmd: "get", url: `/api/offline/file/${rec.jobId}`, name: `${rec.id}.mp4`, total: rec.size || 0 });
       });
@@ -103,12 +108,14 @@
       api(`/api/offline/job/${rec.jobId}/done`, {}).catch(() => {});  // the copy on the server can go now
       if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     } catch (e) {
+      if (!e.requeue && !e.gone && !e.flaky && FLAKY.test(e.message || "") && (rec.retries || 0) < 12) e.flaky = true;
       if (e.requeue || e.gone) {
         // The copy on the server is gone (restart, clean up): start that one again from the queue, the part on this device is dropped
         await dropFile(`${rec.id}.mp4`);
         Object.assign(rec, { jobId: null, state: "waiting", phase: "server", got: 0, speed: 0, server: null, waiting: false, error: null }); await save(rec);
       } else if (e.flaky) {
-        rec.state = "downloading"; rec.waiting = true; rec.speed = 0; await save(rec);  // picked up again by itself when the connection is back
+        rec.retries = (rec.retries || 0) + 1;
+        rec.state = rec.phase === "device" ? "downloading" : "preparing"; rec.waiting = true; rec.speed = 0; await save(rec);  // picked up again by itself when the connection is back
       } else { rec.state = "failed"; rec.error = e.message; await save(rec); }
     } finally {
       RUN.delete(rec.id); ctl.worker.terminate(); letSleep(); emit(); pump();
@@ -124,7 +131,7 @@
 
   // The queue lives on the device: everything asked for is saved here first and handed to the server a couple at a time (it only makes a few copies at once),
   // so a whole season keeps going through restarts, a server that is down for a while and a closed page
-  const MAX_SERVER = 2;
+  const MAX_SERVER = 3;
   let pumping = false, pumpT = 0, PROFILE = null;
   async function pump() {
     if (pumping || !navigator.onLine) return;
@@ -156,11 +163,33 @@
     } finally { pumping = false; }
     if (again && !pumpT) pumpT = setTimeout(() => { pumpT = 0; pump(); }, 12000);
   }
+  // Seasons asked for as a whole: the episodes that aren't in the Library yet (still being saved to it) are added as they turn up
+  const wants = () => run("wants", "readonly", (x) => x.getAll()).then((x) => x || []).catch(() => []);
+  async function checkWants() {
+    if (!navigator.onLine || !PROFILE) return;
+    for (const w of await wants()) {
+      if (w.profile_id !== PROFILE) continue;
+      if (Date.now() - w.added > 21 * 86400000) { await run("wants", "readwrite", (x) => x.delete(w.key)); continue; }
+      let t;
+      try { t = await api(`/api/title/${w.title_id}`); } catch (e) { if (e.status === 404) await run("wants", "readwrite", (x) => x.delete(w.key)); continue; }
+      const have = new Set((await all()).filter((r) => r.profile_id === PROFILE && r.state !== "failed").map((r) => r.file_id));
+      const fresh = t.files.filter((f) => f.season === w.season && !have.has(f.id));
+      if (fresh.length) {
+        const blobs = { poster: w.poster, background: w.background };
+        await KinoOffline.startMany(fresh.map((f) => ({ file_id: f.id, est: 0, meta: { ...w.meta, season: f.season, episode: f.episode, ep_name: f.ep_name || null } })),
+          { quality: w.quality, audio: w.audio, subLabels: w.subLabels, profile_id: PROFILE, blobs });
+      }
+      // Everything it was waiting for has turned up
+      const got = new Set(t.files.filter((f) => f.season === w.season).map((f) => f.episode));
+      if (w.episodes.every((n) => got.has(n))) await run("wants", "readwrite", (x) => x.delete(w.key));
+    }
+  }
   // Every half minute: anything that should be running but isn't (the server was down, the connection dropped) is picked up again
   setInterval(async () => {
     if (!navigator.onLine || !PROFILE) return;
     for (const r of await all()) if (r.profile_id === PROFILE && ["preparing", "queued", "downloading"].includes(r.state) && !RUN.has(r.id)) go(r);
     pump();
+    checkWants();
   }, 30000);
 
   const KinoOffline = {
@@ -170,11 +199,11 @@
     get: (id) => run("downloads", "readonly", (s) => s.get(id)),
     active: () => RUN.size,
     // Adds films or episodes to the queue. items: [{ file_id, meta }], one set of choices for all of them
-    async startMany(items, { quality, audio, subLabels, profile_id, images }) {
+    async startMany(items, { quality, audio, subLabels, profile_id, images, blobs }) {
       if (!supported()) throw new Error("This browser can't keep downloads");
       PROFILE = profile_id;
       const have = (await all()).filter((r) => r.profile_id === profile_id && r.state !== "failed");
-      const poster = await blobOf(images && images.poster), background = await blobOf(images && images.background);
+      const poster = blobs ? blobs.poster : await blobOf(images && images.poster), background = blobs ? blobs.background : await blobOf(images && images.background);
       let n = 0;
       for (const it of items) {
         if (have.some((r) => r.file_id === it.file_id)) continue;
@@ -184,6 +213,9 @@
       pump();
       return n;
     },
+    wants,
+    async want(w) { const key = `${w.profile_id}:${w.title_id}:${w.season}`; await run("wants", "readwrite", (x) => x.put({ ...w, key, added: Date.now() })); emit(); },
+    async unwant(name, profile_id) { for (const w of await wants()) if (w.profile_id === profile_id && w.meta && w.meta.name === name) await run("wants", "readwrite", (x) => x.delete(w.key)); emit(); },
     start({ file_id, quality, audio, subLabels, meta, profile_id, images, est }) { return KinoOffline.startMany([{ file_id, meta, est }], { quality, audio, subLabels, profile_id, images }); },
     pause(id) { const c = RUN.get(id); if (!c) { KinoOffline.get(id).then(async (r) => { if (r && ["waiting", "queued", "preparing", "downloading"].includes(r.state)) { r.state = "paused"; await save(r); } }); return; } c.stop = true; c.worker.postMessage({ cmd: "stop" }); setTimeout(async () => { const r = await KinoOffline.get(id); if (r && r.state !== "ready" && r.state !== "failed") { r.state = "paused"; await save(r); } }, 400); },
     async resume(id) { const r = await KinoOffline.get(id); if (!r) return; r.state = !r.jobId ? "waiting" : r.phase === "device" ? "downloading" : "preparing"; r.error = null; await save(r); if (r.state === "waiting") pump(); else go(r); },
@@ -202,7 +234,7 @@
       if (!supported() || !navigator.onLine) return;
       PROFILE = profileId;
       for (const r of await all()) if (r.profile_id === profileId && ["preparing", "queued", "downloading"].includes(r.state)) go(r);
-      pump();
+      pump(); checkWants();
     },
     async fileUrl(id) { return URL.createObjectURL(await fileOf(`${id}.mp4`)); },
     async subText(id, n) { try { return await (await fileOf(`${id}.${n}.vtt`)).text(); } catch (_) { return null; } },

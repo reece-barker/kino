@@ -969,6 +969,11 @@ body.with-side .row { margin-left: calc(-1 * var(--pad-l)); padding-left: var(--
 .admin-tabs::-webkit-scrollbar { display: none; }
 .admin-tabs a { flex: none; display: inline-flex; align-items: center; padding: 9px 18px; border-radius: 999px; background: var(--fill); color: var(--label-2); font-size: 15px; font-weight: 600; transition: background 0.2s ease, color 0.2s ease; }
 .admin-tabs a:hover { background: var(--fill-2); color: var(--label); }
+/* the Settings tabs are the same chips as the Admin ones (buttons that switch what is shown, not links) */
+.admin-tabs button { flex: none; display: inline-flex; align-items: center; padding: 9px 18px; border-radius: 999px; border: 0; background: var(--fill); color: var(--label-2); font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.2s ease, color 0.2s ease; }
+.admin-tabs button:hover { background: var(--fill-2); color: var(--label); }
+.admin-tabs button[aria-selected="true"] { background: var(--label); color: var(--page-bg); }
+body.tv .admin-tabs button:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; }
 .admin-tabs a[aria-current="page"] { background: var(--label); color: var(--page-bg); }
 body.tv .admin-tabs a:focus-visible { outline: none; box-shadow: 0 0 0 3px #fff; }
 .tb-item { position: relative; }
@@ -1290,11 +1295,6 @@ body.tv .gate-code { font-size: 28px; margin: 10px 0; padding: 8px; }
 body.tv .gate-old { margin-top: 6px; }
 body.tv .gate-old summary { padding: 6px 0; }
 /* settings tabs: every card names its tab, only the open tab's cards show */
-.set-tabs { display: flex; gap: 6px; padding: 4px; margin: 0 0 18px; border-radius: 14px; background: var(--fill); overflow-x: auto; scrollbar-width: none; position: sticky; top: 0; z-index: 5; -webkit-overflow-scrolling: touch; }
-.set-tabs::-webkit-scrollbar { display: none; }
-.set-tabs button { flex: 1 0 auto; height: 38px; padding: 0 16px; border-radius: 10px; font-size: 15px; font-weight: 600; white-space: nowrap; color: var(--label-2); background: none; border: 0; cursor: pointer; }
-.set-tabs button[aria-selected="true"] { background: var(--bg-2); color: var(--label); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
-.set-tabs button:focus-visible { outline: 3px solid var(--blue); outline-offset: 1px; }
 .page.settings [data-tab] { display: none; }
 .page.settings[data-active="you"] [data-tab="you"], .page.settings[data-active="playback"] [data-tab="playback"], .page.settings[data-active="access"] [data-tab="access"], .page.settings[data-active="addons"] [data-tab="addons"] { display: block; }
 /* people: the invite form and the rows line up on a phone too */

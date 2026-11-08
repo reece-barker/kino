@@ -3440,7 +3440,7 @@
     try { const v = localStorage.getItem("kino-settings-tab"); if (SET_TABS.some((t) => t[0] === v)) curTab = v; } catch (_) {}
     app.innerHTML = topbar("settings") + `<main class="page narrow settings" data-active="${curTab}">
       <h1 class="large-title">Settings</h1>
-      <div class="set-tabs" role="tablist" aria-label="Settings">${SET_TABS.map(([k, l]) => `<button role="tab" data-stab="${k}" aria-selected="${k === curTab}">${l}</button>`).join("")}</div>
+      <nav class="admin-tabs" role="tablist" aria-label="Settings">${SET_TABS.map(([k, l]) => `<button role="tab" data-stab="${k}" aria-selected="${k === curTab}">${l}</button>`).join("")}</nav>
       <section class="card set-card" data-tab="you">
         <h2 class="set-title">Profile</h2>
         <div class="set-profile">${pav(p, "lg")}<div class="grow"><div class="set-name">${esc(p.name)}</div><div class="secondary">${p.members ? `A joint profile for ${esc(p.members.map((m) => m.name).join(" and "))}. It sees both of their history and what they like, and what you watch here counts for both of them.` : "Everyone on this profile shares the watch history and these settings."}</div></div>

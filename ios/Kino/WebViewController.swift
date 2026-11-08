@@ -108,6 +108,8 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     // MARK: links: Kino stays in the app, anything else opens in Safari
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = action.request.url else { return decisionHandler(.cancel) }
+        // Things the page embeds (the YouTube trailer player) load inside the page, only real links out of Kino go to Safari
+        if let tf = action.targetFrame, !tf.isMainFrame { return decisionHandler(.allow) }
         if let host = url.host, host == Self.site.host || url.scheme == "about" || url.scheme == "blob" || url.scheme == "data" { return decisionHandler(.allow) }
         if url.scheme == "http" || url.scheme == "https" || url.scheme == "mailto" || url.scheme == "tel" {
             UIApplication.shared.open(url)

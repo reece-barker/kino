@@ -6323,6 +6323,15 @@
     try { await loadOffline(); } catch (_) { return; }
     const rec = await KinoOffline.get(id);
     if (!rec || rec.state !== "ready") return;
+    // In the iPhone app the saved copy plays in the system player, and where they got to comes back when it is closed
+    if (rec.native && KinoOffline.native()) {
+      const m = rec.meta || {};
+      try {
+        const r = await KinoOffline.playNative(id, await KinoOffline.position(rec.file_id) || 0, m.name || "", m.season != null ? [epLabel(m.season, m.episode), nice(m.ep_name || "")].filter(Boolean).join(" ") : "");
+        if (r && r.dur > 0) { await KinoOffline.savePos(rec.file_id, r.pos, r.dur); KinoOffline.syncPositions().catch(() => {}); }
+      } catch (e) { toast(e && e.message ? String(e.message) : "That download can't be opened, remove it and download it again", 6000); }
+      return;
+    }
     let src;
     try { src = await KinoOffline.fileUrl(id); } catch (_) { toast("That download can't be opened, remove it and download it again", 6000); return; }
     const m = rec.meta || {};

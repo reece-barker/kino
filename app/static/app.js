@@ -2678,8 +2678,20 @@
         <select class="plain" id="fmk"><option value="movie" ${t.kind === "movie" ? "selected" : ""}>Movie</option><option value="series" ${t.kind === "series" ? "selected" : ""}>TV Show</option></select>
         <button class="btn secondary small" id="fmGo">Search</button>
       </div>
+      ${t.files.length ? `<label class="fm-ep"><input type="checkbox" class="switch" id="fmEp"> <span><b>This is one episode of a show</b><span class="secondary">For a clip or a file whose name has no season and episode. Pick the show below and say which episode it is.</span></span></label>
+        <div class="fm-epbox" id="fmEpBox" hidden>${t.files.length > 1 ? `<select class="plain" id="fmFile" aria-label="Which file">${t.files.map((f) => `<option value="${f.id}">${esc(f.name)}</option>`).join("")}</select>` : ""}
+          <label>Season <input class="plain" id="fmS" type="number" min="0" max="200" inputmode="numeric"></label><label>Episode <input class="plain" id="fmE" type="number" min="0" max="5000" inputmode="numeric"></label>
+          <button class="btn secondary small" id="fmUndo" hidden>Undo</button></div>` : ""}
       <div class="fm-results" id="fmr"></div>
       <div class="actions end"><button class="btn secondary small" data-close>Close</button></div>`, { wide: true });
+    const epOn = () => !!($("#fmEp", s.el) && $("#fmEp", s.el).checked);
+    const curFile = () => t.files.find((f) => f.id === (($("#fmFile", s.el) || {}).value || (t.files[0] || {}).id)) || t.files[0];
+    const fillEp = () => { const f = curFile(); if (!f) return; $("#fmS", s.el).value = f.season != null ? f.season : 1; $("#fmE", s.el).value = f.episode != null ? f.episode : 1; $("#fmUndo", s.el).hidden = !f.hand; };
+    if ($("#fmEp", s.el)) {
+      $("#fmEp", s.el).onchange = () => { $("#fmEpBox", s.el).hidden = !epOn(); if (epOn()) { $("#fmk", s.el).value = "series"; fillEp(); go(); } };
+      if ($("#fmFile", s.el)) $("#fmFile", s.el).onchange = fillEp;
+      $("#fmUndo", s.el).onclick = async () => { try { const r = await api(`/api/admin/match/episode/${curFile().id}`, undefined, "DELETE"); s.close(); toast("Back to how it was named"); location.hash = r.title_id ? "#/title/" + r.title_id : "#/movies"; route(); } catch (e) { toast(e.message, 5000); } };
+    }
     const go = async () => {
       const box = $("#fmr", s.el);
       box.innerHTML = `<div class="secondary">Searching…</div>`;
@@ -2691,7 +2703,12 @@
           : `<div class="secondary">No results, try a different spelling or switch Movie and TV Show.</div>`;
         $$(".fm-item", box).forEach((b) => (b.onclick = async () => {
           b.disabled = true;
-          try { await api("/api/admin/match", { title_id: t.id, imdb_id: b.dataset.id, kind: b.dataset.kind }); s.close(); toast("Match updated"); route(); }
+          try {
+            if (epOn()) {
+              const r = await api("/api/admin/match/episode", { file_id: curFile().id, imdb_id: b.dataset.id, season: Number($("#fmS", s.el).value), episode: Number($("#fmE", s.el).value) });
+              s.close(); toast("Filed under the show as that episode"); location.hash = r.title_id ? "#/title/" + r.title_id : "#/shows"; route();
+            } else { await api("/api/admin/match", { title_id: t.id, imdb_id: b.dataset.id, kind: b.dataset.kind }); s.close(); toast("Match updated"); route(); }
+          }
           catch (e) { toast(e.message, 5000); b.disabled = false; }
         }));
       } catch (e) { box.innerHTML = `<div class="err-note">${esc(e.message)}</div>`; }

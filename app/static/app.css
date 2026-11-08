@@ -1262,6 +1262,12 @@ img, picture, video, canvas { -webkit-user-drag: none; -webkit-touch-callout: no
 .dl-sub { display: flex; gap: 10px; align-items: center; min-height: 36px; }
 .dl-info { margin: 10px 0; font-size: 13px; }
 .ep-mark[data-epdl] svg { width: 16px; height: 16px; }
+/* fix match: one episode */
+.fm-ep { display: flex; gap: 12px; align-items: flex-start; margin: 4px 0 8px; cursor: pointer; }
+.fm-ep .secondary { display: block; font-size: 13px; }
+.fm-epbox { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 12px; }
+.fm-epbox label { display: flex; gap: 6px; align-items: center; font-size: 14px; }
+.fm-epbox input[type=number] { width: 78px; }
 /* sign in and account pages */
 .gate-tabs { display: flex; gap: 6px; padding: 4px; margin: 0 0 18px; border-radius: 14px; background: var(--fill); }
 .gate-tabs button { flex: 1; height: 38px; border-radius: 10px; font-size: 15px; font-weight: 600; color: var(--label-2); background: none; border: 0; cursor: pointer; }

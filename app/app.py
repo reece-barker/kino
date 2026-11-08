@@ -2948,11 +2948,10 @@ async def home(request: Request, p=Depends(current_profile)):
     mine, fresh = mylist_items(p, summ, wm)
     if fresh:
         shelves.append({"id": "fresh", "title": "New Episodes in My List", "style": "fresh", "items": fresh})
-    if cont:
-        shelves.append({"id": "continue", "title": f"Continue Watching for {p['name']}", "style": "continue", "items": cont})
+    # One row: what is part way through first (with its progress bar), then everything else played lately (finished films, shows to pick the next episode of)
     recent = recent_list(summ, wm, {c["id"] for c in cont if c.get("id")})
-    if recent:
-        shelves.append({"id": "recent", "title": "Recently Watched", "style": "recent", "items": recent})
+    if cont or recent:
+        shelves.append({"id": "continue", "title": f"Continue Watching for {p['name']}", "style": "continue", "items": cont + [{**r, "recent": True} for r in recent]})
     if has_signal:
         picks = [s for s in by_score if not s["watched"]][:13]
         # Every few picks is something well rated from outside what they usually watch, so there's always room for

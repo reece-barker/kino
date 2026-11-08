@@ -1439,9 +1439,9 @@
       <main class="page under-hero" style="padding-top:8px">
         ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${TV && s.style === "continue" ? ` <span class="from">Hold OK to remove</span>` : ""}${s.more ? ` <a href="${esc(s.more)}">See All</a>` : ""}</h2>
           <div class="row ${s.style === "poster" ? "posters" : "wide"}" ${s.next != null ? `data-shelf="${esc(s.id)}" data-next="${esc(s.next)}" data-style="${esc(s.style)}"` : ""} ${s.pending ? "data-pending" : ""}>${s.pending ? Array.from({ length: 8 }, () => `<div class="sk ${s.style === "poster" ? "sk-poster" : "sk-wide"}"></div>`).join("") : ""}${s.items.map((t) => s.style === "poster" ? posterTile(t)
+            : s.style === "continue" && t.recent ? wideTile(t, { href: t.stream ? extHref(t) : undefined, sub: [t.kind === "series" && t.season != null ? epLabel(t.season, t.episode) : "", ago(t.last)].filter(Boolean).join(" · ") })
             : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: t.file_id, href: t.stream ? extHref(t) : undefined,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
-            : s.style === "recent" ? wideTile(t, { href: t.stream ? extHref(t) : undefined, sub: [t.kind === "series" && t.season != null ? epLabel(t.season, t.episode) : "", ago(t.last)].filter(Boolean).join(" · ") })
             : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster", s.more === "#/shows" ? "All TV Shows" : "All Movies") : ""}</div></section>`).join("")}
       </main>`;
     wireTopbar();

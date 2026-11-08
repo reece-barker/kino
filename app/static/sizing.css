@@ -117,3 +117,7 @@ body.tv .list-fold > summary { font-size: 16px; min-height: 44px; }
 /* tv: small hint lines and the lists in settings reach the 16px minimum too */
 body.tv .secondary, body.tv .li .secondary, body.tv .set-card .secondary, body.tv .dl-state, body.tv .dl-body .secondary, body.tv .invite-form + .secondary, body.tv .settings .secondary { font-size: 16px !important; }
 body.tv .list-fold summary, body.tv .set-fold summary { font-size: 16px; }
+
+/* TV: the invite form boxes get the same bigger text and a clearer focus ring as the other fields */
+body.tv input.plain { height: 56px; font-size: 20px; }
+body.tv input.plain:focus, body.tv input.plain:focus-visible { box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.85); }

@@ -1273,7 +1273,8 @@ body.tv.gate-body { display: block; box-sizing: border-box; height: 100vh; min-h
 body.tv .gate { display: block; min-height: 0; }
 body.tv .gate-card { width: min(780px, 100%); margin: 0 auto; padding: 18px 30px 20px; border-radius: 26px; animation: none; }
 body.tv .gate-mark svg { height: 26px; width: auto; }
-body.tv .gate-mark { margin-bottom: 4px; }
+body.tv .gate-mark { margin-bottom: 12px; }
+body.tv .gate-card p.secondary { margin: 0 0 12px; }
 body.tv .gate-card h1 { font-size: 24px; margin-bottom: 6px; }
 body.tv .gate-card p.secondary, body.tv .gate-card .note, body.tv .gate-old, body.tv .link-btn, body.tv .ac-field, body.tv .pw-meter { font-size: 16px; }
 body.tv .gate-card .note { margin-top: 8px; min-height: 0; }
@@ -1294,8 +1295,8 @@ body.tv .gate-old summary { padding: 6px 0; }
 .set-tabs button { flex: 1 0 auto; height: 38px; padding: 0 16px; border-radius: 10px; font-size: 15px; font-weight: 600; white-space: nowrap; color: var(--label-2); background: none; border: 0; cursor: pointer; }
 .set-tabs button[aria-selected="true"] { background: var(--bg-2); color: var(--label); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
 .set-tabs button:focus-visible { outline: 3px solid var(--blue); outline-offset: 1px; }
-.settings [data-tab] { display: none; }
-.settings[data-active="you"] [data-tab="you"], .settings[data-active="playback"] [data-tab="playback"], .settings[data-active="access"] [data-tab="access"], .settings[data-active="addons"] [data-tab="addons"] { display: block; }
+.page.settings [data-tab] { display: none; }
+.page.settings[data-active="you"] [data-tab="you"], .page.settings[data-active="playback"] [data-tab="playback"], .page.settings[data-active="access"] [data-tab="access"], .page.settings[data-active="addons"] [data-tab="addons"] { display: block; }
 /* people: the invite form and the rows line up on a phone too */
 .invite-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; align-items: center; margin-top: 14px; }
 .invite-form input.plain { width: 100%; min-width: 0; height: 44px; box-sizing: border-box; }

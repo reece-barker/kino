@@ -2644,8 +2644,11 @@ def continue_list(summ, wm, pid=None):
             # Finished this one, for a show the next episode goes in Continue Watching instead
             if s["kind"] != "series":
                 continue
-            nf = next_unwatched(t, wm)
-            if not nf or t["files"].index(nf) < t["files"].index(f["id"]):
+            # The next episode after the one just finished (not the first unwatched one overall, which went back to episode 1 or gave nothing when an
+            # earlier episode had been skipped)
+            after = t["files"][t["files"].index(f["id"]) + 1:]
+            nf = next((x for x in after if not wm.get(x, {}).get("watched")), None)
+            if not nf:
                 continue
             target, pos, dur = LIB["files"][nf], 0, 0
         elif not dur or pos / dur < 0.02:
@@ -4633,7 +4636,7 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
                       "ep_name": ep.get("name"), "ep_overview": ep.get("overview"), "thumbnail": ep.get("thumbnail"),
                       "duration": pr["duration"] if pr else None, "badges": badges(pr),
                       "progress": {"pos": w["pos"], "dur": w["dur"], "updated": w["updated"]} if w and not w["watched"] else None,
-                      "watched": bool(w and w["watched"])})
+                      "watched": bool(w and w["watched"]), "last": w["updated"] if w else None})  # last: when it was last played, finished or not, so the page knows which episode you are on
     out = title_summary(t, meta, wm, rm)
     # Seasons that have aired but have no file here, they can still be played from the addons
     have = {f["season"] for f in files}
@@ -5250,7 +5253,8 @@ async def progress(request: Request, p=Depends(current_profile)):
     if fid.startswith("s") and pos > 60:
         # Played for a minute, so this source works and goes first next time
         db().q("INSERT INTO stream_health (id, good, bad) VALUES (?, ?, 0) ON CONFLICT(id) DO UPDATE SET good = excluded.good", (fid, time.time()))
-    done = 1 if dur and pos / dur > 0.93 else 0
+    # Finished when 93 percent through, or in the last two minutes of something long (the credits of a long episode can be more than 7 percent)
+    done = 1 if dur and (pos / dur > 0.93 or (dur > 900 and dur - pos < 120)) else 0
     put_watch(p["id"], fid, pos, dur, done)
     note_playing(p["id"], fid, pos, dur, done, request)
     act_touch(p["id"], fid, request, pos, dur)

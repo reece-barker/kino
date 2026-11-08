@@ -9,7 +9,7 @@
   const post = async (url, body) => {
     const r = await fetch(url, { method: "POST", headers: H, credentials: "same-origin", body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.detail || "That didn't work, try again");
+    if (!r.ok) throw new Error(j.detail || (r.status === 429 ? "Too many tries in a short time, wait a minute and try again" : `That didn't work (error ${r.status}), try again`));
     return j;
   };
   const form = (title, intro, fields, button, onSubmit) => {

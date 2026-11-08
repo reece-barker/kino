@@ -10213,6 +10213,7 @@ async def signup_start(request: Request):
         SIGNUP_FAILS.clear()
     if db().q("SELECT COUNT(*) AS n FROM signups WHERE status IN ('unverified','awaiting')")[0]["n"] >= 60:
         raise HTTPException(429, "A lot of people are waiting to get in, ask the admin")
+    log.info("kino sign up asked by %s from %s", logsafe(email), ip)
     resp = {"ok": True, "step": "code"}  # the same answer whatever happens next, so this can't be used to find out who has an account
     if db().q("SELECT 1 FROM accounts WHERE email = ? AND status = 'active'", (email,)):
         await send_mail(email, "You already have a Kino account", f"Hi {name},\n\nSomeone (hopefully you) tried to sign up to Kino with this email, but it already has an account.\n\n"
@@ -10224,7 +10225,8 @@ async def signup_start(request: Request):
            (email, name, hash_pw(pw, 2**15), "unverified", ip, request.headers.get("user-agent", "")[:200], now, now + SIGNUP_CODE_MINUTES * 60, now))
     sid = db().q("SELECT last_insert_rowid() AS i")[0]["i"]
     db().q("UPDATE signups SET code_hash = ? WHERE id = ?", (code_hash(sid, code), sid))
-    await send_signup_code(email, name, code)
+    sent = await send_signup_code(email, name, code)
+    log.info("kino sign up code for %s %s", logsafe(email), "sent" if sent else "NOT sent, the mail server didn't take it or isn't set up")
     return resp
 
 
@@ -10233,7 +10235,7 @@ async def send_signup_code(email, name, code):
             "If you didn't ask for this, ignore this email, nothing happens without the code.\n")
     h = mail_html("Your Kino code", [f"Hi {html.escape(name)},", f'<span style="font-size:34px;font-weight:800;letter-spacing:0.18em;font-family:ui-monospace,Menlo,monospace">{code}</span>',
                                      f"Type it into the sign up page to confirm this email. It works for {SIGNUP_CODE_MINUTES} minutes."], small="If you didn't ask for this, ignore this email.")
-    await send_mail(email, f"Your Kino code is {code}", text, None, h)
+    return await send_mail(email, f"Your Kino code is {code}", text, None, h)
 
 
 @app.post("/api/account/signup/resend")
@@ -10267,6 +10269,7 @@ async def signup_verify(request: Request):
         raise bad
     tok, h = tok_new()
     db().q("UPDATE signups SET status = 'awaiting', verified_at = ?, token_hash = ?, code_hash = NULL WHERE id = ?", (time.time(), h, s["id"]))
+    log.info("kino sign up %s confirmed their email, asking %s", logsafe(email), logsafe(", ".join(approver_emails()) or "nobody"))
     await signup_tell(s, tok)
     return {"ok": True, "step": "waiting"}
 

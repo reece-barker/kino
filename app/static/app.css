@@ -1492,10 +1492,10 @@ body.tv .chip:focus-visible { transform: scale(1.08); box-shadow: 0 0 0 3px var(
 html.lite .shelf { content-visibility: visible; contain-intrinsic-size: none; }
 
 /* Profile picker always fits, fitWho() shrinks the icons when theres a lot of profiles */
-.who .who-av .av.lg { width: var(--who-av, clamp(96px, 12vw, 150px)); height: var(--who-av, clamp(96px, 12vw, 150px)); }
-.who-grid { max-width: min(1240px, 94vw); row-gap: clamp(14px, 3vh, 36px); }
-.who-title { font-size: clamp(26px, min(4vw, 7vh), 52px); }
-.who-name { font-size: clamp(14px, 2.2vh, 17px); }
+.who .who-av .av.lg { width: var(--who-av, clamp(96px, min(12vw, 20vh), 250px)); height: var(--who-av, clamp(96px, min(12vw, 20vh), 250px)); }
+.who-grid { max-width: min(2000px, 94vw); row-gap: clamp(14px, 3vh, 36px); }
+.who-title { font-size: clamp(26px, min(4vw, 7vh), 84px); }
+.who-name { font-size: clamp(14px, min(2.2vh, 1.4vw), 26px); max-width: clamp(150px, 14vw, 260px); }
 .who-tile { gap: clamp(8px, 1.6vh, 14px); }
 
 /* Settings, space around the line under the profile */
@@ -1904,7 +1904,7 @@ body.tv .who-tile:hover:not(:focus-visible) .av-duo .av-half:last-child { box-sh
 
 /* folders on the picker look like an ios folder: a rounded square with the first 4 profiles inside */
 .fold-ic { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 7%; padding: 9%; box-sizing: border-box; border-radius: 22%;
-  width: var(--who-av, clamp(96px, 12vw, 150px)); height: var(--who-av, clamp(96px, 12vw, 150px)); background: var(--bg-3); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1); }
+  width: var(--who-av, clamp(96px, min(12vw, 20vh), 250px)); height: var(--who-av, clamp(96px, min(12vw, 20vh), 250px)); background: var(--bg-3); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1); }
 .fold-cell { display: block; min-width: 0; min-height: 0; }
 .fold-cell .av { width: 100%; height: 100%; border-radius: 22%; box-shadow: none; }
 .fold-cell .av-duo .av-half:last-child { box-shadow: 0 0 0 1.5px var(--bg-3); }
@@ -2104,3 +2104,11 @@ body.tv #heroMute, body.tv #trSnd, body.tv .tile-snd { display: none !important;
 
 /* Landscape phones with a notch or island: nothing sits under it on the right either */
 body.with-side .page { padding-right: max(var(--gutter), env(safe-area-inset-right)); }
+
+/* The download sheet is long (options, quality, sound, subtitles): tighter, and Download stays in view while the rest scrolls */
+.sheet:has(#dlGo) { padding: 20px 18px 0; }
+.sheet:has(#dlGo) h2 { font-size: 20px; }
+.sheet:has(#dlGo) .dl-opts { margin: 8px 0; gap: 6px; }
+.sheet:has(#dlGo) .dl-opt { padding: 9px 12px; }
+.sheet:has(#dlGo) .dl-info { font-size: 12px; margin: 8px 0; }
+.sheet:has(#dlGo) .actions.end { position: sticky; bottom: 0; margin: 0 -18px; padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); background: var(--bg-2); box-shadow: 0 -1px 0 var(--sep); }

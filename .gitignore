@@ -9,3 +9,5 @@ venv/
 /data/
 /media/
 .DS_Store
+*.whl
+.claude/

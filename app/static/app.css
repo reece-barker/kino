@@ -2069,3 +2069,11 @@ body.tv #heroMute, body.tv #trSnd, body.tv .tile-snd { display: none !important;
    page where a button is fixed in place), so the small round buttons use a plain translucent fill instead */
 .round-btn, .glass-btn.round, .page-back, .page-back.glass { -webkit-backdrop-filter: none; backdrop-filter: none; }
 .page-back, .page-back.glass { background: rgba(24, 24, 26, 0.72); }
+/* The close and back buttons at the top left sit over pictures and dark fades. On iPhones a picture that is blurred or animating (the loading screen's backdrop, the
+   slow drift of a hero) is drawn in its own layer and could be painted over the button, which then looked dimmed. The buttons get a layer of their own above
+   everything beside them, a brighter fill and a thin light ring so they read on a dark fade, and the backdrop and the fades stay behind them */
+.pl-bg { z-index: 0; isolation: isolate; }
+.pl-mid { position: relative; z-index: 2; }
+.pl-close, .page-back, .tile-x { z-index: 7; -webkit-transform: translateZ(0); transform: translateZ(0); isolation: isolate; }
+.page-back, .page-back.glass, .glass-btn.round.pl-close { background: rgba(58, 58, 62, 0.86); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 2px 10px rgba(0, 0, 0, 0.45); color: #fff; }
+.pl-close svg, .page-back svg { filter: none; opacity: 1; }

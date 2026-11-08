@@ -1629,10 +1629,16 @@
     const files = t.files;
     if (!files.length) return null;
     if (t.kind === "series") {
-      const started = files.filter((f) => f.progress);
-      if (started.length) return started.sort((a, b) => b.progress.updated - a.progress.updated)[0];
-      const firstUnwatched = files.find((f) => !f.watched);
-      return firstUnwatched || files[0];
+      // The episode you are on: the one played last. Part way through it is that one, finished it is the next one after it (also into the next season),
+      // never the oldest half watched one, and never the first unwatched one when you skipped around
+      const touched = files.filter((f) => f.last);
+      if (touched.length) {
+        const last = touched.reduce((a, b) => (b.last > a.last ? b : a));
+        if (!last.watched) return last;
+        const after = files.slice(files.indexOf(last) + 1).find((f) => !f.watched) || files.find((f) => !f.watched);
+        return after || last;
+      }
+      return files.find((f) => !f.watched) || files[0];
     }
     return files[0];
   }
@@ -4567,6 +4573,8 @@
     // Otherwise the player only hands back an error when someone picked Web Player in its error box
     if (r.error && !r.sourceFailed) return playFile(r.fid, { ...(cur ? cur.opts : {}), from: r.pos, web: true });
     const n = cur ? cur.info.next : r.next, auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : r.autoplay !== false;
+    // The player says it ran to the end (or moved on to the next episode): that one is finished
+    if (r.ended && r.fid && !String(r.fid).startsWith("s")) api("/api/watched", { file_id: r.fid, watched: true }).catch(() => {});
     if (r.ended && n && auto) return nextFrom(n, cur ? cur.opts.title : null, r.titleId);
     // Redraws the page so resume bars and watched ticks are right
     if (ME.profile) setTimeout(softRoute, 300);
@@ -5246,7 +5254,8 @@
       <div class="actions"><button class="btn primary small" id="unPlay">${ic("play")} Play Now</button><button class="btn secondary small" id="unHide">${auto ? "Cancel" : "Hide"}</button></div></div>`;
     box.hidden = false;
     if (TV && !$(".player .menu:not([hidden])")) $("#unPlay").focus({ preventScroll: true });
-    const go = () => { clearInterval(pl.upNextT); box.hidden = true; saveProgress(); playNext(n); };
+    // Moving on to the next episode counts the one you were on as finished, even if the credits hadn't quite ended
+    const go = () => { clearInterval(pl.upNextT); box.hidden = true; if (pl.info && !pl.info.offline && total()) api("/api/progress", { file_id: pl.info.id, pos: total(), dur: total() }).catch(() => {}); else saveProgress(); playNext(n); };
     $("#unPlay").onclick = go;
     $("#unHide").onclick = () => { clearInterval(pl.upNextT); box.hidden = true; };
     if (auto) {

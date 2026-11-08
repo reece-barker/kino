@@ -22,7 +22,7 @@ targets:
     info:
       path: Kino/Info.plist
       properties:
-        CFBundleDisplayName: Kino
+        CFBundleDisplayName: KINO
         UILaunchScreen:
           UIColorName: LaunchBlack
           UIImageName: LaunchLogo
@@ -48,4 +48,5 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: page.reece.kino
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_KEY_CFBundleDisplayName: Kino
+        PRODUCT_NAME: KINO
+        INFOPLIST_KEY_CFBundleDisplayName: KINO

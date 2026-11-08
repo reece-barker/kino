@@ -13,6 +13,10 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         return URL(string: "https://kino.reece.page")!
     }()
     private var web: WKWebView!
+    static weak var current: WebViewController?
+    func go(_ route: String) { web.evaluateJavaScript("location.hash = \(String(reflecting: route))") }
+    func reloadPage() { web.reload() }
+    func history(_ n: Int) { web.evaluateJavaScript("history.go(\(n))") }
     private let failView = UIView()
     private let failText = UILabel()
 
@@ -23,6 +27,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
+        Self.current = self
 
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()  // stays between launches: the sign in, the downloads, the offline copy of the site

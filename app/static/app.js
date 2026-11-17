@@ -1690,6 +1690,21 @@
     // near the bottom. Changing a filter starts again from the top
     const picked = [];
     const val = (id) => ($("#" + id) ? $("#" + id).value : "");
+    // The filters are kept in the address (#/movies?g=Comedy&sort=year), so Back from a title comes back to the same list, not the
+    // whole lot from the top. Opening Movies from the sidebar has none so it starts fresh like before
+    const was = new URLSearchParams(location.hash.split("?")[1] || "");
+    (was.get("g") || "").split(",").filter((g) => genres.includes(g)).forEach((g) => picked.push(g));
+    ["sort", "decade", "minr", "src"].forEach((id) => { const el = $("#" + id), v = was.get(id); if (el && v && [...el.options].some((o) => o.value === v)) el.value = v; });
+    if (was.get("q")) $("#q").value = was.get("q");
+    $$(".chip[data-g]").forEach((x) => { const on = x.dataset.g ? picked.includes(x.dataset.g) : !picked.length; x.classList.toggle("on", on); x.setAttribute("aria-pressed", on); });
+    const remember = () => {
+      const q = new URLSearchParams();
+      if (picked.length) q.set("g", picked.join(","));
+      ["sort", "decade", "minr", "src"].forEach((id) => { const v = val(id); if (v && !(id === "sort" && v === "added")) q.set(id, v); });
+      if (val("q").trim()) q.set("q", val("q").trim());
+      const h = location.hash.split("?")[0] + (q.toString() ? "?" + q : "");
+      if (h !== location.hash) try { history.replaceState(history.state, "", h); } catch (_) {}
+    };
     let next = 0, seq = 0, busy = false, shown = 0;
     const query = () => `/api/browse?kind=${kind}&genres=${encodeURIComponent(picked.join(","))}&decade=${val("decade") || 0}&minr=${val("minr") || 0}&src=${val("src")}&sort=${val("sort")}&q=${encodeURIComponent(val("q").trim())}`;
     const put = (r, reset) => {
@@ -1707,6 +1722,7 @@
     const load = async (reset) => {
       const my = reset ? ++seq : seq;
       if (busy && !reset) return;
+      if (reset) remember();
       busy = true;
       try {
         const r = await api(query() + `&skip=${reset ? 0 : next}`);
@@ -1742,7 +1758,12 @@
       load(true).then(() => { if (TV) { const f = $("#grid a.tile"); if (f) f.focus({ preventScroll: true }); } });
     });
     ["sort", "decade", "minr", "src"].forEach((id) => $("#" + id) && $("#" + id).addEventListener("input", () => load(true)));
-    put(first, true);
+    if ([...was.keys()].length) {
+      // Came back with filters on, so the list is asked for again with them before the page counts as drawn (Back puts the scroll back after that)
+      const r = await api(query() + "&skip=0").catch(() => first);
+      if (n !== ROUTE_N || !$("#grid")) return;
+      put(r, true);
+    } else put(first, true);
   }
 
   // ---------------------------------------------------------- my list
@@ -1762,6 +1783,7 @@
   // Rows only draw the first few results and add more as you scroll or move along them, so a search with lots of
   // results is quick to show and light on a tv
   const SROWS = {};
+  let SEARCH_LAST = null;  // the last search's results, so going back to it draws the same rows straight away
   let HAS_VIDEO_ADDON = true;  // goes false once the server says no addon searches videos
   const SROW_STEP = 14;
   // Channels and live events in search, they play straight away
@@ -1851,28 +1873,39 @@
     wireTopbar();
     const input = $("#sq");
     keyboardOnDemand(input);
-    if (!TV) input.focus();
+    // Coming back to a search (Back from a title) puts the results, the scroll and the card you were on back, so the box doesnt grab the focus then
+    const back = wasHere();
+    if (!TV && !back) input.focus();
     setupMic(input, () => run());
     let t, seq = 0, ctl = null;
     const run = async () => {
       const q = input.value.trim();
-      history.replaceState(null, "", "#/search" + (q ? "?q=" + encodeURIComponent(q) : ""));
+      // Keeps the history stamp on this entry (replaceState with null wiped it, so Back to a search never counted as coming back)
+      try { history.replaceState(history.state, "", "#/search" + (q ? "?q=" + encodeURIComponent(q) : "")); } catch (_) {}
       const box = $("#sres");
-      if (!q) { ++seq; if (ctl) ctl.abort(); return drawStart(box); }
+      if (!q) { ++seq; if (ctl) ctl.abort(); SEARCH_LAST = null; return drawStart(box); }
       const my = ++seq;
       if (ctl) ctl.abort();
       const sc = ctl = new AbortController();
-      box.innerHTML = `<div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="row posters">${Array.from({ length: 8 }, () => '<div class="sk sk-poster"></div>').join("")}</div>`;
+      // Back to the same search draws what was there straight away instead of asking every addon again, so the rows are in the same order
+      // and the scroll and focus can go back to where they were
+      const kept = back && my === 1 && SEARCH_LAST && SEARCH_LAST.q === q && Date.now() - SEARCH_LAST.at < 30 * 60000 ? SEARCH_LAST : null;
       let r;
-      try { r = await api("/api/search?q=" + encodeURIComponent(q), undefined, undefined, sc.signal); }
-      catch (e) {
-        if (sc.signal.aborted || my !== seq || n !== ROUTE_N || !$("#sres") || e.message === "pick profile") return;
-        box.innerHTML = `<div class="empty"><h2>Search failed</h2><p>${esc(e.message)}. Check your connection and try again.</p></div>`;
-        return;
+      if (kept) r = kept.r;
+      else {
+        box.innerHTML = `<div class="sk sk-line" style="width:200px;margin-top:32px"></div><div class="row posters">${Array.from({ length: 8 }, () => '<div class="sk sk-poster"></div>').join("")}</div>`;
+        try { r = await api("/api/search?q=" + encodeURIComponent(q), undefined, undefined, sc.signal); }
+        catch (e) {
+          if (sc.signal.aborted || my !== seq || n !== ROUTE_N || !$("#sres") || e.message === "pick profile") return;
+          box.innerHTML = `<div class="empty"><h2>Search failed</h2><p>${esc(e.message)}. Check your connection and try again.</p></div>`;
+          return;
+        }
       }
       if (my !== seq || n !== ROUTE_N || !$("#sres")) return;
       let ext = [], extDone = false, vids = [], vidsDone = !HAS_VIDEO_ADDON, ideas = [], ideaNote = "", personFound = false;
+      if (kept) ({ ext, extDone, vids, vidsDone, ideas, ideaNote, personFound } = kept);
       const draw = () => {
+        SEARCH_LAST = { q, r, ext, extDone, vids, vidsDone, ideas, ideaNote, personFound, at: Date.now() };
         const all = r.titles.concat(ext).sort((a, b) => (b.score || 0) - (a.score || 0));
         const movies = all.filter((x) => x.kind === "movie"), shows = all.filter((x) => x.kind === "series");
         // Movies always first, then TV Shows, like the sidebar
@@ -1903,8 +1936,10 @@
         refocus(k);
       };
       draw();
+      // Everything had already come in last time, nothing more to ask for
+      if (kept && kept.extDone && kept.vidsDone) return;
       // Search by idea: words describing what you feel like (funny, a heist with a clever team) find matches by what the titles are about, next to the ones with the words in their name
-      if (q.length >= 3 && !r.titles.some((x) => nameHit(q, x.name)) && !(r.people || []).length) api("/api/search/ideas?q=" + encodeURIComponent(q)).then((x) => {
+      if (!kept && q.length >= 3 && !r.titles.some((x) => nameHit(q, x.name)) && !(r.people || []).length) api("/api/search/ideas?q=" + encodeURIComponent(q)).then((x) => {
         if (my !== seq || !$("#sres")) return;
         ideas = x.titles || [];
         ideaNote = !ideas.length && x.state === "indexing" ? `Still reading your library for ideas (${x.done} of ${x.total}), try again in a minute.` : "";
@@ -4451,16 +4486,21 @@
     }
     return k;
   }
+  function findFocus(k) {
+    if (k.el.isConnected) return k.el;
+    const scope = (k.sec && $$("section[aria-label]", app).find((x) => x.getAttribute("aria-label") === k.sec)) || app;
+    let el = k.sel ? $(k.sel, scope) : null;
+    if (!el && scope !== app && k.idx >= 0) { const c = $$(k.tag, scope)[k.idx]; if (c && c.textContent.trim() === k.text) el = c; }
+    if (!el) el = $$(k.tag, scope).find((x) => x.textContent.trim() === k.text);
+    return el || null;
+  }
   function refocus(k) {
     if (!k) return;
     const a = document.activeElement;
     // Still on something real (the same thing, or wherever the remote went while this was loading), leave it be
     if (a && a !== document.body && a.isConnected) return;
     if (k.el.isConnected) { k.el.focus({ preventScroll: true }); return; }
-    const scope = (k.sec && $$("section[aria-label]", app).find((x) => x.getAttribute("aria-label") === k.sec)) || app;
-    let el = k.sel ? $(k.sel, scope) : null;
-    if (!el && scope !== app && k.idx >= 0) { const c = $$(k.tag, scope)[k.idx]; if (c && c.textContent.trim() === k.text) el = c; }
-    if (!el) el = $$(k.tag, scope).find((x) => x.textContent.trim() === k.text);
+    const el = findFocus(k);
     if (!el) return;
     el.focus({ preventScroll: true });
     // A redrawn row starts scrolled back to the start, so the card gets brought back into view
@@ -6473,25 +6513,36 @@
     try { sessionStorage.setItem("kino-scroll", JSON.stringify(SCROLLS)); } catch (_) {}
   }
   function restoreScroll(e, n) {
-    let stop = false, tries = 0;
+    let stop = false, tries = 0, still = 0, lastH = 0, placed = false;
     const cancel = () => { stop = true; };
     ["wheel", "touchstart", "keydown", "pointerdown"].forEach((ev) => addEventListener(ev, cancel, { once: true, passive: true }));
-    const rows = () => $$(".row", app).forEach((r, i) => { if (e.rows[i]) r.scrollLeft = e.rows[i]; });
+    const rows = () => $$(".row", app).forEach((r, i) => { if (e.rows && e.rows[i]) r.scrollLeft = e.rows[i]; });
+    const want = e.key ? { el: document.createElement("i"), ...e.key } : null;
+    const focusBack = () => {
+      if (!want) return;
+      // The page puts its own focus somewhere first (the tv lands on the search box or the first card), the card you were on wins
+      const a = document.activeElement;
+      if (a && a !== document.body && app.contains(a) && TV) a.blur();
+      refocus(want);
+    };
     const done = () => {
       window.scrollTo(0, e.y);
       rows();
-      if (TV && e.key) {
-        const a = document.activeElement;
-        if (a && a !== document.body) a.blur();
-        refocus({ el: document.createElement("i"), ...e.key });
-      }
+      focusBack();
       setTimeout(() => { if (!stop && n === ROUTE_N) { rows(); window.scrollTo(0, e.y); } }, 700);
     };
     const step = () => {
       if (stop || n !== ROUTE_N) return;
-      // A long list loads a page at a time as you near the bottom, so go on loading until the page is as tall as it was
-      if (document.documentElement.scrollHeight >= e.y + innerHeight || tries >= 24) { done(); return; }
-      window.scrollTo(0, document.documentElement.scrollHeight);
+      const h = document.documentElement.scrollHeight;
+      still = h > lastH ? 0 : still + 1;
+      lastH = h;
+      // A long list loads a page at a time as you near the bottom, so go on loading until the page is as tall as it was (and the card that had
+      // the focus is there). It gives up when the page stops growing for a few seconds
+      const tall = h >= e.y + innerHeight, there = !want || findFocus(want);
+      // Tall enough already, the scroll goes back straight away even if the card is still on its way (search results come in a bit later)
+      if (tall && !placed) { placed = true; window.scrollTo(0, e.y); rows(); }
+      if ((tall && there) || still >= 12 || tries >= 120) { done(); return; }
+      if (!tall) window.scrollTo(0, h);
       tries++;
       setTimeout(step, 250);
     };
@@ -6507,7 +6558,7 @@
     requestAnimationFrame(() => { app.style.minHeight = ""; refocus(k); if (LITE) recycle(); });
   }
 
-  async function route() {
+  async function route(ev) {
     stopPoll();
     clearInterval(HERO_T);
     clearTimeout(SCAN_T);
@@ -6522,7 +6573,12 @@
     if (changed && !SOFT && LAST_PAGE) saveScroll(LAST_PAGE);
     // Remembers where a title page was opened from. The app reloads the page after the player on low memory tvs,
     // which wipes the back history, and back then went to Home instead of where you were
-    if (changed && LAST_PAGE && ["title", "discover", "person"].includes(page)) { try { sessionStorage.setItem("kino-from", LAST_PAGE); } catch (_) {} }
+    // The whole address is kept (a search with its words, Movies with its filters), not just the page, or Back after a reload came to an empty search
+    if (changed && LAST_PAGE && ["title", "discover", "person"].includes(page)) {
+      let from = LAST_PAGE;
+      try { const o = ev && ev.oldURL ? new URL(ev.oldURL).hash : ""; if (o && o.split("?")[0] === LAST_PAGE) from = o; } catch (_) {}
+      try { sessionStorage.setItem("kino-from", from); } catch (_) {}
+    }
     try {
       if (!ME.profile || page === "profiles" || !page) {
         if (!ME.profile && page !== "profiles") {
@@ -6590,7 +6646,8 @@
           const side = $("#side"); if (side) side.classList.remove("open");
         }
       }
-      if (saved && saved.y > 0 && page !== "wrapped") restoreScroll(saved, n);
+      // Also when the page wasnt scrolled down at all: a row scrolled sideways or the card the remote was on still go back
+      if (saved && (saved.y > 0 || saved.key || (saved.rows || []).some((x) => x > 0)) && page !== "wrapped") restoreScroll(saved, n);
       if ((page === "home" || !page) && ME.profile) setTimeout(() => { if (n === ROUTE_N) wrappedOffer(); }, 4500);
       if (n === ROUTE_N) {
         LAST_PAGE = location.hash.split("?")[0];  // a draw that was replaced by a newer one doesn't count as the page that was shown

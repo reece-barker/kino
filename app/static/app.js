@@ -1625,27 +1625,33 @@
       <div class="lbl">${Math.floor(pct * 100)}% · ${rate(c.speed)}</div></div>`;
   }
 
+  let SEASON_PICK = null;  // the season last picked by hand on a title page, see pageTitle
   // Picks what Play should start, the first unfinished episode or the movie
   function nextUp(t) {
     const files = t.files;
     if (!files.length) return null;
     if (t.kind === "series") {
+      // Every episode in order, the Library's and the ones only the addons have (a season that isnt saved yet), so an episode watched from
+      // the addons counts as where you are too. Before only Library episodes did, and Play kept going back to the first addon episode
+      const asEp = (x) => ({ id: null, addon: x.video_id, season: x.season, episode: x.episode, ep_name: x.ep_name, watched: !!x.watched, progress: x.progress || null, last: x.last || null, badges: [] });
+      const key = (x) => [x.season ?? 0, x.episode ?? 0];
+      const all = files.concat((t.future || []).map(asEp));
+      all.sort((a, b) => { const [as, ae] = key(a), [bs, be] = key(b); return as - bs || ae - be || (a.id ? 0 : 1) - (b.id ? 0 : 1); });
       // The episode you are on: the one played last. Part way through it is that one, finished it is the next one after it (also into the next season),
       // never the oldest half watched one, and never the first unwatched one when you skipped around
-      const touched = files.filter((f) => f.last);
+      const touched = all.filter((f) => f.last);
       if (touched.length) {
         const last = touched.reduce((a, b) => (b.last > a.last ? b : a));
         if (!last.watched) return last;
-        const after = files.slice(files.indexOf(last) + 1).find((f) => !f.watched);
+        const after = all.slice(all.indexOf(last) + 1).find((f) => !f.watched);
         if (after) return after;
-        // Nothing further in the Library: the next episode from the addons (a season that isn't saved yet), before going back to the start
-        const later = (t.future || []).find((x) => x.season > last.season || (x.season === last.season && x.episode > last.episode));
-        if (later) return { id: null, addon: later.video_id, season: later.season, episode: later.episode, ep_name: later.ep_name, watched: false, progress: null, badges: [] };
-        return files.find((f) => !f.watched) || last;
+        return files.find((f) => !f.watched) || (last.id ? last : files[0]);
       }
       return files.find((f) => !f.watched) || files[0];
     }
-    return files[0];
+    // A film with more than one copy: the one played last, so Resume carries on in the copy you were watching
+    const played = files.filter((f) => f.last && !f.watched);
+    return played.length ? played.reduce((a, b) => (b.last > a.last ? b : a)) : files[0];
   }
 
   // ---------------------------------------------------------- movies and shows
@@ -2098,7 +2104,15 @@
     const resume = up && up.progress && up.progress.dur && up.progress.pos > 30;
     const playLabel = resume ? `Resume${t.kind === "series" ? " " + epLabel(up.season, up.episode) : ""}` : t.kind === "series" && up ? `Play ${epLabel(up.season, up.episode)}` : "Play";
     const seasons = [...new Set(t.files.map((f) => f.season ?? 0))].sort((a, b) => a - b);
-    const curSeason = up ? up.season ?? 0 : seasons[0];
+    // Play can point at an episode from the addons in a season that isnt in the Library (so isnt in the picker), the page then shows the last
+    // Library season before it instead of an empty list with Season 1 in the picker
+    let curSeason = up ? up.season ?? 0 : seasons[0];
+    if (!seasons.includes(curSeason)) curSeason = seasons.filter((x) => x <= curSeason).pop() ?? seasons[seasons.length - 1];
+    // A season you picked by hand stays when the page redraws (closing the player, marking an episode) or you come back to it with Back, as long
+    // as Play still points at the same episode. Opening the show fresh starts on the season your up to like before
+    const upKey = up ? `${up.id || up.addon}` : "";
+    const again = LAST_PAGE === location.hash.split("?")[0] || wasHere();
+    if (again && SEASON_PICK && SEASON_PICK.tid === t.id && SEASON_PICK.up === upKey && seasons.includes(SEASON_PICK.season)) curSeason = SEASON_PICK.season;
     // Shows up in Continue Watching when something is half watched, or a show is part way through
     const inCont = !!up && (t.files.some((f) => f.progress) || (t.kind === "series" && t.files.some((f) => f.watched) && !t.watched));
     const rateBtn = (v, icon, label) => `<button class="round-btn ${t.my_rating === v ? "on" : ""}" data-rate="${v}" aria-pressed="${t.my_rating === v}" aria-label="${label}" title="${label}">${ic(icon)}</button>`;
@@ -2185,7 +2199,7 @@
       $$("[data-epsrc]").forEach((b) => (b.onclick = () => openSources(t, t.files.find((x) => x.id === b.dataset.epsrc))));
       $$("[data-epwatch]").forEach((b) => (b.onclick = async () => {
         await api("/api/watched", { file_id: b.dataset.epwatch, watched: b.dataset.state !== "1" });
-        route();
+        softRoute();
       }));
       $$("[data-delfile]").forEach((b) => (b.onclick = async () => {
         const f = t.files.find((x) => x.id === b.dataset.delfile);
@@ -2200,7 +2214,7 @@
       if (dls) dls.onclick = () => { const f = t.files.find((x) => (x.season ?? 0) === shownSeason); if (f) offlineSheet(f.id, t, "season"); else toast("Nothing in the Library for this season yet"); };
       $("#seasonPick").onchange = (e) => {
         const v = e.target.value;
-        if (!v.startsWith("more")) shownSeason = Number(v);
+        if (!v.startsWith("more")) { shownSeason = Number(v); SEASON_PICK = { tid: t.id, up: upKey, season: shownSeason }; }
         if (v.startsWith("more")) { location.hash = `#/discover/series/${encodeURIComponent(t.imdb)}?all=1&season=${v.slice(4)}`; return; }
         drawEps(Number(v));
       };
@@ -2411,7 +2425,10 @@
     if (!r.streams.length) { toast(kind === "series" ? "There's no public domain copy of this episode" : "The addon didn't send anything Kino can play for that"); return false; }
     const s = r.streams[0];
     SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false };
-    playFile(s.id, { from: s.progress && !s.progress.watched ? s.progress.pos : 0 });
+    // Where you got to in this episode, from whichever source it was (each source keeps its own place, and the first one in the list
+    // now isnt always the one you were watching, so it used to start from the beginning)
+    const pr = r.streams.map((x) => x.progress).filter(Boolean).sort((a, b) => (b.updated || 0) - (a.updated || 0))[0];
+    playFile(s.id, { from: pr && !pr.watched ? pr.pos || 0 : 0 });
     return true;
   }
 
@@ -4682,10 +4699,12 @@
     const n = cur ? cur.info.next : r.next || (kept && kept.next), auto = cur ? !cur.info.prefs || cur.info.prefs.autoplay !== false : kept ? kept.autoplay : r.autoplay !== false;
     if (!r.titleId && kept) r.titleId = kept.titleId;
     // The player says it ran to the end (or moved on to the next episode): that one is finished
-    if (r.ended && r.fid && !String(r.fid).startsWith("s")) api("/api/watched", { file_id: r.fid, watched: true }).catch(() => {});
+    // The player sends its last place itself as it closes (from the credits, so not always counted as finished). The mark goes a moment after it,
+    // when they went at the same time the place could land last and the episode came back as half watched
+    const marked = r.ended && r.fid && !String(r.fid).startsWith("s") ? new Promise((ok) => setTimeout(ok, 800)).then(() => api("/api/watched", { file_id: r.fid, watched: true })).catch(() => {}) : Promise.resolve();
     if (r.ended && n && auto) return nextFrom(n, cur ? cur.opts.title : null, r.titleId);
-    // Redraws the page so resume bars and watched ticks are right
-    if (ME.profile) setTimeout(softRoute, 300);
+    // Redraws the page so resume bars and watched ticks are right, once the finished mark is in (it redrew before it and the episode still looked half watched)
+    if (ME.profile) Promise.race([marked, new Promise((ok) => setTimeout(ok, 3000))]).then(() => setTimeout(softRoute, 300));
   };
   // The next episode, also when the page was reloaded while the player was open and only the ids are left
   async function nextFrom(n, title, titleId) {
@@ -4983,11 +5002,22 @@
     renderSubs(true);
   }
 
-  function saveProgress() {
+  // The last save that went out, closing the player waits for it before the page redraws (it redrew from before the save and showed the old place)
+  let SAVE_P = Promise.resolve();
+  function saveProgress(leaving) {
     if (!pl.info || pl.info.live || pl.info.recording || !total()) return;
+    const at = pl.info.done ? total() : pos(), body = { file_id: pl.info.id, pos: at, dur: total() };
     // A download keeps where you got to on the device and sends it to the server when there is a connection
-    if (pl.info.offline) { KinoOffline.savePos(pl.info.id, pos(), total()).then(() => { if (navigator.onLine && !OFFLINE) KinoOffline.syncPositions(); }); return; }
-    api("/api/progress", { file_id: pl.info.id, pos: pos(), dur: total() }).catch(() => {});
+    if (pl.info.offline) { SAVE_P = KinoOffline.savePos(pl.info.id, at, total()).then(() => { if (navigator.onLine && !OFFLINE) KinoOffline.syncPositions(); }).catch(() => {}); return; }
+    if (leaving === true) {
+      // The page is going away (reload, closing the tab, the app going to the background). A normal request gets cut off then, so it goes as a
+      // keepalive one and is also kept for the next start of the page to send first, before it asks where anything is up to
+      try { sessionStorage.setItem("kino-pos", JSON.stringify({ ...body, at: Date.now() })); } catch (_) {}
+      try { fetch("/api/progress", { method: "POST", keepalive: true, credentials: "same-origin", headers: { "X-Kino": "1", "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {}); } catch (_) {}
+      return;
+    }
+    SAVE_P = api("/api/progress", body).catch(() => {});
+    try { sessionStorage.removeItem("kino-pos"); } catch (_) {}  // a newer place than the one kept for a reload
   }
 
   // Tells tracking addons what's playing, only when the profile has turned that on
@@ -5057,7 +5087,10 @@
       document.body.style.overflow = "";
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       // Redraws the page behind so resume bars and watched ticks are up to date
-      if (ME.profile && (location.hash.startsWith("#/title/") || location.hash.startsWith("#/discover/") || location.hash === "#/home" || !location.hash)) setTimeout(softRoute, 400);
+      if (ME.profile && (location.hash.startsWith("#/title/") || location.hash.startsWith("#/discover/") || location.hash === "#/home" || !location.hash)) {
+        const saved = Promise.race([SAVE_P, new Promise((r) => setTimeout(r, 3000))]);
+        setTimeout(() => saved.then(() => { if (pl.el.hidden) softRoute(); }), 400);
+      }
       if (wasLive) setTimeout(() => liveBackFocus(lastLive), 60);
     }
   }
@@ -5408,7 +5441,9 @@
     box.hidden = false;
     if (TV && !$(".player .menu:not([hidden])")) $("#unPlay").focus({ preventScroll: true });
     // Moving on to the next episode counts the one you were on as finished, even if the credits hadn't quite ended
-    const go = () => { clearInterval(pl.upNextT); box.hidden = true; if (pl.info && !pl.info.offline && total()) api("/api/progress", { file_id: pl.info.id, pos: total(), dur: total() }).catch(() => {}); else saveProgress(); playNext(n); };
+    // The player closing for the next one saves the place again, with where it is in the credits. Those two used to race and the credits one
+    // could land last, so the episode wasnt finished and the show kept offering to resume it. pl.done makes every save after this one say finished
+    const go = () => { clearInterval(pl.upNextT); box.hidden = true; if (pl.info && total()) pl.info.done = true; saveProgress(); playNext(n); };
     $("#unPlay").onclick = go;
     $("#unHide").onclick = () => { clearInterval(pl.upNextT); box.hidden = true; };
     if (auto) {
@@ -5731,7 +5766,9 @@
     else if (e.key === "s" && !$("#skipIntro").hidden) $("#skipIntro").click();
     else if (e.key === "Escape" && !document.fullscreenElement) closePlayer();
   });
-  window.addEventListener("pagehide", saveProgress);
+  window.addEventListener("pagehide", () => saveProgress(true));
+  // A phone putting the page away doesnt always fire pagehide, so the place is saved when it goes into the background too
+  document.addEventListener("visibilitychange", () => { if (document.hidden && pl.info && !pl.el.hidden) saveProgress(true); });
 
   // ---------------------------------------------------------- android app and tv remotes
   // The android app adds KinoAndroid to the user agent and gives the page a small bridge. On tvs (KinoTV) the
@@ -6609,7 +6646,11 @@
     }
   }
   window.addEventListener("hashchange", route);
-  route();
+  // The place saved as the page went away last time (a reload in the middle of an episode) goes in before anything asks where things are up to,
+  // otherwise the page could load first and show the place from 10 seconds earlier, or from before the episode was finished
+  const PEND = (() => { try { const x = JSON.parse(sessionStorage.getItem("kino-pos") || "null"); sessionStorage.removeItem("kino-pos"); return x && x.file_id && Date.now() - x.at < 10 * 60000 ? x : null; } catch (_) { return null; } })();
+  if (PEND) Promise.race([api("/api/progress", { file_id: PEND.file_id, pos: PEND.pos, dur: PEND.dur }).catch(() => {}), new Promise((ok) => setTimeout(ok, 3000))]).then(() => route());
+  else route();
   setInterval(handCheck, 20000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) handCheck(); });
   setTimeout(handCheck, 4000);

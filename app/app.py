@@ -1200,6 +1200,8 @@ async def probe_worker():
             have = {r["path"]: r["size"] for r in db().q("SELECT path, size FROM probe")}
             for f in list(LIB["files"].values()):
                 if have.get(f["path"]) != f["size"]:
+                    while watching_now():
+                        await asyncio.sleep(30)  # Somebody is watching, the Storage Box is theres first
                     try:
                         await get_probe(f)
                     except Exception as e:
@@ -1292,6 +1294,10 @@ async def intro_worker():
     while True:
         try:
             for eps in intro_jobs()[:5]:
+                # Each season reads the first 10 minutes of every episode off the Storage Box, thats gigabytes over the same sshfs
+                # link a film is playing from and it made the player stop to load. So it waits till nobody is watching
+                while watching_now():
+                    await asyncio.sleep(60)
                 found = await asyncio.to_thread(introdetect.find_intros, [f["path"] for f in eps])
                 now = time.time()
                 for f in eps:
@@ -1496,10 +1502,39 @@ def kill_session(sid):
     shutil.rmtree(s["dir"], ignore_errors=True)
 
 
+WATCH = {"direct": 0}  # direct plays (and downloads) of library files going right now
+
+
+def library_playing():
+    """A library file being played right now, straight from the file or converted"""
+    now = time.time()
+    return WATCH["direct"] > 0 or any(not s.get("live") and now - s["last"] < 60 for s in SESS.values())
+
+
+def watching_now():
+    """True while somebody watches anything, the background jobs that read the Storage Box wait for this"""
+    return library_playing() or time.time() - BW["last"] < 90
+
+
+async def counted(it):
+    """Wraps a file's bytes so the app knows a direct play is going, for as long as the player keeps the connection"""
+    WATCH["direct"] += 1
+    try:
+        async for chunk in it:
+            yield chunk
+    finally:
+        WATCH["direct"] -= 1
+
+
 async def session_reaper():
     # Kills players nobody is watching anymore and deletes there temp files
     while True:
         await asyncio.sleep(15)
+        # The torbox sync only looked at streams from sources to tell if somebody was watching, so a film from the library
+        # had the sync writing to the Storage Box at full speed over the same sshfs link the film was being read from. Library
+        # playing now counts too (no bytes added, it dosent use torbox bandwidth, just the time)
+        if library_playing():
+            bw_add(0)
         for sid, s in list(SESS.items()):
             if time.time() - s["last"] > (900 if s.get("cast") else 90):
                 kill_session(sid)
@@ -4933,7 +4968,13 @@ def range_response(path, request, download_name=None):
 async def stream_direct(fid: str, request: Request, p=Depends(current_profile)):
     f = file_or_404(fid)
     kids_block_file(p, f)
-    return range_response(f["path"], request)
+    return watched(range_response(f["path"], request))
+
+
+def watched(r):
+    if isinstance(r, StreamingResponse):
+        r.body_iterator = counted(r.body_iterator)
+    return r
 
 
 @app.get("/api/dl/{fid}")
@@ -4944,7 +4985,7 @@ async def download(fid: str, u: str, exp: int, sig: str, request: Request):
     if not ip_allowed(client_ip(request)):
         raise HTTPException(403, "This network isn't on the allow list")
     f = file_or_404(fid)
-    return range_response(f["path"], request, download_name=f["name"] if request.query_params.get("save") else None)
+    return watched(range_response(f["path"], request, download_name=f["name"] if request.query_params.get("save") else None))
 
 
 @app.post("/api/play/{fid}")
@@ -7478,6 +7519,15 @@ BW = {"days": {}, "last": 0.0, "saved": 0.0}
 def bw_add(n):
     """Counts bytes streamed from a source (debrid included) per UTC day. The sync reads the file so it never uses the day's bandwidth that watching needs"""
     now = time.time()
+    if not BW.get("loaded"):
+        # The days from before a restart come back first, the first save after a restart used to wipe them and the sync then
+        # thought nobody had streamed anything this week
+        BW["loaded"] = True
+        old = read_json(USAGE_FILE)
+        if isinstance(old, dict) and isinstance(old.get("days"), dict):
+            for d, v in old["days"].items():
+                if isinstance(v, (int, float)):
+                    BW["days"][d] = BW["days"].get(d, 0) + v
     day = time.strftime("%Y-%m-%d", time.gmtime(now))
     BW["days"][day] = BW["days"].get(day, 0) + n
     BW["last"] = now

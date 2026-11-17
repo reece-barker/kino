@@ -56,6 +56,13 @@ public class MainActivity extends Activity {
     private boolean clearHistoryNext;
     private long playerClosed;
 
+    // The one that is open, so the player can hand it the end of an episode without closing first (see PlayerActivity.startChain)
+    private static java.lang.ref.WeakReference<MainActivity> open = new java.lang.ref.WeakReference<>(null);
+    static MainActivity current() {
+        MainActivity m = open.get();
+        return m == null || m.isFinishing() || m.isDestroyed() ? null : m;
+    }
+
     private boolean lowMemory() {
         android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
         android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
@@ -82,6 +89,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        open = new java.lang.ref.WeakReference<>(this);
         CrashLog.install(this);
         takeJavaCrash();
         isTv = detectTv();
@@ -509,15 +517,7 @@ public class MainActivity extends Activity {
             playerClosed = System.currentTimeMillis();
             // Tells the page where the player got to, so it can refresh progress or start the next episode
             String r = data != null ? data.getStringExtra("result") : null;
-            if (parkedUrl != null) {
-                // The page was let go while playing, it opens again and picks the result up itself
-                pendingResult = r;
-                clearHistoryNext = true;
-                web.loadUrl(parkedUrl);
-                parkedUrl = null;
-                return;
-            }
-            js("window.kinoNativeDone && window.kinoNativeDone(" + (r != null ? r : "null") + ")");
+            playerResult(r);
             return;
         }
         if (request != VOICE_REQUEST) return;
@@ -527,6 +527,31 @@ public class MainActivity extends Activity {
             if (got != null && !got.isEmpty()) text = got.get(0);
         }
         js("window.kinoVoice && window.kinoVoice(" + JSONObject.quote(text) + ")");
+    }
+
+    private void playerResult(String r) {
+        if (parkedUrl != null) {
+            // The page was let go while playing, it opens again and picks the result up itself
+            pendingResult = r;
+            clearHistoryNext = true;
+            web.loadUrl(parkedUrl);
+            parkedUrl = null;
+            return;
+        }
+        js("window.kinoNativeDone && window.kinoNativeDone(" + (r != null ? r : "null") + ")");
+    }
+
+    /** The player finished an episode and is waiting on its loading screen for the next one, the page behind gets it ready (it stays hidden) */
+    void playerChained(String r) { playerResult(r); }
+
+    /** Lets the page go while the player is open on a low memory tv, it comes back after */
+    private void parkSoon() {
+        if (lowMemory()) web.postDelayed(() -> {
+            if (!isFinishing() && parkedUrl == null) {
+                parkedUrl = web.getUrl();
+                web.loadUrl("about:blank");
+            }
+        }, 1500);
     }
 
     @Override
@@ -594,6 +619,18 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void playNative(String json) {
             runOnUiThread(() -> {
+                boolean inPlace = false;
+                try { inPlace = new JSONObject(json).optBoolean("inPlace"); } catch (Exception ignored) { }
+                // The player is still up waiting for this (the next episode), it starts it in place instead of a new player opening over the page
+                PlayerActivity w = PlayerActivity.waiting;
+                if (w != null && w.playNextHere(json)) {
+                    playerOpened = System.currentTimeMillis();
+                    getSharedPreferences("kino", MODE_PRIVATE).edit().putLong("playerAt", System.currentTimeMillis()).commit();
+                    parkSoon();
+                    return;
+                }
+                // It was waiting but gave up (Back on its loading screen), so nobody wants this one now
+                if (inPlace) return;
                 // Pressing play twice quickly would open two players
                 if (System.currentTimeMillis() - playerOpened < 2500) return;
                 playerOpened = System.currentTimeMillis();
@@ -603,13 +640,14 @@ public class MainActivity extends Activity {
                 startActivityForResult(i, PLAYER_REQUEST);
                 // On low memory tvs the page behind the player is let go while the video plays, it's the biggest
                 // thing in memory and android kills it (or the player) when both are there. It comes back after
-                if (lowMemory()) web.postDelayed(() -> {
-                    if (!isFinishing() && parkedUrl == null) {
-                        parkedUrl = web.getUrl();
-                        web.loadUrl("about:blank");
-                    }
-                }, 1500);
+                parkSoon();
             });
+        }
+
+        // The page couldnt start the next episode the player is waiting for, so it closes (the page says why)
+        @JavascriptInterface
+        public void nextFailed() {
+            runOnUiThread(() -> { PlayerActivity w = PlayerActivity.waiting; if (w != null) w.endChain(); });
         }
 
         // What crashed the app last time, once (the page tells the server), and whether the player crashed on this device: then videos use the web player

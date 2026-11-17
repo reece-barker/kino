@@ -102,14 +102,23 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     private int upNextLeft = -1;
     private boolean upNextShown;
 
+    // Moving on to the next episode this screen stays up with its loading screen while the page gets the next one ready, then starts
+    // again in place with it. It used to close first, so the title page showed (and on low memory tvs the whole page loaded again in
+    // front of you) before the next episode opened. waiting is the player sat there for it, nextJson what it starts again with and
+    // madeFrom the one it was started again from (so a restore by android plays that, not the first episode again)
+    static PlayerActivity waiting;
+    private String nextJson, madeFrom;
+    private boolean wantNext;
+
     // ---------------------------------------------------------------- setup
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         CrashLog.install(this);
+        madeFrom = state != null ? state.getString("kinoNext") : null;
         try {
-            info = new JSONObject(getIntent().getStringExtra(EXTRA));
+            info = new JSONObject(madeFrom != null ? madeFrom : getIntent().getStringExtra(EXTRA));
         } catch (Exception e) {
             finish();
             return;
@@ -634,7 +643,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         LinearLayout acts = new LinearLayout(this);
         acts.setPadding(0, dp(10), 0, 0);
         TextView now = pill("Play Now", true), cancel = pill("Cancel", false);
-        now.setOnClickListener(v -> { ended = true; done(); });
+        now.setOnClickListener(v -> { ended = true; wantNext = true; done(); });
         cancel.setOnClickListener(v -> { upNextLeft = -1; upNext.setVisibility(View.GONE); showControls(bPlay); });
         acts.addView(now);
         acts.addView(space(10));
@@ -1509,7 +1518,10 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     private void done() { done(null); }
 
     private void done(String error) {
+        // Back (or Close) on the loading screen while it waits for the next episode: that one isnt wanted any more
+        if (waiting == this) { endChain(); return; }
         if (leaving) return;
+        if (error == null && ended && !live && info.optJSONObject("next") != null && (wantNext || info.optBoolean("autoplay", true)) && startChain()) return;
         leaving = true;
         double p = eng != null ? pos() : 0, d = dur();
         if (!loading && !live) postProgress(p, d);
@@ -1519,6 +1531,75 @@ public class PlayerActivity extends Activity implements Engine.Listener {
             setResult(RESULT_OK, new Intent().putExtra("result", r.toString()));
         } catch (Exception ignored) { }
         finish();
+    }
+
+    /** The episode ended and the next one plays: this one stops, the loading screen comes up for the next and the page is asked for it */
+    private boolean startChain() {
+        MainActivity m = MainActivity.current();
+        if (m == null) return false;
+        double p = eng != null ? pos() : 0, d = dur();
+        JSONObject n = info.optJSONObject("next");
+        String r;
+        try {
+            r = new JSONObject().put("fid", fid).put("pos", p).put("dur", d).put("ended", true).put("goNext", true).put("chain", true)
+                    .put("engine", eng != null ? eng.name() : "").put("live", false).toString();
+        } catch (Exception e) { return false; }
+        leaving = true;
+        if (!loading) postProgress(p, d);
+        h.removeCallbacksAndMessages(null);
+        stopSession();
+        if (eng != null) { eng.release(); eng = null; }
+        closeMenu();
+        closeDialog();
+        controls.setVisibility(View.GONE);
+        upNext.setVisibility(View.GONE);
+        skip.setVisibility(View.GONE);
+        if (bufSpin != null) bufSpin.setVisibility(View.GONE);
+        stats.removeAllViews();
+        statLines.clear();
+        loadLayer.animate().cancel();
+        loadLayer.setAlpha(1f);
+        JSONObject art = info.optJSONObject("art");
+        String bg = art != null ? art.optString("background") : "";
+        if (!bg.isEmpty() && !"null".equals(bg)) loadImage(img(bg, false, lowRam ? 640 : 960), b -> plBg.setImageBitmap(b));
+        relaunchLoading("Getting the next episode ready");
+        if (n != null) {
+            String ep = n.isNull("season") ? "" : "S" + n.optInt("season") + ", E" + n.optInt("episode");
+            String nm = n.isNull("name") ? "" : n.optString("name");
+            if (!ep.isEmpty() || !nm.isEmpty()) note((ep + "  " + nm).trim());
+        }
+        waiting = this;
+        // The page should answer in a few seconds (an addon episode has its sources looked up first). If it never does this closes like before
+        h.postDelayed(this::endChain, 45000);
+        m.playerChained(r);
+        return true;
+    }
+
+    /** The page has the next episode ready: this screen starts again with it, without closing, so the page never shows in between */
+    boolean playNextHere(String json) {
+        if (waiting != this || isFinishing()) return false;
+        waiting = null;
+        nextJson = json;
+        h.removeCallbacksAndMessages(null);
+        recreate();
+        return true;
+    }
+
+    /** No next episode after all (Back while waiting, nothing came, or the page couldnt start it): closes and the page refreshes */
+    void endChain() {
+        if (waiting != this) return;
+        waiting = null;
+        h.removeCallbacksAndMessages(null);
+        try { setResult(RESULT_OK, new Intent().putExtra("result", new JSONObject().put("fid", fid).put("ended", true).put("chainEnd", true).put("live", false).toString())); }
+        catch (Exception ignored) { }
+        finish();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        String j = nextJson != null ? nextJson : madeFrom;
+        if (j != null) out.putString("kinoNext", j);
     }
 
     private void stopSession() { stopSession(sid); sid = null; }
@@ -1637,6 +1718,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     protected void onDestroy() {
+        if (waiting == this) waiting = null;
         h.removeCallbacksAndMessages(null);
         stopSession();
         if (eng != null) { eng.release(); eng = null; }

@@ -2438,10 +2438,13 @@
   }
 
   // Finds the public domain copy of one episode and plays it
-  async function playEpisode(vid, v, kind = "series") {
+  // opts carry on from the player when it moves to the next episode: title and the loading screen thats already up (chain), or the app's
+  // player waiting on its own loading screen (inPlace). tok is the press it came from, closing the player meanwhile stops it
+  async function playEpisode(vid, v, kind = "series", opts = {}) {
     let r;
-    toast("Getting it ready", 2500);
+    if (!opts.chain && !opts.inPlace) toast("Getting it ready", 2500);
     try { r = await api(`/api/streams/${encodeURIComponent(kind)}/${encodeURIComponent(vid)}`); } catch (e) { toast(e.message, 5000); return false; }
+    if (opts.tok != null && opts.tok !== PLAY_N) return null;
     if (r.upcoming) { toast(`Not out yet, comes out on ${new Date(r.upcoming + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long" })}`, 5000); return false; }
     if (!r.streams.length) { toast(kind === "series" ? "There's no public domain copy of this episode" : "The addon didn't send anything Kino can play for that"); return false; }
     const s = r.streams[0];
@@ -2449,8 +2452,8 @@
     // Where you got to in this episode, from whichever source it was (each source keeps its own place, and the first one in the list
     // now isnt always the one you were watching, so it used to start from the beginning)
     const pr = r.streams.map((x) => x.progress).filter(Boolean).sort((a, b) => (b.updated || 0) - (a.updated || 0))[0];
-    playFile(s.id, { from: pr && !pr.watched ? pr.pos || 0 : 0 });
-    return true;
+    const ok = await playFile(s.id, { from: pr && !pr.watched ? pr.pos || 0 : 0, title: opts.title || undefined, chain: opts.chain, inPlace: opts.inPlace });
+    return ok !== false;
   }
 
   // What to say about a film that is too new to have a real HD copy yet (the server works the window out from the kind of film)
@@ -4663,9 +4666,10 @@
     // A second press while the first is still getting ready is ignored, it used to open two players
     if (Date.now() - NATIVE_BUSY < 6000) return;
     NATIVE_BUSY = Date.now();
-    toast("Starting…", 2500);
+    // Moving on to the next episode the app's player is still up with its loading screen, nothing on the page needs saying
+    if (!opts.inPlace) toast("Starting…", 2500);
     let info;
-    try { info = await api(`/api/file/${fid}`); } catch (e) { NATIVE_BUSY = 0; toast(e.message, 5000); return; }
+    try { info = await api(`/api/file/${fid}`); } catch (e) { NATIVE_BUSY = 0; toast(e.message, 5000); return false; }
     const prefs = info.prefs || {};
     const t = opts.title;
     const f = t && t.files && t.files.find((x) => x.id === fid);
@@ -4691,19 +4695,22 @@
       art, video: info.video || {}, credits: info.credits || 0, autoplay: prefs.autoplay !== false, loadStats: prefs.load_stats !== false,
       subSize: prefs.sub_size || "m", titleId: info.title_id || (t && t.id) || null,
       next: n ? { id: n.id || null, video_id: n.video_id || null, name: n.name ? nice(n.name) : null, season: n.season ?? null, episode: n.episode ?? null, thumbnail: n.thumbnail || null } : null,
-      base: location.origin, ua: navigator.userAgent, fid, url, title: (t && t.name) || info.show || info.name, sub,
+      base: location.origin, ua: navigator.userAgent, fid, url, title: (t && t.name) || info.show || info.name, sub, inPlace: !!opts.inPlace,
       start: opts.from != null ? opts.from : info.resume || 0, duration: info.duration || 0,
       audioN, audioChosen: audioN !== info.default_audio, audioLang: langCode(prefs.audio_lang), subLang: langCode(prefs.sub_lang), subs,
       checkFake: !!(info.stream && (info.kind === "movie" || info.kind === "series")), expect: info.expect || 0, autoNextSource: !!prefs.auto_next_source,
       intro: info.intro, autoSkip: !!prefs.skip_intro, stillMins: Number(prefs.still_watching) || 0, dovi: !!(info.video && info.video.dovi),
       forceHls: !!(info.video && info.video.codec && !["h264", "hevc", "av1", "vp9", "mpeg4", "mpeg2video", "vp8"].includes(info.video.codec)),
     }));
+    return true;
   }
   // English to en and so on, exoplayer matches tracks by these codes
   const langCode = (l) => { if (!l) return ""; const c = LANG_CODES[l] || LANG_CODES[String(l).split(" ")[0]]; return c ? c[0] : String(l).length <= 3 ? String(l).toLowerCase() : ""; };
   window.kinoNativeDone = (r) => {
     const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
     if (!r) return;
+    // The app's player was waiting for the next episode and that didnt happen (Back on its loading screen, or nothing came): the page catches up
+    if (r.chainEnd) { try { sessionStorage.removeItem("kino-native"); } catch (_) {} if (ME.profile) setTimeout(softRoute, 300); return; }
     // Live tv just closes, unless they asked for the web player from its error box. The remote goes back to the channel that was
     // on (the player says which, up and down in it change channel), also when the page was reloaded while it was open
     // The Kino player gave up on a channel: the page's own player (hls.js, what a computer uses) takes it over, so it plays instead of an error
@@ -4728,15 +4735,22 @@
     // The player sends its last place itself as it closes (from the credits, so not always counted as finished). The mark goes a moment after it,
     // when they went at the same time the place could land last and the episode came back as half watched
     const marked = r.ended && r.fid && !String(r.fid).startsWith("s") ? new Promise((ok) => setTimeout(ok, 800)).then(() => api("/api/watched", { file_id: r.fid, watched: true })).catch(() => {}) : Promise.resolve();
-    if (r.ended && n && auto) return nextFrom(n, cur ? cur.opts.title : null, r.titleId);
+    // goNext is Play Now on its up next card, that one moves on even with autoplay off. chain means the player is still up on its loading
+    // screen waiting for it, so the next episode starts in there and the page behind never shows
+    if (r.ended && n && (auto || r.goNext)) return nextFrom(n, cur ? cur.opts.title : null, r.titleId, !!r.chain);
     // Redraws the page so resume bars and watched ticks are right, once the finished mark is in (it redrew before it and the episode still looked half watched)
     if (ME.profile) Promise.race([marked, new Promise((ok) => setTimeout(ok, 3000))]).then(() => setTimeout(softRoute, 300));
   };
   // The next episode, also when the page was reloaded while the player was open and only the ids are left
-  async function nextFrom(n, title, titleId) {
-    if (n.video_id) return playEpisode(n.video_id, n);
-    const t = title || (titleId ? await api(`/api/title/${titleId}`).catch(() => null) : null);
-    playFile(n.id, { title: t, from: 0 });
+  async function nextFrom(n, title, titleId, inPlace) {
+    let ok;
+    if (n.video_id) ok = await playEpisode(n.video_id, n, "series", { title, inPlace });
+    else {
+      const t = title || (titleId ? await api(`/api/title/${titleId}`).catch(() => null) : null);
+      ok = await playFile(n.id, { title: t, from: 0, inPlace });
+    }
+    // It couldnt start, the waiting player closes and the page is there with whatever was said about it
+    if (inPlace && ok === false) { try { window.KinoAndroid.nextFailed(); } catch (_) {} }
   }
   if (ANDROID) {
     // After the page comes back (a low memory tv lets it go while the player is open) it picks up the player's result,
@@ -5694,9 +5708,16 @@
     closePlayer();
   });
   // Library episodes play straight away, public domain episodes need their archive.org copy looked up first
+  // An addon episode has to have its sources found first. The loading screen goes up for it straight away over the one that just finished,
+  // the old picture used to sit there (with only a toast) till they came back, and the title went missing from the loading screen
   function playNext(n) {
-    if (n.video_id) return playEpisode(n.video_id, n).then((ok) => ok || closePlayer());
-    playFile(n.id, { title: pl.title, from: 0 });
+    if (!n.video_id) return playFile(n.id, { title: pl.title, from: 0 });
+    const t = pl.title, art = t ? { background: t.background, logo: t.logo } : pl.info && pl.info.art;
+    pl.hold = true; pl.v.pause();
+    loadShow(art, t ? t.name : (pl.info && (pl.info.show || pl.info.name)) || "");
+    loadStep(`Finding ${epLabel(n.season, n.episode)}`);
+    const tok = PLAY_N;
+    return playEpisode(n.video_id, n, "series", { title: t, chain: true, tok }).then((ok) => { if (ok === false && tok === PLAY_N) closePlayer(); });
   }
   v.addEventListener("error", () => {
     if (pl.mode === "direct" && pl.info && !pl.info.stream) startHls(pos());  // If direct play fails the server converts it instead

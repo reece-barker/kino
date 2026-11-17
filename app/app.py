@@ -2945,7 +2945,7 @@ async def home(request: Request, p=Depends(current_profile)):
     recent = sorted(summ, key=lambda s: s["added"], reverse=True)
 
     hero_pool = [s for s in (by_score if has_signal else recent) if s["background"] and s["matched"] and not s["watched"]]
-    hero = (hero_pool or [s for s in recent if s["background"]] or recent)[:5]
+    hero_rest = [s for s in recent if s["background"]] or recent
 
     # Titles from addons that can actually play something get mixed into the main shelves with the library
     pool = addon_pool(p["id"], lib_by_meta_id(summ), summ)
@@ -2957,10 +2957,10 @@ async def home(request: Request, p=Depends(current_profile)):
     recent = sorted(summ + pool, key=lambda s: s["added"], reverse=True)
 
     cont = continue_list(summ, wm, p["id"])
-    first = next((c for c in cont if c.get("background")), None)
-    if first:
-        # The hero always starts with whatever was watched last, in its own continue style
-        hero = [{**first, "cont": True}] + [h for h in hero if h["id"] != first.get("id") or first.get("stream")][:5]
+    # The hero is only ever featured titles, never a big Continue Watching slide for whatever was watched last (Home looked like a different
+    # page every time). Things your part way through are left out of it too, they are in the Continue Watching row right below
+    busy = {c["id"] for c in cont if c.get("id")}
+    hero = ([s for s in hero_pool if s["id"] not in busy] or [s for s in hero_rest if s["id"] not in busy] or hero_pool or hero_rest)[:5]
     shelves = []
     mine, fresh = mylist_items(p, summ, wm)
     if fresh:

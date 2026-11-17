@@ -372,7 +372,7 @@
     if (!el || el.closest(".player, .kw") || el.hasAttribute("data-close")) return;
     if (el.matches("input.switch")) return sfx(el.checked ? "on" : "off");
     if (el.matches("[data-goback], .page-back, .more-row[href='#/home']")) return sfx("back");
-    if (el.matches(".btn.primary, #pdPlay, #playMain, [data-heroplay], [data-heroresume], #vPlay")) return sfx("confirm");
+    if (el.matches(".btn.primary, #pdPlay, #playMain, [data-heroplay], #vPlay")) return sfx("confirm");
     if (el.matches("a.tile, .tile a, .hero-slide a, .side-item, .tb-item, .more-row, .mi")) return sfx("select");
     sfx("tick");
   }, true);
@@ -1463,13 +1463,6 @@
       const f = t.files.find((x) => x.id === a.dataset.play);
       playFile(a.dataset.play, { title: t, from: f && f.progress ? f.progress.pos : 0 });
     }));
-    app.querySelectorAll("[data-heroresume]").forEach((b) => (b.onclick = async () => {
-      const fid = b.dataset.heroresume;
-      if (fid.startsWith("s")) return playFile(fid, {});
-      const t = await api(`/api/title/${b.dataset.tid}`);
-      const f = t.files.find((x) => x.id === fid);
-      playFile(fid, { title: t, from: f && f.progress ? f.progress.pos : 0 });
-    }));
     app.querySelectorAll("[data-heroplay]").forEach((b) => (b.onclick = async () => {
       const t = await api(`/api/title/${b.dataset.heroplay}`);
       const f = nextUp(t);
@@ -1535,27 +1528,20 @@
     return `<picture>${tall && wide ? `<source media="(max-width: 760px) and (orientation: portrait)" srcset="${img(tall, 0, 640)}">` : ""}<img ${lazy ? 'loading="lazy"' : ""} decoding="async" src="${img(wide || tall, 0, HW())}" data-alt="${esc(t.background || "")}" alt="" data-fallback="hide" ${!wide ? 'class="tall"' : ""}></picture>`;
   }
 
-  // One slide of the home hero. The first one is whatever was watched last, with its own continue style
+  // One slide of the home hero, always a featured title. What you are part way through lives in the Continue Watching row, not up here
   const HERO_MS = 6500;
   function heroSlide(t, i) {
     const tab = i ? 'tabindex="-1"' : "";
     const link = t.external ? extHref(t) : `#/title/${t.id}`;
-    const left = t.dur ? Math.max(0, t.dur - t.pos) : 0;
-    const what = t.cont ? [t.season != null ? epLabel(t.season, t.episode) : "", left ? `${clock(left)} left` : ""].filter(Boolean).join(" · ") : "";
-    return `<div class="hero-slide ${i === 0 ? "on" : ""} ${t.cont ? "is-cont" : ""}" data-i="${i}" ${i ? 'aria-hidden="true"' : ""}>
+    return `<div class="hero-slide ${i === 0 ? "on" : ""}" data-i="${i}" ${i ? 'aria-hidden="true"' : ""}>
       <div class="hero-bg ${t.poster ? "has-tall" : ""}">${heroArt(t, i > 0)}</div>
       <div class="hero-content">
-        ${t.cont ? `<span class="hero-kicker glass">${ic("play")} Continue Watching</span>` : ""}
         ${t.logo ? `<img class="hero-logo" src="${img(t.logo, 1, LW())}" alt="${esc(t.name)}" data-fallback="text">` : `<h1 class="hero-name">${esc(t.name)}</h1>`}
-        ${t.cont ? `<div class="hero-meta"><span>${esc(what)}</span></div>
-          <div class="hero-prog"><i style="width:${t.dur ? Math.min(100, (t.pos / t.dur) * 100) : 0}%"></i></div>`
-          : `<div class="hero-meta">${metaLine(t).map((m, j) => `<span class="${j ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
-          ${t.description ? `<p class="hero-desc">${esc(t.description)}</p>` : ""}`}
+        <div class="hero-meta">${metaLine(t).map((m, j) => `<span class="${j ? "dot-sep" : ""}">${esc(m)}</span>`).join("")}</div>
+        ${t.description ? `<p class="hero-desc">${esc(t.description)}</p>` : ""}
         <div class="actions">
-          ${t.cont ? `<button class="btn primary" data-heroresume="${esc(t.file_id)}" data-tid="${esc(t.id || "")}" ${TV ? `data-cw="${esc(t.file_id)}" data-cwname="${esc(t.name)}"` : ""} ${tab}>${ic("play")} ${t.next_episode ? "Play" : "Resume"}${t.season != null ? " " + esc(epLabel(t.season, t.episode)) : ""}</button>`
-            : `<button class="btn primary" data-heroplay="${esc(t.id)}" ${tab}>${ic("play")} Play</button>`}
+          <button class="btn primary" data-heroplay="${esc(t.id)}" ${tab}>${ic("play")} Play</button>
           <a class="btn secondary glass-btn-lg" href="${link}" ${tab}>More Info</a>
-          ${t.cont && !TV ? `<button class="round-btn" data-hide="${esc(t.file_id)}" ${tab} aria-label="Remove from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : ""}
         </div>
       </div></div>`;
   }
@@ -5863,7 +5849,7 @@
     if (!items.length) return;
     e.preventDefault();
     if (!cur || cur === document.body || !scope.contains(cur)) {
-      const first = (playerOpen && $("#pPlay")) || $("[data-heroplay], [data-heroresume], .hero-slide.on .btn.primary, #pdPlay, #playMain", scope) || items.find((el) => !el.closest("#chrome")) || items[0];
+      const first = (playerOpen && $("#pPlay")) || $("[data-heroplay], .hero-slide.on .btn.primary, #pdPlay, #playMain", scope) || items.find((el) => !el.closest("#chrome")) || items[0];
       first.focus({ preventScroll: false });
       return;
     }
@@ -6676,7 +6662,7 @@
         // On a tv the remote lands on the page's main button after picking something in the sidebar
         if (TV) {
           // Goes through these in order, so a title page always starts on Play even if something else comes first on the page
-          const el = [".hero-slide.on [data-heroresume]", ".hero-slide.on [data-heroplay]", "#playMain", "#pdPlay", "#vPlay", "#pdBox #listBtn", "#sq", ".tile", "main button", "main a[href]"]
+          const el = [".hero-slide.on [data-heroplay]", "#playMain", "#pdPlay", "#vPlay", "#pdBox #listBtn", "#sq", ".tile", "main button", "main a[href]"]
             .map((q) => $(q, app)).find(Boolean);
           if (el) el.focus({ preventScroll: true });
           AUTO_FOCUS = el || null;

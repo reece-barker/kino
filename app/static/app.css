@@ -1077,11 +1077,6 @@ body.with-side .hero-dots { left: auto; }
 .hero-dots button[aria-selected="true"] i { animation: dotFill var(--hero-ms, 6500ms) linear forwards; }
 .hero.paused .hero-dots button i { animation-play-state: paused; }
 @keyframes dotFill { to { width: 100%; } }
-.hero-kicker { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; font-size: 13px; font-weight: 700; letter-spacing: 0.02em; margin-bottom: 16px; }
-.hero-kicker svg { font-size: 12px; }
-.hero-prog { width: min(320px, 70%); height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.25); overflow: hidden; margin: 2px 0 22px; }
-.hero-prog i { display: block; height: 100%; background: #fff; border-radius: inherit; }
-.is-cont .hero-meta { font-size: 17px; color: rgba(255, 255, 255, 0.85); font-weight: 500; }
 
 /* ---- search fills the width, results and the start page */
 .search.big { max-width: none; height: 58px; border-radius: 18px; padding: 0 18px; gap: 12px; background: var(--bg-2);

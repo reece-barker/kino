@@ -5926,7 +5926,11 @@
       } else {
         // Sideways prefers things on the same row, then the closest
         cands.sort((x, y) => (y.overlap > 0) - (x.overlap > 0) || (x.gap + x.along * 2) - (y.gap + y.along * 2));
-        ranked = cands.map((c) => c.el);
+        // Left along a row of pills (or cards) stays in that row till theres nothing left of you in it. The sidebar items are wider than the
+        // rail looks (there labels hide past its edge), so once the row had scrolled a pill under them the sidebar measured closer and
+        // won, thats why Left jumped out to the menu half way back along the genres
+        const mine = scrollRow ? cands.filter((c) => c.overlap > 0 && scrollRow.contains(c.el)) : [];
+        ranked = (mine.length ? mine.concat(cands.filter((c) => !mine.includes(c))) : cands).map((c) => c.el);
       }
     }
     // Rows of cards (Home, search, a title's episodes) go by the order of the rows instead of measuring, the tv's zoom

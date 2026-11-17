@@ -40,8 +40,9 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         // The site treats a home screen app differently (no pinch zoom, its own status area): this window is that
         let js = """
         try { Object.defineProperty(navigator, 'standalone', { get: () => true }); } catch (e) {}
-        window.KinoIOS = { version: '1.0', platform: 'ios' };
+        window.KinoIOS = { version: '1.1', platform: 'ios', native: true };
         """
+        cfg.userContentController.addScriptMessageHandler(NativeDownloads.shared, contentWorld: .page, name: "kinoDL")
         cfg.userContentController.addUserScript(WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: true))
 
         web = WKWebView(frame: .zero, configuration: cfg)
@@ -61,6 +62,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
             web.topAnchor.constraint(equalTo: view.topAnchor), web.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             web.leadingAnchor.constraint(equalTo: view.leadingAnchor), web.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
+        NativeDownloads.shared.attach(web: web, host: self)
         buildFailView()
         load()
     }

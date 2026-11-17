@@ -38,6 +38,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     @objc func pageBack() { WebViewController.current?.history(-1) }
     @objc func pageForward() { WebViewController.current?.history(1) }
 
+    // iOS wakes the app to finish what a background download was doing
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
+        NativeDownloads.backgroundCompletion = completionHandler
+        _ = NativeDownloads.shared
+    }
+
     func applicationDidBecomeActive(_ application: UIApplication) {
         try? AVAudioSession.sharedInstance().setActive(true)
     }

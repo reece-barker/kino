@@ -182,6 +182,9 @@ CREATE TABLE IF NOT EXISTS search_recent (profile_id INTEGER, key TEXT, kind TEX
     at REAL, PRIMARY KEY (profile_id, key));
 CREATE TABLE IF NOT EXISTS auto_intros (file_id TEXT PRIMARY KEY, start REAL, end REAL, tried REAL);
 CREATE TABLE IF NOT EXISTS online_intros (key TEXT PRIMARY KEY, intro_s REAL, intro_e REAL, outro_s REAL, fetched REAL);
+CREATE TABLE IF NOT EXISTS playlog (id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, profile_id INTEGER, media TEXT, src TEXT, platform TEXT,
+    kind TEXT, secs REAL, data TEXT);
+CREATE INDEX IF NOT EXISTS playlog_at ON playlog (at);
 CREATE TABLE IF NOT EXISTS stream_health (id TEXT PRIMARY KEY, good REAL, bad REAL);
 CREATE TABLE IF NOT EXISTS sources_seen (id TEXT PRIMARY KEY, kind TEXT, has INTEGER, checked REAL);
 CREATE TABLE IF NOT EXISTS iptv_lists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, url TEXT, epg TEXT, local INTEGER DEFAULT 0,
@@ -1505,6 +1508,15 @@ async def session_reaper():
                 kill_session(sid)
                 continue
             if s.get("live") or s["proc"].returncode is not None:
+                if not s.get("live") and s["proc"].returncode not in (None, 0) and not s.get("logged"):
+                    s["logged"] = True
+                    try:
+                        err = (s["dir"] / "ffmpeg.log").read_text(errors="ignore")[-300:].strip()
+                    except OSError:
+                        err = ""
+                    owner = str(s.get("owner") or "")
+                    playlog("ffmpeg_died", s.get("fid"), media_src(s.get("fid")), None, int(owner[1:]) if owner[1:].isdigit() else None, None,
+                            {"code": s["proc"].returncode, "error": err, "made": len(list(s["dir"].glob("seg*.m4s")))})
                 continue
             # ffmpeg runs faster than playback and keeps every segment, so a long film would fill the disk. Once its about 15
             # minutes ahead of what the player fetched it gets paused, and carries on when the player has caught up
@@ -4892,7 +4904,11 @@ MIME = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".m
 
 
 def range_response(path, request, download_name=None):
+    t0 = time.time()
     size = os.path.getsize(path)
+    if time.time() - t0 > 1:
+        # Just looking the file up took over a second, the Storage Box (sshfs) is struggling right now
+        playlog("slow_storage", None, "library", ua_platform(request.headers.get("user-agent")), None, time.time() - t0, {"file": Path(path).name[:80]})
     start, end, status = 0, size - 1, 200
     rng = request.headers.get("range")
     if rng:
@@ -4950,6 +4966,7 @@ async def download(fid: str, u: str, exp: int, sig: str, request: Request):
 @app.post("/api/play/{fid}")
 async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     body = await json_obj(request)
+    started, probe_s = time.time(), 0.0
     try:
         t = max(0.0, float(body.get("t") or 0))
         a = int(body.get("audio") or 0)
@@ -5024,7 +5041,9 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     if t > 0 and vargs[:2] == ["-c:v", "copy"] and Path(f["path"]).suffix.lower() not in (".ts", ".m2ts", ".mts"):
         # A bit past where you asked cause ffmpeg lands on the keyframe before a point with some room, a keyframe sitting
         # right on the spot gets skiped for the one before it otherwise
+        t_probe = time.time()
         v0 = await video_start(f["path"], t + 0.6)
+        probe_s = time.time() - t_probe
         if v0 is not None and v0 <= 0:
             # Start BOTH of them on that keyframe and drop anything the copy would put before it so theres no gap at the
             # start for a player to ignore, the sound before the keyframe comes along as well. A millisecond under it so
@@ -5066,7 +5085,11 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
         await asyncio.sleep(0.25)
     else:
         kill_session(sid)
+        playlog("hls_start", fid, media_src(fid), ua_platform(request.headers.get("user-agent")), p["id"], time.time() - started, {"failed": "timeout", "at": round(t)})
         raise HTTPException(504, "The Storage Box took too long to respond, try again")
+    # How long the converted stream took to get its first piece out, slow ones are the Storage Box (or a far away source) answering slowly
+    playlog("hls_start", fid, media_src(fid), ua_platform(request.headers.get("user-agent")), p["id"], time.time() - started,
+            {"at": round(t), "copy": vargs[:2] == ["-c:v", "copy"], "probe": round(probe_s, 2)})
     return {"sid": sid, "url": f"/api/hls/{sid}/index.m3u8", "offset": offset}
 
 
@@ -8019,6 +8042,87 @@ async def clientlog(request: Request):
 @app.get("/api/admin/clientlog")
 async def clientlog_get(admin=Depends(require_admin)):
     return {"items": list(reversed(CLIENT_LOG))}
+
+
+# ---- playback log: when and why things buffer. The players send stalls, slow starts and slow pieces in small batches, the
+# server adds its own side (how long a converted stream took to start, ffmpeg dying, the Storage Box being slow to answer)
+# so a stall can be matched to a cause. Only the profile id is kept, at most PLAYLOG_MAX rows and PLAYLOG_DAYS days
+PLAYLOG_MAX = int(num_env("PLAYLOG_MAX", 5000, 100, 100000))
+PLAYLOG_DAYS = num_env("PLAYLOG_DAYS", 14, 1, 365)
+PLAYLOG_KINDS = {"start", "stall", "seek_wait", "slow_piece", "hls_error", "hls_restart", "error",  # from the players
+                 "hls_start", "ffmpeg_died", "slow_storage"}  # from the server
+PLAYLOG_N = [0]
+
+
+def ua_platform(ua):
+    ua = ua or ""
+    for rx, name in ((r"KinoTV", "TV app"), (r"KinoAndroid", "Android app"), (r"iPhone", "iPhone"), (r"iPad", "iPad"),
+                     (r"Android", "Android"), (r"Electron|KinoDesktop", "Mac app"), (r"Macintosh", "Mac"), (r"Windows", "Windows"), (r"Linux", "Linux")):
+        if re.search(rx, ua):
+            return name
+    return "Other"
+
+
+def playlog(kind, media=None, src=None, platform=None, profile_id=None, secs=None, data=None, at=None):
+    """One row in the playback log, never lets a problem here get in the way of playing"""
+    try:
+        db().q("INSERT INTO playlog (at, profile_id, media, src, platform, kind, secs, data) VALUES (?,?,?,?,?,?,?,?)",
+               (at or time.time(), profile_id, (media or "")[:80] or None, src, platform, kind,
+                None if secs is None else round(float(secs), 2), json.dumps(data)[:600] if data else None))
+        PLAYLOG_N[0] += 1
+        if PLAYLOG_N[0] % 200 == 1:
+            db().q("DELETE FROM playlog WHERE at < ? OR id <= (SELECT MAX(id) FROM playlog) - ?", (time.time() - PLAYLOG_DAYS * 86400, PLAYLOG_MAX))
+    except Exception as e:
+        log.info("playlog: %s", e)
+
+
+def media_src(mid):
+    return "addon" if str(mid or "").startswith("s") else "library"
+
+
+@app.post("/api/playlog")
+async def playlog_post(request: Request, p=Depends(current_profile)):
+    b = await json_obj(request)
+    evs = b.get("events") if isinstance(b.get("events"), list) else []
+    plat = ua_platform(request.headers.get("user-agent"))
+    now = time.time()
+    for e in evs[:50]:
+        if not isinstance(e, dict) or e.get("kind") not in PLAYLOG_KINDS:
+            continue
+        try:
+            secs = None if e.get("secs") is None else max(0.0, min(86400.0, float(e["secs"])))
+            ago = max(0.0, min(3600.0, float(e.get("ago") or 0)))  # how long before sending it happened
+        except (TypeError, ValueError):
+            continue
+        d = e.get("data") if isinstance(e.get("data"), dict) else None
+        mid = str(e.get("media") or "")[:80]
+        playlog(e["kind"], mid, media_src(mid), plat, p["id"], secs, d, now - ago)
+    return {"ok": True}
+
+
+def playlog_name(mid):
+    f = LIB["files"].get(mid)
+    if f:
+        return f["name"]
+    if str(mid or "").startswith("s"):
+        try:
+            r = db().q("SELECT label FROM streams WHERE id = ?", (mid,))
+            return (r[0]["label"] or "").split("\n")[0][:80] if r else mid
+        except Exception:
+            return mid
+    return mid
+
+
+@app.get("/api/admin/playlog")
+async def playlog_get(admin=Depends(require_admin)):
+    since = time.time() - 86400
+    rows = db().q("SELECT * FROM playlog ORDER BY id DESC LIMIT 150")
+    day = db().q("SELECT kind, platform, src, COUNT(*) n, SUM(secs) s FROM playlog WHERE at > ? GROUP BY kind, platform, src", (since,))
+    names = {r["id"]: r["name"] for r in db().q("SELECT id, name FROM profiles")}
+    top = db().q("SELECT media, COUNT(*) n, SUM(secs) s FROM playlog WHERE at > ? AND kind = 'stall' GROUP BY media ORDER BY s DESC LIMIT 5", (since,))
+    return {"items": [{**dict(r), "data": json.loads(r["data"]) if r["data"] else None, "name": playlog_name(r["media"]) if r["media"] else None,
+                       "profile": names.get(r["profile_id"])} for r in rows],
+            "day": [dict(r) for r in day], "top": [{**dict(r), "name": playlog_name(r["media"])} for r in top]}
 
 
 # ---- links for outside players (vlc, mx player and so on)

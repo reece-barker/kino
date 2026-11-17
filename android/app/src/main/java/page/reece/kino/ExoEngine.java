@@ -53,9 +53,7 @@ class ExoEngine implements Engine {
                 .setConnectTimeoutMs(20000).setReadTimeoutMs(30000).setAllowCrossProtocolRedirects(false);
         player = new ExoPlayer.Builder(c, new DefaultRenderersFactory(c).setEnableDecoderFallback(true))
                 .setTrackSelector(ts).setMediaSourceFactory(new DefaultMediaSourceFactory(http))
-                // Low memory tvs keep less video ready ahead, by default exoplayer can hold over 100 MB of a 4K film
-                .setLoadControl(lowRam ? new DefaultLoadControl.Builder().setBufferDurationsMs(15000, 30000, 2000, 4000)
-                        .setTargetBufferBytes(48 * 1024 * 1024).setPrioritizeTimeOverSizeThresholds(false).build() : new DefaultLoadControl())
+                .setLoadControl(loadControl(c, lowRam))
                 .build();
         player.setAudioAttributes(AudioAttributes.DEFAULT, true);
         player.setHandleAudioBecomingNoisy(true);  // Pauses when headphones or bluetooth go away instead of blasting out of the speaker
@@ -99,6 +97,21 @@ class ExoEngine implements Engine {
         player.addAnalyticsListener(new AnalyticsListener() {
             @Override public void onBandwidthEstimate(EventTime t, int loadMs, long bytes, long bitrate) { l.onBandwidth(bitrate); }
         });
+    }
+
+    /** How much video is kept ready ahead. Most sticks (Fire TV, Chromecast) count as low memory here, and they had a flat 48 MB,
+     *  thats only 8 to 12 seconds of a remux, so any slow moment on the Storage Box was a stall. And after a stall it carried on
+     *  with just 4 seconds loaded, which on a film that only just keeps up meant another stall straight after (the runs of
+     *  stalls). Now the byte cap follows the memory the app really has (the manifest asks for the large heap), the time goals
+     *  are longer and it waits for 8 seconds after a stall. Real low ram devices (1 GB and less) keep the old 48 MB */
+    static DefaultLoadControl loadControl(Context c, boolean lowRam) {
+        android.app.ActivityManager am = (android.app.ActivityManager) c.getSystemService(Context.ACTIVITY_SERVICE);
+        long heap = Runtime.getRuntime().maxMemory();
+        int mb = 1024 * 1024;
+        int bytes = am != null && am.isLowRamDevice() ? 48 * mb : (int) Math.max(48L * mb, Math.min(heap / 3, (lowRam ? 128L : 256L) * mb));
+        return new DefaultLoadControl.Builder()
+                .setBufferDurationsMs(lowRam ? 30000 : 40000, lowRam ? 60000 : 90000, 2500, 8000)
+                .setTargetBufferBytes(bytes).setPrioritizeTimeOverSizeThresholds(false).build();
     }
 
     @Override public String name() { return "exo"; }

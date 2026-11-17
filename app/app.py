@@ -2693,9 +2693,13 @@ def continue_list(summ, wm, pid=None):
                 continue
             target, pos, dur = LIB["files"][nf], 0, 0
         elif not dur or pos / dur < 0.02:
-            continue
+            # Only just opened. For a show thats already under way (another episode played or finished) this is the episode your on, it used to
+            # knock the whole show out of Continue Watching just by starting the next episode and stopping again straight away
+            if s["kind"] != "series" or not any(x != f["id"] and x in wm and (wm[x]["watched"] or (wm[x]["dur"] and wm[x]["pos"] / wm[x]["dur"] >= 0.02)) for x in t["files"]):
+                continue
+            pos = 0
         out.append({**s, "file_id": target["id"], "pos": pos, "dur": dur, "season": target["season"],
-                    "episode": target["episode"], "next_episode": target["id"] != f["id"]})
+                    "episode": target["episode"], "next_episode": target["id"] != f["id"] or not pos})
         if len(out) >= 14:
             break
     return out
@@ -4693,6 +4697,14 @@ async def title(tid: str, request: Request, p=Depends(current_profile)):
     future = [{"season": v["season"], "episode": v["episode"], "video_id": ep_video_id(meta["id"], v), "ep_name": v.get("name")}
               for v in sorted((meta or {}).get("videos", []), key=lambda v: (v.get("season") or 0, v.get("episode") or 0))
               if pd_ok and v.get("season") and v.get("episode") and (v["season"], v["episode"]) not in got and str(v.get("released") or "9999")[:10] <= today]
+    # Episodes played from the addons (a season that isnt in the Library yet) carry where you got to, so Play on the page carries on from
+    # them too instead of going back to the first addon episode every time
+    if future:
+        sp = stream_progress(p["id"], meta["id"])
+        for e in missing + future:
+            w = sp.get(e["video_id"])
+            e.update(watched=bool(w and w["watched"]), last=w["updated"] if w else None,
+                     progress={"pos": w["pos"], "dur": w["dur"], "updated": w["updated"]} if w and not w["watched"] else None)
     lk = list_key_for(t, meta)
     mylist_checked(p["id"], lk)
     out.update(more_seasons=more, missing=missing, future=future, in_list=in_list(p["id"], lk), list_key=lk, kids_key=kid_key((meta or {}).get("id"), t["id"]),
@@ -6527,9 +6539,7 @@ async def external_title(kind: str, mid: str, stay: int = 0, name: str = "", p=D
     videos = []
     if kind == "series":
         # Episode progress for public domain streams, matched by the episode id the stream was found for
-        prog = {r["video_id"]: dict(r) for r in db().q(
-            "SELECT s.video_id, w.pos, w.dur, w.watched, w.updated FROM streams s JOIN watch w ON w.file_id = s.id "
-            "WHERE w.profile_id = ? AND s.video_id LIKE ? ORDER BY w.updated", (p["id"], f"{mid}:%"))}
+        prog = stream_progress(p["id"], mid)
         for v in m.get("videos") or []:
             if not v.get("season"):
                 continue
@@ -7025,6 +7035,18 @@ def show_of(vid):
 def ep_video_id(mid, v):
     # Cinemeta episodes are tt123:1:2, other addons (kitsu) give each episode its own id
     return v.get("id") if v.get("id") and str(v["id"]).startswith(str(mid)) else f"{mid}:{v['season']}:{v['episode']}"
+
+
+def stream_progress(pid, mid):
+    """Where this profile got to in each episode of a show played from the addons, by episode id. One episode can have been played from a few
+    different sources, the newest place wins and it counts as watched if any of them was finished. Joint profiles count like watch_map"""
+    ids = group_ids(pid)
+    out = {}
+    for r in db().q(f"SELECT s.video_id, w.pos, w.dur, w.watched, w.updated FROM streams s JOIN watch w ON w.file_id = s.id "
+                    f"WHERE w.profile_id IN ({ids_sql(ids)}) AND s.video_id LIKE ? ORDER BY w.updated", (*ids, f"{mid}:%")):
+        old = out.get(r["video_id"])
+        out[r["video_id"]] = {**dict(r), "watched": max(r["watched"] or 0, (old or {}).get("watched") or 0)}
+    return out
 
 
 async def ep_context(kind, vid):

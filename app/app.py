@@ -1478,6 +1478,7 @@ FF_INFO = {"burst": False, "tonemap": False}
 def ffmpeg_supports_burst():
     try:
         out = subprocess.run(["ffmpeg", "-hide_banner", "-h", "full"], capture_output=True, text=True, timeout=20).stdout
+        FF_INFO["catchup"] = "readrate_catchup" in out
         return "readrate_initial_burst" in out
     except Exception:
         return False
@@ -5136,6 +5137,11 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     if FF_INFO["burst"]:
         # Reads a minute ahead quickly then at 2x speed so it dosent copy the whole movie to the local disk at once
         args += ["-readrate", "2", "-readrate_initial_burst", "60"]
+        if FF_INFO.get("catchup"):
+            # Since ffmpeg 7.1 a read that fell behind (the Storage Box went slow for a bit, or the session was paused for being
+            # far ahead) only carries on at 2x and never makes the lost time back, so one slow patch left the player with less
+            # ready for the rest of the film. This lets it catch up quickly, then its back to 2x
+            args += ["-readrate_catchup", "8"]
     if t > 0:
         args += ["-ss", f"{t:.3f}"]
     args += ["-i", f["path"], "-map", "0:v:0", "-map", f"0:a:{a}?", *vargs,
@@ -5211,11 +5217,21 @@ async def hls_serve(s, name, headers=None):
     if m:
         s["maxseg"] = max(s.get("maxseg", 0), int(m.group(1)))
     path = s["dir"] / name
+    dead = s["proc"].returncode not in (None, 0) and not s.get("live")
+    if dead and name.endswith(".m3u8"):
+        # ffmpeg died part way (the Storage Box dropped mid read). The playlist would just stop growing and the player waited
+        # at the end of it for ever, so the player is told and starts a new stream from where it is
+        raise HTTPException(410, "The stream stopped on the server")
     for _ in range(40):
         if path.exists():
             break
+        if s["proc"].returncode not in (None, 0) and not s.get("live"):
+            break  # ffmpeg died (the Storage Box dropped mid read), waiting cant help
         await asyncio.sleep(0.25)
     if not path.exists():
+        if s["proc"].returncode not in (None, 0) and not s.get("live"):
+            # 410 tells the player to start a new stream from where it is, before it just retried this for about a minute
+            raise HTTPException(410, "The stream stopped on the server")
         raise HTTPException(404, "Not ready yet")
     if name.endswith(".m3u8"):
         txt = path.read_text(errors="ignore")

@@ -1562,12 +1562,11 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         JSONObject art = info.optJSONObject("art");
         String bg = art != null ? art.optString("background") : "";
         if (!bg.isEmpty() && !"null".equals(bg)) loadImage(img(bg, false, lowRam ? 640 : 960), b -> plBg.setImageBitmap(b));
-        relaunchLoading("Getting the next episode ready");
-        if (n != null) {
-            String ep = n.isNull("season") ? "" : "S" + n.optInt("season") + ", E" + n.optInt("episode");
-            String nm = n.isNull("name") ? "" : n.optString("name");
-            if (!ep.isEmpty() || !nm.isEmpty()) note((ep + "  " + nm).trim());
-        }
+        // The same loading screen it opens with (artwork, the logo pulsing), with the next episode underneath it
+        String ep = n == null || n.isNull("season") ? "" : "S" + n.optInt("season") + ", E" + n.optInt("episode");
+        String nm = n == null || n.isNull("name") ? "" : n.optString("name");
+        String label = (ep + "  " + nm).trim();
+        relaunchLoading(label.isEmpty() ? "Next episode" : label);
         waiting = this;
         // The page should answer in a few seconds (an addon episode has its sources looked up first). If it never does this closes like before
         h.postDelayed(this::endChain, 45000);

@@ -42,6 +42,7 @@ import sys
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote, unquote, urlencode, urljoin, urlparse
@@ -4944,24 +4945,75 @@ def range_response(path, request, download_name=None):
                 return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
             status = 206
 
-    def gen():
-        with open(path, "rb") as fh:
-            fh.seek(start)
-            left = end - start + 1
-            while left > 0:
-                chunk = fh.read(min(1 << 20, left))
-                if not chunk:
-                    break
-                left -= len(chunk)
-                yield chunk
-
     headers = {"Accept-Ranges": "bytes", "Content-Length": str(end - start + 1), "Cache-Control": "private, max-age=3600"}
     if status == 206:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
     if download_name:
         headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(download_name)
-    return StreamingResponse(gen(), status_code=status, headers=headers,
+    return StreamingResponse(read_ahead(path, start, end), status_code=status, headers=headers,
                              media_type=MIME.get(Path(path).suffix.lower(), "application/octet-stream"))
+
+
+# Reads for direct play get there own threads, so a slow or frozen Storage Box cant use up the ones the rest of the app needs
+MEDIA_POOL = ThreadPoolExecutor(max_workers=int(num_env("MEDIA_READ_THREADS", 24, 4, 128)), thread_name_prefix="media")
+READ_CHUNK = 1 << 20
+READ_AHEAD = int(num_env("READ_AHEAD_MB", 6, 1, 32))  # MB asked for at once ahead of what the player is getting
+
+
+def _pread_full(fd, n, off):
+    """pread that keeps going on a short read (sshfs can hand back less than asked), b'' only at the end of the file"""
+    out = os.pread(fd, n, off)
+    while out and len(out) < n:
+        more = os.pread(fd, n - len(out), off + len(out))
+        if not more:
+            break
+        out += more
+    return out
+
+
+async def read_ahead(path, start, end):
+    """The bytes from start to end, with a few MB always being read in the background. It used to read 1 MB, wait for it to
+    go out to the player, then ask the Storage Box for the next one, so every sshfs round trip came on top of the network
+    time and big films (4K remux) came in slower then they play. Now several reads are out at once (pread with there own
+    offsets so they cant get mixed up) and the next ones are already on the way while this one is sent. It starts with 2
+    so a player that only wants the header and hangs up (exoplayer does that a lot) dosent pull 6 MB for nothing"""
+    loop = asyncio.get_running_loop()
+    fd = await loop.run_in_executor(MEDIA_POOL, os.open, path, os.O_RDONLY)
+    pending = deque()
+    nxt, depth = start, 2
+    try:
+        while True:
+            while nxt <= end and len(pending) < depth:
+                n = min(READ_CHUNK, end - nxt + 1)
+                pending.append(MEDIA_POOL.submit(_pread_full, fd, n, nxt))
+                nxt += n
+            if not pending:
+                break
+            chunk = await asyncio.wrap_future(pending[0])
+            pending.popleft()  # only now, if the player hangs up while this waits the read is still known about below
+            if not chunk:
+                break  # the file got shorter while it was being read
+            depth = min(READ_AHEAD, depth + 1)
+            yield chunk
+    finally:
+        # The player hung up (or something failed): reads that havent started are dropped, the file is closed once the ones
+        # already running are done so a thread never reads from a closed (or reused) fd. These are the pools own futures, an
+        # asyncio one says cancelled even when its thread is still reading
+        left = [f for f in pending if not f.cancel()]
+        if not left:
+            os.close(fd)
+        else:
+            count, lock = [len(left)], threading.Lock()
+
+            def done(_):
+                # runs on the read's own thread
+                with lock:
+                    count[0] -= 1
+                    last = count[0] == 0
+                if last:
+                    os.close(fd)
+            for f in left:
+                f.add_done_callback(done)
 
 
 @app.get("/api/stream/{fid}/direct")

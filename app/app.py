@@ -2753,7 +2753,8 @@ def continue_list(summ, wm, pid=None):
                     continue
                 seen.add(show)
                 out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]),
-                            "file_id": st["id"], "stream": True, "pos": r["pos"], "dur": r["dur"], "season": None, "episode": None, "next_episode": False})
+                            "file_id": st["id"], "stream": True, "pos": r["pos"], "dur": r["dur"], "season": None, "episode": None, "next_episode": False,
+                            "play": st["id"], "play_vid": None, "play_from": r["pos"]})
                 if len(out) >= 14:
                     break
                 continue
@@ -2774,7 +2775,8 @@ def continue_list(summ, wm, pid=None):
                 seen.add(t["id"])
                 if hidden.get(t["id"], 0) >= r["updated"] or r["watched"] or frac > 0.93 or frac < 0.02:
                     continue
-                out.append({**s, "file_id": f["id"], "pos": r["pos"], "dur": r["dur"], "season": f["season"], "episode": f["episode"], "next_episode": False})
+                out.append({**s, "file_id": f["id"], "pos": r["pos"], "dur": r["dur"], "season": f["season"], "episode": f["episode"], "next_episode": False,
+                            "play": f["id"], "play_vid": None, "play_from": r["pos"]})
                 if len(out) >= 14:
                     break
                 continue
@@ -2816,17 +2818,21 @@ def continue_list(summ, wm, pid=None):
                 continue  # All caught up
             season, episode, pos, dur = nx[0], nx[1], 0, 0
             nxt = True
+            # What the card plays when its pressed: the Library file, or the addon episode (its sources get looked up then)
+            play, play_vid = nx[2], nx[3]
         else:
             seen |= keys
             season, episode = here
             pos, dur = (r["pos"] if frac >= 0.02 else 0), r["dur"]
             nxt = not pos
+            play, play_vid = r["file_id"], None
+        go = {"play": play, "play_vid": play_vid, "play_from": pos}
         if s:
-            # A show in the Library always gets its Library card, so it opens the title page and Play there starts this same episode
-            out.append({**s, "file_id": r["file_id"], "pos": pos, "dur": dur, "season": season, "episode": episode, "next_episode": nxt})
+            # A show in the Library gets its Library card. Pressing it plays this episode straight away, the title page is only for the card's info
+            out.append({**s, "file_id": r["file_id"], "pos": pos, "dur": dur, "season": season, "episode": episode, "next_episode": nxt, **go})
         else:
             out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]),
-                        "file_id": st["id"], "stream": True, "pos": pos, "dur": dur, "season": season, "episode": episode, "next_episode": nxt})
+                        "file_id": st["id"], "stream": True, "pos": pos, "dur": dur, "season": season, "episode": episode, "next_episode": nxt, **go})
         if len(out) >= 14:
             break
     return out

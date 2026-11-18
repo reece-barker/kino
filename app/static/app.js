@@ -1064,7 +1064,7 @@
     const bar = opts.progress != null && opts.progress > 0 ? `<div class="bar"><i style="width:${Math.min(100, opts.progress * 100)}%"></i></div>` : "";
     const href = opts.href || (t.external ? extHref(t) : `#/title/${t.id}`);
     const x = opts.hide && !TV ? `<button class="tile-x" data-hide="${esc(opts.hide)}" aria-label="Remove ${esc(t.name)} from Continue Watching" title="Remove from Continue Watching">${ic("close")}</button>` : "";
-    return `<a class="tile landscape" href="${href}" ${trailerAttrs(t)} ${TV && opts.hide ? `data-cw="${esc(opts.hide)}" data-cwname="${esc(t.name)}"` : ""} ${opts.play ? `data-play="${esc(opts.play)}" data-tid="${esc(t.id)}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
+    return `<a class="tile landscape" href="${href}" ${trailerAttrs(t)} ${TV && opts.hide ? `data-cw="${esc(opts.hide)}" data-cwname="${esc(t.name)}"` : ""} ${opts.play ? `data-play="${esc(opts.play)}" data-tid="${esc(t.id)}"` : ""} ${opts.cont ? `data-cont="${esc(opts.cont)}"` : ""}><div class="art">${bg}${logo}${bar}${opts.play ? `<span class="tile-play">${ic("play")}</span>` : ""}${x}</div>
       <div class="cap">${esc(t.name)}</div><div class="sub">${esc(opts.sub || [t.genres?.slice(0, 2).join(", ") || t.releaseInfo || "", Number(t.rating) > 0 ? `★ ${Number(t.rating).toFixed(1)}` : ""].filter(Boolean).join(" · "))}</div></a>`;
   }
   const metaLine = (t) => [t.kind === "video" ? "" : t.kind === "series" ? "TV Show" : "Movie", t.releaseInfo, t.genres?.slice(0, 2).join(", "), t.runtime, t.rating ? `IMDb ${t.rating}` : ""].filter(Boolean);
@@ -1440,7 +1440,7 @@
         ${h.shelves.map((s) => s.style === "fresh" ? freshShelf(s) : `<section class="shelf" aria-label="${esc(s.title)}"><h2 class="section-title">${esc(s.title)}${s.source ? ` <span class="from">${esc(s.source)}</span>` : ""}${TV && s.style === "continue" ? ` <span class="from">Hold OK to remove</span>` : ""}${s.more ? ` <a href="${esc(s.more)}">See All</a>` : ""}</h2>
           <div class="row ${s.style === "poster" ? "posters" : "wide"}" ${s.next != null ? `data-shelf="${esc(s.id)}" data-next="${esc(s.next)}" data-style="${esc(s.style)}"` : ""} ${s.pending ? "data-pending" : ""}>${s.pending ? Array.from({ length: 8 }, () => `<div class="sk ${s.style === "poster" ? "sk-poster" : "sk-wide"}"></div>`).join("") : ""}${s.items.map((t) => s.style === "poster" ? posterTile(t)
             : s.style === "continue" && t.recent ? wideTile(t, { href: t.stream ? extHref(t) : undefined, sub: [t.kind === "series" && t.season != null ? epLabel(t.season, t.episode) : "", ago(t.last)].filter(Boolean).join(" · ") })
-            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: t.file_id, href: t.stream ? extHref(t) : undefined,
+            : s.style === "continue" ? wideTile(t, { progress: t.dur ? t.pos / t.dur : 0, hide: t.file_id, href: t.stream ? extHref(t) : undefined, cont: t.play_vid || t.play,
                 sub: t.kind === "series" ? `${epLabel(t.season, t.episode)}${t.next_episode ? " · Next episode" : t.dur ? ` · ${clock(t.dur - t.pos)} left` : ""}` : `${clock(t.dur - t.pos)} left` })
             : wideTile(t)).join("")}${TV && s.more ? moreCard(s.more, s.style === "poster", s.more === "#/shows" ? "All TV Shows" : "All Movies") : ""}</div></section>`).join("")}
       </main>`;
@@ -1459,16 +1459,41 @@
       if (e.target.closest("[data-hide]")) return;
       e.preventDefault();
       if (a.dataset.play.startsWith("s")) return playFile(a.dataset.play, {});
-      const t = await api(`/api/title/${a.dataset.tid}`);
+      const tok = splashUp(null, "", "Getting the file ready");
+      const t = await api(`/api/title/${a.dataset.tid}`).catch((er) => { if (tok === PLAY_N) splashOff(); toast(er.message, 5000); return null; });
+      if (!t || tok !== PLAY_N) return;
       const f = t.files.find((x) => x.id === a.dataset.play);
       playFile(a.dataset.play, { title: t, from: f && f.progress ? f.progress.pos : 0 });
     }));
+    // A Continue Watching card plays its episode straight away (the one part way through, or the next one), the loading screen comes up at once.
+    // It used to open the title page and Play there did it. Back from the player comes back here
+    const cont = new Map();
+    h.shelves.filter((s) => s.style === "continue").forEach((s) => s.items.forEach((t) => { if (!t.recent && (t.play || t.play_vid)) cont.set(t.play_vid || t.play, t); }));
+    app.querySelectorAll("[data-cont]").forEach((a) => a.addEventListener("click", (e) => {
+      if (e.target.closest("[data-hide]")) return;
+      const c = cont.get(a.dataset.cont);
+      if (!c) return;
+      e.preventDefault();
+      playCont(c);
+    }));
     app.querySelectorAll("[data-heroplay]").forEach((b) => (b.onclick = async () => {
-      const t = await api(`/api/title/${b.dataset.heroplay}`);
+      const tok = splashUp(null, "", "Getting the file ready");
+      const t = await api(`/api/title/${b.dataset.heroplay}`).catch((er) => { if (tok === PLAY_N) splashOff(); toast(er.message, 5000); return null; });
+      if (!t || tok !== PLAY_N) return;
       const f = nextUp(t);
-      if (f) playFile(f.id, { title: t, from: f.progress ? f.progress.pos : 0 });
+      if (f) playFile(f.id, { title: t, from: f.progress ? f.progress.pos : 0, chain: true }); else splashOff();
     }));
     if (isAdmin()) startPoll(pollHomeSync, 5000);
+  }
+
+  async function playCont(c) {
+    const art = { background: c.background, logo: c.logo }, name = c.name;
+    if (c.play_vid) return playEpisode(c.play_vid, { season: c.season, episode: c.episode }, "series", { art, name });
+    const tok = splashUp(art, name, "Getting the file ready");
+    if (String(c.play).startsWith("s")) return playFile(c.play, { from: c.play_from || 0, chain: true, art, name });
+    const t = await api(`/api/title/${c.id}`).catch(() => null);
+    if (tok !== PLAY_N) return;
+    playFile(c.play, { title: t || undefined, from: c.play_from || 0, chain: true, art, name });
   }
 
   // On a tv the See All link at the top is hard to reach, so rows end with a card that does the same
@@ -2212,7 +2237,7 @@
     };
     const wireFileButtons = () => {
       $$("[data-epdl]").forEach((b) => (b.onclick = () => offlineSheet(b.dataset.epdl, t)));
-      $$("[data-playaddon]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playaddon, null)));
+      $$("[data-playaddon]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playaddon, null, "series", { art: t && { background: t.background, logo: t.logo }, name: t && t.name })));
       $$("[data-playfile]").forEach((b) => (b.onclick = () => {
         const f = t.files.find((x) => x.id === b.dataset.playfile);
         playFile(f.id, { title: t, from: f.progress ? f.progress.pos : 0 });
@@ -2243,7 +2268,7 @@
     } else wireFileButtons();
 
     const pm = $("#playMain");
-    if (pm) pm.onclick = () => (up.addon ? playEpisode(up.addon, null) : playFile(up.id, { title: t, from: resume ? up.progress.pos : 0 }));
+    if (pm) pm.onclick = () => (up.addon ? playEpisode(up.addon, null, "series", { art: t && { background: t.background, logo: t.logo }, name: t && t.name }) : playFile(up.id, { title: t, from: resume ? up.progress.pos : 0 }));
     const ps = $("#playStart");
     if (ps) ps.onclick = () => playFile(up.id, { title: t, from: 0 });
     const sm = $("#srcMain");
@@ -2376,7 +2401,7 @@
             ${isAdmin() ? `<button class="ep-mark" data-saveep="${esc(v.id)}" aria-label="Save to Library" title="Save to Library">${ic("download")}</button>` : ""}</div>
           <div class="cap">${esc(nice(v.name) || epLabel(v.season, v.episode))}</div>${v.overview ? `<div class="ov">${esc(v.overview)}</div>` : ""}</div>`;
       }).join("");
-      $$("[data-playep]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playep, t.videos.find((v) => v.id === b.dataset.playep))));
+      $$("[data-playep]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playep, t.videos.find((v) => v.id === b.dataset.playep), "series", { art: t && { background: t.background, logo: t.logo }, name: t && t.name })));
       $$("[data-saveep]").forEach((b) => (b.onclick = () => saveEpisode(b.dataset.saveep, t)));
     };
     // The seasons and episodes wait for the Play button and the sources, so the page doesn't fill in the bottom while the top is still
@@ -2424,7 +2449,7 @@
     $("#pdBox").removeAttribute("aria-busy");
     $("#pdBox").innerHTML = `<div class="actions">${first ? `<button class="btn primary" id="vPlay">${ic("play")} ${started ? "Resume" : "Play Latest"}</button>` : ""}${lb}</div>`;
     wireListBtn({ kind, id: t.list_key }, t.list_key);
-    if (first) $("#vPlay").onclick = () => playEpisode(first.id, first, kind);
+    if (first) $("#vPlay").onclick = () => playEpisode(first.id, first, kind, { art: t && { background: t.background, logo: t.logo }, name: t && t.name });
     if (TV && (document.activeElement === document.body || document.activeElement === AUTO_FOCUS)) { const f = $("#vPlay") || $("#listBtn"); if (f) f.focus({ preventScroll: true }); }
     if (!list.length) return;
     $("#eps").innerHTML = list.map((v) => {
@@ -2434,7 +2459,7 @@
       return `<div class="ep"><button class="tile landscape ${v.progress && v.progress.watched ? "is-watched" : ""}" data-playv="${esc(v.id)}" aria-label="Play ${esc(v.name || "")}"><div class="art">${art}${pr != null ? `<div class="bar"><i style="width:${Math.min(100, pr * 100)}%"></i></div>` : ""}${v.progress && v.progress.watched ? `<span class="tile-check">${ic("check")}</span>` : ""}<span class="tile-play">${ic("play")}</span></div></button>
         <div class="cap">${esc(nice(v.name) || "Video")}</div>${day && !isNaN(day) && day.getFullYear() > 1971 ? `<div class="ov">${esc(day.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }))}</div>` : ""}</div>`;
     }).join("");
-    $$("[data-playv]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playv, list.find((v) => v.id === b.dataset.playv), kind)));
+    $$("[data-playv]").forEach((b) => (b.onclick = () => playEpisode(b.dataset.playv, list.find((v) => v.id === b.dataset.playv), kind, { art: t && { background: t.background, logo: t.logo }, name: t && t.name })));
   }
 
   // Finds the public domain copy of one episode and plays it
@@ -2442,17 +2467,20 @@
   // player waiting on its own loading screen (inPlace). tok is the press it came from, closing the player meanwhile stops it
   async function playEpisode(vid, v, kind = "series", opts = {}) {
     let r;
-    if (!opts.chain && !opts.inPlace) toast("Getting it ready", 2500);
-    try { r = await api(`/api/streams/${encodeURIComponent(kind)}/${encodeURIComponent(vid)}`); } catch (e) { toast(e.message, 5000); return false; }
-    if (opts.tok != null && opts.tok !== PLAY_N) return null;
-    if (r.upcoming) { toast(`Not out yet, comes out on ${new Date(r.upcoming + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long" })}`, 5000); return false; }
-    if (!r.streams.length) { toast(kind === "series" ? "There's no public domain copy of this episode" : "The addon didn't send anything Kino can play for that"); return false; }
+    // Pressed on a page: the loading screen goes up straight away while the sources are looked up (it was a "Getting it ready" toast over the page)
+    const fresh = !opts.chain && !opts.inPlace;
+    const tok = fresh ? splashUp(opts.art, opts.name, v && v.season != null ? `Finding ${epLabel(v.season, v.episode)}` : "Finding a source") : opts.tok;
+    const fail = (msg, ms) => { if (fresh && tok === PLAY_N) splashOff(); toast(msg, ms); return false; };
+    try { r = await api(`/api/streams/${encodeURIComponent(kind)}/${encodeURIComponent(vid)}`); } catch (e) { if (tok != null && tok !== PLAY_N) return null; return fail(e.message, 5000); }
+    if (tok != null && tok !== PLAY_N) return null;
+    if (r.upcoming) return fail(`Not out yet, comes out on ${new Date(r.upcoming + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long" })}`, 5000);
+    if (!r.streams.length) return fail(kind === "series" ? "There's no public domain copy of this episode" : "The addon didn't send anything Kino can play for that");
     const s = r.streams[0];
     SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false };
     // Where you got to in this episode, from whichever source it was (each source keeps its own place, and the first one in the list
     // now isnt always the one you were watching, so it used to start from the beginning)
     const pr = r.streams.map((x) => x.progress).filter(Boolean).sort((a, b) => (b.updated || 0) - (a.updated || 0))[0];
-    const ok = await playFile(s.id, { from: pr && !pr.watched ? pr.pos || 0 : 0, title: opts.title || undefined, chain: opts.chain, inPlace: opts.inPlace });
+    const ok = await playFile(s.id, { from: pr && !pr.watched ? pr.pos || 0 : 0, title: opts.title || undefined, chain: opts.chain || fresh, inPlace: opts.inPlace, art: opts.art, name: opts.name });
     return ok !== false;
   }
 
@@ -2510,7 +2538,8 @@
     // Only the first skip says so in a toast, the ones after it show on the loading screen so a run of dead sources isnt a run of popups
     const left = untried.length - 1;
     const note = `${SOURCES.busy ? "That source is busy" : why || "That source didn't work"}, trying ${n.addon ? `one from ${n.addon}` : "another one"}`;
-    if (SOURCES.skips === 1) toast(note, 4000);
+    // The loading screen says it on its line when its up, no toast over it
+    if (SOURCES.skips === 1 && !LOAD.on) toast(note, 4000);
     // A dead source answers in a blink, so each try waits a second at least (longer when a host is busy, hitting it again just makes it worse).
     // The loading screen stays up and its line says what is happening
     const tok = PLAY_N, gap = SOURCES.busyHosts.has(n.host) ? 4000 : SOURCES.busy ? 2000 : 1000, wait = Math.max(0, gap - (Date.now() - (SOURCES.lastAt || 0)));
@@ -2601,9 +2630,11 @@
       // The addon put first in Settings hadn't answered when this list was made, so Play waits for the full list (a few seconds at most) instead of
       // starting a source from another addon
       if (box._pend && box._full) {
-        toast("Finding your best source", 4000);
+        // The loading screen covers the wait, no toast
+        const tok = splashUp(t && { background: t.background, logo: t.logo }, t && t.name, "Finding your best source");
         await Promise.race([box._full, new Promise((ok) => setTimeout(ok, 20000))]);
-        if ($("#pdBox") !== box) return;
+        if (tok !== PLAY_N) return;
+        if ($("#pdBox") !== box) { splashOff(); return; }
       }
       play(box._r.streams[0]);
     };
@@ -4607,9 +4638,11 @@
     else box.innerHTML = `<div class="pl-name">${esc(name || "")}</div>`;
   }
   function loadArt(art, name) {
-    if (!LOAD.on || !art) return;
-    if (art.background && !$("#plBg img")) $("#plBg").innerHTML = `<img src="${img(art.background, 0, 960)}" alt="" data-fallback="hide">`;
-    if (art.logo && !$("#plLogo img")) loadLogo(art, name);
+    if (!LOAD.on) return;
+    if (art && art.background && !$("#plBg img")) $("#plBg").innerHTML = `<img src="${img(art.background, 0, 960)}" alt="" data-fallback="hide">`;
+    if (art && art.logo && !$("#plLogo img")) loadLogo(art, name);
+    // Put up before the name was known (a card on Home), the name fills in once it is
+    else if (name && !$("#plLogo img") && !$("#plLogo").textContent.trim()) loadLogo(null, name);
   }
   // Each step is one line, the newest one is the one that's still going
   function loadStep(text) {
@@ -4635,6 +4668,21 @@
       l.el.children[1].hidden = !l.note;
       l.el.children[2].textContent = secs < 0.1 ? "" : secs.toFixed(1) + " s";
     }
+  }
+  // The loading screen on its own, before there is anything to play: a source still being found, the file being looked up, or the app's
+  // player about to open (and behind it while it is open). Gives back the press number, a close in the meantime changes it
+  function splashUp(art, name, step) {
+    stopPreviews(); closeTrailer(); clearInterval(HERO_T);
+    if (pl.el.hidden) { pl.el.hidden = false; document.body.style.overflow = "hidden"; }
+    if (!LOAD.on) loadShow(art, name || ""); else loadArt(art, name);
+    if (step) loadStep(step);
+    return PLAY_N;
+  }
+  // Takes it down again when nothing ended up playing in the web player
+  function splashOff() {
+    if (pl.info) return;
+    loadHide();
+    if (!pl.el.hidden) { pl.el.hidden = true; document.body.style.overflow = ""; }
   }
   function loadHide() {
     if (!LOAD.on) return;
@@ -4685,10 +4733,14 @@
     // A second press while the first is still getting ready is ignored, it used to open two players
     if (Date.now() - NATIVE_BUSY < 6000) return;
     NATIVE_BUSY = Date.now();
-    // Moving on to the next episode the app's player is still up with its loading screen, nothing on the page needs saying
-    if (!opts.inPlace) toast("Starting…", 2500);
+    // Straight to the loading screen (the same one the app's player opens with) while the file is looked up. It used to be a "Starting..." toast
+    // over the page. It stays up behind the app's player till that closes, so the page isnt what shows between one episode and the next
+    const tt = opts.title;
+    const tok = splashUp(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "", "Getting the file ready");
     let info;
-    try { info = await api(`/api/file/${fid}`); } catch (e) { NATIVE_BUSY = 0; toast(e.message, 5000); return false; }
+    try { info = await api(`/api/file/${fid}`); } catch (e) { NATIVE_BUSY = 0; if (tok === PLAY_N) splashOff(); toast(e.message, 5000); return false; }
+    if (tok !== PLAY_N) { NATIVE_BUSY = 0; return; }
+    loadArt(info.art, (tt && tt.name) || info.show || info.name);
     const prefs = info.prefs || {};
     const t = opts.title;
     const f = t && t.files && t.files.find((x) => x.id === fid);
@@ -4699,6 +4751,8 @@
       const extra = await Promise.race([api(`/api/addon-subs/${fid}`), new Promise((r) => setTimeout(() => r({ subs: [] }), 2500))]);
       (extra.subs || []).slice(0, 12).forEach((x) => subs.push({ url: `/api/subs/${fid}/${x.id}`, label: x.label + (x.source ? ` (${x.source})` : ""), lang: langCode(x.lang) }));
     } catch (_) {}
+    // Closed (Back on the loading screen) while that was going on
+    if (tok !== PLAY_N) { NATIVE_BUSY = 0; return; }
     const url = !info.stream ? `/api/stream/${fid}/direct` : info.src || `/api/rstream/${fid}`;
     const sub = info.stream ? [info.season != null ? epLabel(info.season, info.episode) : "", nice(info.ep_name || "")].filter(Boolean).join("  ")
       : t && t.kind === "series" && f ? `${epLabel(f.season, f.episode)}${f.ep_name ? "  " + nice(f.ep_name) : ""}` : "";
@@ -4706,8 +4760,8 @@
     pl.title = t || null;
     const n = info.next;
     // The page can be let go while the player is open (a TV low on memory), what is needed to move on to the next episode afterwards is kept
-    try { sessionStorage.setItem("kino-native", JSON.stringify({ fid, next: n || null, autoplay: prefs.autoplay !== false, titleId: info.title_id || (t && t.id) || null, at: Date.now() })); } catch (_) {}
     const art = { background: (t && t.background) || (info.art && info.art.background) || null, logo: (t && t.logo) || (info.art && info.art.logo) || null };
+    try { sessionStorage.setItem("kino-native", JSON.stringify({ fid, next: n || null, autoplay: prefs.autoplay !== false, titleId: info.title_id || (t && t.id) || null, at: Date.now(), art, name: (t && t.name) || info.show || info.name })); } catch (_) {}
     setTimeout(() => (NATIVE_BUSY = 0), 3000);
     window.KinoAndroid.playNative(JSON.stringify({
       isStream: !!info.stream, torbox: !!(info.stream && !info.src), moreSources: moreSources(fid),
@@ -4727,9 +4781,9 @@
   const langCode = (l) => { if (!l) return ""; const c = LANG_CODES[l] || LANG_CODES[String(l).split(" ")[0]]; return c ? c[0] : String(l).length <= 3 ? String(l).toLowerCase() : ""; };
   window.kinoNativeDone = (r) => {
     const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
-    if (!r) return;
+    if (!r) { splashOff(); return; }
     // The app's player was waiting for the next episode and that didnt happen (Back on its loading screen, or nothing came): the page catches up
-    if (r.chainEnd) { try { sessionStorage.removeItem("kino-native"); } catch (_) {} if (ME.profile) setTimeout(softRoute, 300); return; }
+    if (r.chainEnd) { splashOff(); try { sessionStorage.removeItem("kino-native"); } catch (_) {} if (ME.profile) setTimeout(softRoute, 300); return; }
     // Live tv just closes, unless they asked for the web player from its error box. The remote goes back to the channel that was
     // on (the player says which, up and down in it change channel), also when the page was reloaded while it was open
     // The Kino player gave up on a channel: the page's own player (hls.js, what a computer uses) takes it over, so it plays instead of an error
@@ -4757,6 +4811,7 @@
     // goNext is Play Now on its up next card, that one moves on even with autoplay off. chain means the player is still up on its loading
     // screen waiting for it, so the next episode starts in there and the page behind never shows
     if (r.ended && n && (auto || r.goNext)) return nextFrom(n, cur ? cur.opts.title : null, r.titleId, !!r.chain);
+    splashOff();
     // Redraws the page so resume bars and watched ticks are right, once the finished mark is in (it redrew before it and the episode still looked half watched)
     if (ME.profile) Promise.race([marked, new Promise((ok) => setTimeout(ok, 3000))]).then(() => setTimeout(softRoute, 300));
   };
@@ -4769,16 +4824,27 @@
       ok = await playFile(n.id, { title: t, from: 0, inPlace });
     }
     // It couldnt start, the waiting player closes and the page is there with whatever was said about it
-    if (inPlace && ok === false) { try { window.KinoAndroid.nextFailed(); } catch (_) {} }
+    if (ok === false) { splashOff(); if (inPlace) { try { window.KinoAndroid.nextFailed(); } catch (_) {} } }
   }
+  let EARLY_SPLASH = false;
   if (ANDROID) {
+    // The page was let go while the app's player was open and has just loaded again: the loading screen covers it right away, so the title page
+    // doesnt flash up (and draw itself) before the player's result is picked up and the next episode starts. Gone again below if there's no result
+    // (a microtask, so it runs once the whole script is set up but before the page has drawn anything)
+    queueMicrotask(() => {
+      try {
+        const k = JSON.parse(sessionStorage.getItem("kino-native") || "null");
+        if (k && Date.now() - k.at < 6 * 3600000) { splashUp(k.art, k.name || "", ""); EARLY_SPLASH = true; }
+      } catch (_) {}
+    });
     // After the page comes back (a low memory tv lets it go while the player is open) it picks up the player's result,
     // and tells the server if the page crashed last time so heavy pages can be found
     setTimeout(() => {
       try {
         const r = window.KinoAndroid.takeResult && window.KinoAndroid.takeResult();
-        if (r) { RELOADED = true; window.kinoNativeDone(JSON.parse(r)); }
-      } catch (_) {}
+        if (r) { RELOADED = true; window.kinoNativeDone(JSON.parse(r)); } else if (EARLY_SPLASH) splashOff();
+      } catch (_) { if (EARLY_SPLASH) splashOff(); }
+      EARLY_SPLASH = false;
       try {
         // The app itself crashed last time (not just the page): tell the server what it was, it shows under Server, App Problems
         const jc = window.KinoAndroid.javaCrash && window.KinoAndroid.javaCrash();
@@ -4818,6 +4884,7 @@
     spinner(false);
     const tt = opts.title;
     if (!chain) loadShow(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "");
+    else loadArt(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "");
     loadStep(opts.note || "Getting the file ready");
     $("#pMsg").hidden = true;
     $("#upNext").hidden = true;
@@ -5656,6 +5723,9 @@
 
   // controls
   const v = pl.v;
+  // An empty see through poster: the Android app's page draws a big grey play button on a video with no picture yet, it showed through the
+  // loading screen as it faded in
+  v.poster = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
   function drawTime() {
     const d = total(), p = pos();
     $("#tNow").textContent = clock(p);

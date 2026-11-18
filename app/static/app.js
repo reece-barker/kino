@@ -2471,12 +2471,15 @@
     const fresh = !opts.chain && !opts.inPlace;
     const tok = fresh ? splashUp(opts.art, opts.name, v && v.season != null ? `Finding ${epLabel(v.season, v.episode)}` : "Finding a source") : opts.tok;
     const fail = (msg, ms) => { if (fresh && tok === PLAY_N) splashOff(); toast(msg, ms); return false; };
-    try { r = await api(`/api/streams/${encodeURIComponent(kind)}/${encodeURIComponent(vid)}`); } catch (e) { if (tok != null && tok !== PLAY_N) return null; return fail(e.message, 5000); }
+    // The full list, that can take a while with a slow addon (the app's player keeps waiting, and if it gives up the episode opens as a new player)
+    try { r = await api(`/api/streams/${encodeURIComponent(kind)}/${encodeURIComponent(vid)}`); }
+    catch (e) { if (tok != null && tok !== PLAY_N) return null; hlog("lookup_fail", { ep: vid, why: e.message }); return fail(e.message, 5000); }
     if (tok != null && tok !== PLAY_N) return null;
+    hlog(r.streams.length ? "lookup_ok" : "lookup_none", { ep: vid, n: r.streams.length });
     if (r.upcoming) return fail(`Not out yet, comes out on ${new Date(r.upcoming + "T12:00:00").toLocaleDateString(undefined, { day: "numeric", month: "long" })}`, 5000);
     if (!r.streams.length) return fail(kind === "series" ? "There's no public domain copy of this episode" : "The addon didn't send anything Kino can play for that");
     const s = r.streams[0];
-    SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false };
+    SOURCES = { list: liveSources(r.streams), tried: new Set(), skips: 0, busyHosts: new Set(), busy: false, inPlace: !!opts.inPlace };
     // Where you got to in this episode, from whichever source it was (each source keeps its own place, and the first one in the list
     // now isnt always the one you were watching, so it used to start from the beginning)
     const pr = r.streams.map((x) => x.progress).filter(Boolean).sort((a, b) => (b.updated || 0) - (a.updated || 0))[0];
@@ -2498,7 +2501,7 @@
     // and sources on that host wait while others are tried
     api(`/api/streams/${fid}/bad`, { why: why || "" }).then((r) => {
       // The account's own daily limit, every source fails the same way: stop the run through the list and say so
-      if (r && r.limit) { clearTimeout(SOURCES && SOURCES.timer); PLAY_N++; loadHide(); toast(r.limit, 12000); return; }
+      if (r && r.limit) { clearTimeout(SOURCES && SOURCES.timer); PLAY_N++; if (pl.info) loadHide(); else splashOff(); hlog("gave_up", { why: "daily limit" }); toast(r.limit, 12000); return; }
       if (r && r.busy && SOURCES) { SOURCES.busyHosts.add(r.host); SOURCES.busy = true; } }).catch(() => {});
     if (!SOURCES || !SOURCES.list.some((x) => x.id === fid)) {
       // The player gave up on a source and there is no list to carry on from: say so, instead of dropping back to the page without a word
@@ -2521,7 +2524,7 @@
       let left2 = secs;
       const tick = () => {
         if (PLAY_N !== tok2) return;
-        if (left2 <= 0) { playFile(first.id, { from: from || 0, chain: true }); return; }
+        if (left2 <= 0) { playFile(first.id, { from: from || 0, chain: true, inPlace: SOURCES.inPlace }); return; }
         if (LOAD.on) loadStep(`TorBox says too many requests, waiting ${left2}s and then trying again`);
         left2--; SOURCES.timer = setTimeout(tick, 1000);
       };
@@ -2545,7 +2548,8 @@
     const tok = PLAY_N, gap = SOURCES.busyHosts.has(n.host) ? 4000 : SOURCES.busy ? 2000 : 1000, wait = Math.max(0, gap - (Date.now() - (SOURCES.lastAt || 0)));
     SOURCES.lastAt = Date.now() + wait;
     if (LOAD.on) loadStep(SOURCES.skips > 1 ? `${note} (${left} left)` : note);
-    const go = () => { if (PLAY_N !== tok) return; playFile(n.id, { from: from || 0, note: SOURCES.skips > 1 ? `${note} (${left} left)` : "", chain: true }); };
+    hlog("next_source", { from: fid, to: n.id, why: why || "" });
+    const go = () => { if (PLAY_N !== tok) return; playFile(n.id, { from: from || 0, note: SOURCES.skips > 1 ? `${note} (${left} left)` : "", chain: true, inPlace: SOURCES.inPlace }); };
     if (wait) SOURCES.timer = setTimeout(go, wait); else go();
     return true;
   }
@@ -4406,7 +4410,7 @@
   }
 
   // When and why videos stopped to load, from the players and the server, so a "it keeps buffering" can be looked up
-  const PLOG_NAMES = { start: "Slow start", stall: "Stopped to load", seek_wait: "Wait after skipping", slow_piece: "Slow piece", hls_error: "Player error", hls_restart: "Stream restarted", error: "Error", hls_start: "Converting started", ffmpeg_died: "Converting stopped", slow_storage: "Storage Box slow" };
+  const PLOG_NAMES = { handoff: "Next episode", start: "Slow start", stall: "Stopped to load", seek_wait: "Wait after skipping", slow_piece: "Slow piece", hls_error: "Player error", hls_restart: "Stream restarted", error: "Error", hls_start: "Converting started", ffmpeg_died: "Converting stopped", slow_storage: "Storage Box slow" };
   async function drawPlayLog() {
     const r = await api("/api/admin/playlog").catch(() => null);
     const box = $("#playLog");
@@ -4415,8 +4419,10 @@
     for (const x of r.day) if (x.kind === "stall") { const k = `${x.platform || "Server"} · ${x.src}`; sum[k] = sum[k] || { n: 0, s: 0 }; sum[k].n += x.n; sum[k].s += x.s || 0; }
     const sumLine = Object.entries(sum).map(([k, v]) => `${esc(k)}: ${v.n} ${v.n === 1 ? "stop" : "stops"}, ${Math.round(v.s)} s`).join("<br>");
     // Starts are logged every time, only slow ones (over 5 seconds) are worth showing
-    const items = r.items.filter((x) => !((x.kind === "start" || x.kind === "hls_start") && (x.secs || 0) < 5)).slice(0, 25);
-    const detail = (x) => { const d = x.data || {}; return [x.platform, x.profile, d.mode === "hls" ? "converted" : d.mode === "direct" ? "direct play" : "", d.ahead != null ? `${d.ahead} s ready` : "", d.pos != null ? `at ${clock(d.pos)}` : "", d.details, d.code ? `answer ${d.code}` : "", d.error, d.mb ? `${d.mb} MB` : ""].filter(Boolean).map(String).join(" · "); };
+    // Moving on to the next episode logs every step, only the ones where something went wrong show here
+    const items = r.items.filter((x) => !((x.kind === "start" || x.kind === "hls_start") && (x.secs || 0) < 5)
+      && !(x.kind === "handoff" && ["chain_start", "lookup_ok", "native_open"].includes((x.data || {}).stage))).slice(0, 25);
+    const detail = (x) => { const d = x.data || {}; return [x.platform, x.profile, d.mode === "hls" ? "converted" : d.mode === "direct" ? "direct play" : "", d.ahead != null ? `${d.ahead} s ready` : "", d.pos != null ? `at ${clock(d.pos)}` : "", d.details, d.code ? `answer ${d.code}` : "", d.error, d.mb ? `${d.mb} MB` : "", d.stage, d.why, d.app ? `app ${d.app}` : ""].filter(Boolean).map(String).join(" · "); };
     box.innerHTML = `<section class="card backups"><h2 class="set-title">Playback Problems</h2>
       <p class="secondary set-hint">When videos stopped to load, started slowly or broke off, from the players and from the server. Kept for 2 weeks.</p>
       <p class="set-hint">${sumLine ? `<b>Last 24 hours</b><br>${sumLine}` : "No stops to load in the last 24 hours."}${r.top.length ? `<br>Most stops: ${r.top.map((x) => `${esc(x.name || "?")} (${x.n}, ${Math.round(x.s || 0)} s)`).join(", ")}` : ""}</p>
@@ -4617,10 +4623,17 @@
   // Loading screen like stremio: the artwork, the logo pulsing and what Kino is doing underneath. The lines can be
   // turned off per profile in Settings, the artwork and logo always show
   const LOAD = { on: false, t0: 0, lines: [], stats: true, timer: null };
+  // Settings, Loading Details: off shows the loading screen with only the artwork and logo, no lines of text. Remembered on the device too, so a
+  // loading screen that goes up before the profile has loaded (a page that was reloaded) goes by it as well
+  function loadStatsOn() {
+    const p = ME.profile && ME.profile.prefs;
+    if (p) { const on = p.load_stats !== false; try { if (localStorage.getItem("kino-load-stats") !== (on ? "1" : "0")) localStorage.setItem("kino-load-stats", on ? "1" : "0"); } catch (_) {} return on; }
+    try { return localStorage.getItem("kino-load-stats") !== "0"; } catch (_) { return true; }
+  }
   function loadShow(art, name) {
     const el = $("#pLoad");
     LOAD.on = true; LOAD.t0 = performance.now(); LOAD.lines = [];
-    LOAD.stats = !(ME.profile && ME.profile.prefs && ME.profile.prefs.load_stats === false);
+    LOAD.stats = loadStatsOn();
     $("#plBg").innerHTML = art && art.background ? `<img src="${img(art.background, 0, 960)}" alt="" data-fallback="hide">` : "";
     loadLogo(art, name);
     $("#plStats").innerHTML = "";
@@ -4654,7 +4667,11 @@
   }
   function loadNote(text) { if (LOAD.on && LOAD.lines.length) { LOAD.lines[LOAD.lines.length - 1].note = text; drawLoad(); } }
   function drawLoad() {
-    if (!LOAD.on || !LOAD.stats) return;
+    if (!LOAD.on) return;
+    // The profile can arrive after the loading screen went up (a page reloaded behind the app's player), Loading Details off then hides the lines
+    const st = loadStatsOn();
+    if (st !== LOAD.stats) { LOAD.stats = st; $("#pLoad").classList.toggle("no-stats", !st); }
+    if (!LOAD.stats) return;
     const now = performance.now();
     // Lines are kept and only there text changes, so each one slides in once instead of every half second
     const box = $("#plStats"), shown = LOAD.lines.slice(-4);
@@ -4738,7 +4755,14 @@
     const tt = opts.title;
     const tok = splashUp(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "", "Getting the file ready");
     let info;
-    try { info = await api(`/api/file/${fid}`); } catch (e) { NATIVE_BUSY = 0; if (tok === PLAY_N) splashOff(); toast(e.message, 5000); return false; }
+    try { info = await api(`/api/file/${fid}`); } catch (e) {
+      NATIVE_BUSY = 0;
+      if (tok !== PLAY_N) return;
+      hlog("file_fail", { fid, why: e.message });
+      // A source that wont even open: the next one, like the web player does (it used to stop here with a toast)
+      if (moreSources(fid) && nextSource(fid, opts.from, e.message)) return;
+      splashOff(); toast(e.message, 5000); return false;
+    }
     if (tok !== PLAY_N) { NATIVE_BUSY = 0; return; }
     loadArt(info.art, (tt && tt.name) || info.show || info.name);
     const prefs = info.prefs || {};
@@ -4761,6 +4785,14 @@
     const n = info.next;
     // The page can be let go while the player is open (a TV low on memory), what is needed to move on to the next episode afterwards is kept
     const art = { background: (t && t.background) || (info.art && info.art.background) || null, logo: (t && t.logo) || (info.art && info.art.logo) || null };
+    // The sources list too: a low memory TV lets the page go while the player is open, and when that source fails the reloaded page needs the list
+    // to carry on to the next one (it had none, said there was nothing else to try and left you on the title page)
+    try { sessionStorage.setItem("kino-src", SOURCES && SOURCES.list.some((x) => x.id === fid) ? JSON.stringify({ list: SOURCES.list, tried: [...SOURCES.tried], skips: SOURCES.skips || 0, at: Date.now() }) : ""); } catch (_) {}
+    // The app's player stopped waiting for this one (it timed out): it opens as a new player instead, an in place one would be ignored
+    const inPlace = !!opts.inPlace && !(CHAIN && CHAIN.dropped);
+    if (SOURCES) SOURCES.inPlace = false;
+    hlog("native_open", { fid, inPlace });
+    try { sessionStorage.removeItem("kino-next"); } catch (_) {}
     try { sessionStorage.setItem("kino-native", JSON.stringify({ fid, next: n || null, autoplay: prefs.autoplay !== false, titleId: info.title_id || (t && t.id) || null, at: Date.now(), art, name: (t && t.name) || info.show || info.name })); } catch (_) {}
     setTimeout(() => (NATIVE_BUSY = 0), 3000);
     window.KinoAndroid.playNative(JSON.stringify({
@@ -4768,7 +4800,7 @@
       art, video: info.video || {}, credits: info.credits || 0, autoplay: prefs.autoplay !== false, loadStats: prefs.load_stats !== false,
       subSize: prefs.sub_size || "m", titleId: info.title_id || (t && t.id) || null,
       next: n ? { id: n.id || null, video_id: n.video_id || null, name: n.name ? nice(n.name) : null, season: n.season ?? null, episode: n.episode ?? null, thumbnail: n.thumbnail || null } : null,
-      base: location.origin, ua: navigator.userAgent, fid, url, title: (t && t.name) || info.show || info.name, sub, inPlace: !!opts.inPlace,
+      base: location.origin, ua: navigator.userAgent, fid, url, title: (t && t.name) || info.show || info.name, sub, inPlace,
       start: opts.from != null ? opts.from : info.resume || 0, duration: info.duration || 0,
       audioN, audioChosen: audioN !== info.default_audio, audioLang: langCode(prefs.audio_lang), subLang: langCode(prefs.sub_lang), subs,
       checkFake: !!(info.stream && (info.kind === "movie" || info.kind === "series")), expect: info.expect || 0, autoNextSource: !!prefs.auto_next_source,
@@ -4782,8 +4814,27 @@
   window.kinoNativeDone = (r) => {
     const cur = NATIVE; NATIVE = null; NATIVE_BUSY = 0;
     if (!r) { splashOff(); return; }
-    // The app's player was waiting for the next episode and that didnt happen (Back on its loading screen, or nothing came): the page catches up
-    if (r.chainEnd) { splashOff(); try { sessionStorage.removeItem("kino-native"); } catch (_) {} if (ME.profile) setTimeout(softRoute, 300); return; }
+    // The page was let go while the player was open and has loaded again: the sources list comes back from before, so a failed source carries on
+    if (!SOURCES && r.fid) {
+      try {
+        const k = JSON.parse(sessionStorage.getItem("kino-src") || "null");
+        if (k && Date.now() - k.at < 6 * 3600000 && k.list.some((x) => x.id === r.fid)) {
+          SOURCES = { list: k.list, tried: new Set(k.tried), skips: k.skips, busyHosts: new Set(), busy: false };
+          hlog("sources_back", { n: k.list.length });
+        }
+      } catch (_) {}
+    }
+    // The app's player was waiting for the next episode and stopped. Back on its loading screen: that one isnt wanted, the page catches up. It gave
+    // up waiting (the next one took too long): the loading screen here stays up and the next episode opens as a new player once its ready, it used
+    // to drop you on the title page and the next episode then went nowhere
+    if (r.chainEnd) {
+      const back = r.why ? r.why === "back" : !(CHAIN && Date.now() - CHAIN.at > 40000);
+      hlog("chain_end", { why: r.why || (back ? "back?" : "timeout?"), busy: !!(CHAIN && CHAIN.busy) });
+      if (!back && CHAIN && CHAIN.busy) { CHAIN.dropped = true; return; }
+      if (back) PLAY_N++;
+      CHAIN = null;
+      splashOff(); try { sessionStorage.removeItem("kino-native"); sessionStorage.removeItem("kino-next"); } catch (_) {} if (ME.profile) setTimeout(softRoute, 300); return;
+    }
     // Live tv just closes, unless they asked for the web player from its error box. The remote goes back to the channel that was
     // on (the player says which, up and down in it change channel), also when the page was reloaded while it was open
     // The Kino player gave up on a channel: the page's own player (hls.js, what a computer uses) takes it over, so it plays instead of an error
@@ -4810,21 +4861,47 @@
     const marked = r.ended && r.fid && !String(r.fid).startsWith("s") ? new Promise((ok) => setTimeout(ok, 800)).then(() => api("/api/watched", { file_id: r.fid, watched: true })).catch(() => {}) : Promise.resolve();
     // goNext is Play Now on its up next card, that one moves on even with autoplay off. chain means the player is still up on its loading
     // screen waiting for it, so the next episode starts in there and the page behind never shows
-    if (r.ended && n && (auto || r.goNext)) return nextFrom(n, cur ? cur.opts.title : null, r.titleId, !!r.chain);
+    if (r.ended && n && (auto || r.goNext)) { hlog("chain_start", { from: r.fid, inPlace: !!r.chain, reloaded: !cur }); return nextFrom(n, cur ? cur.opts.title : null, r.titleId, !!r.chain); }
     splashOff();
     // Redraws the page so resume bars and watched ticks are right, once the finished mark is in (it redrew before it and the episode still looked half watched)
     if (ME.profile) Promise.race([marked, new Promise((ok) => setTimeout(ok, 3000))]).then(() => setTimeout(softRoute, 300));
   };
   // The next episode, also when the page was reloaded while the player was open and only the ids are left
+  // The next episode after the app's player finished one. Kept in sessionStorage till the player has it, so a page that gets reloaded half way (a low
+  // memory TV) carries on with it instead of losing it. It always ends in the player opening or a message saying why not, never just the title page
+  let CHAIN = null;
   async function nextFrom(n, title, titleId, inPlace) {
+    CHAIN = { at: Date.now(), busy: true, dropped: false };
+    const me = CHAIN, tok = PLAY_N;
+    try { sessionStorage.setItem("kino-next", JSON.stringify({ n, titleId: titleId || (title && title.id) || null, at: Date.now() })); } catch (_) {}
     let ok;
-    if (n.video_id) ok = await playEpisode(n.video_id, n, "series", { title, inPlace });
-    else {
-      const t = title || (titleId ? await api(`/api/title/${titleId}`).catch(() => null) : null);
-      ok = await playFile(n.id, { title: t, from: 0, inPlace });
+    try {
+      if (n.video_id) ok = await playEpisode(n.video_id, n, "series", { title, inPlace, tok });
+      else {
+        const t = title || (titleId ? await api(`/api/title/${titleId}`).catch(() => null) : null);
+        ok = tok === PLAY_N ? await playFile(n.id, { title: t, from: 0, inPlace }) : null;
+      }
+    } catch (e) { ok = false; toast(e.message || "The next episode didn't start", 6000); }
+    me.busy = false;
+    if (ok === null || tok !== PLAY_N) { hlog("chain_cancel", {}); return; }
+    if (ok === false) {
+      // It couldnt start: the loading screen goes, the waiting player closes and the page stays with what was said about it
+      hlog("chain_fail", { ep: n.video_id || n.id });
+      try { sessionStorage.removeItem("kino-next"); } catch (_) {}
+      splashOff();
+      if (inPlace && !me.dropped) { try { window.KinoAndroid.nextFailed(); } catch (_) {} }
+      if (me.dropped && ME.profile) setTimeout(softRoute, 300);
     }
-    // It couldnt start, the waiting player closes and the page is there with whatever was said about it
-    if (ok === false) { splashOff(); if (inPlace) { try { window.KinoAndroid.nextFailed(); } catch (_) {} } }
+  }
+  // What happened moving from one episode to the next, into the playback log (Server, Playback) so a next episode that didnt start can be traced
+  function hlog(stage, data) {
+    const d = { stage, ...(data || {}), app: ANDROID && window.KinoAndroid.version ? window.KinoAndroid.version() : "", tv: TV };
+    try { console.info("kino handoff", JSON.stringify(d)); } catch (_) {}
+    if (OFFLINE) return;
+    try {
+      fetch("/api/playlog", { method: "POST", keepalive: true, credentials: "same-origin", headers: { "X-Kino": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({ events: [{ kind: "handoff", media: String((data && (data.fid || data.ep || data.from)) || ""), secs: null, data: d, ago: 0 }] }) }).catch(() => {});
+    } catch (_) {}
   }
   let EARLY_SPLASH = false;
   if (ANDROID) {
@@ -4842,7 +4919,17 @@
     setTimeout(() => {
       try {
         const r = window.KinoAndroid.takeResult && window.KinoAndroid.takeResult();
-        if (r) { RELOADED = true; window.kinoNativeDone(JSON.parse(r)); } else if (EARLY_SPLASH) splashOff();
+        let pend = null;
+        try { pend = !r && JSON.parse(sessionStorage.getItem("kino-next") || "null"); } catch (_) {}
+        if (r) { RELOADED = true; window.kinoNativeDone(JSON.parse(r)); }
+        else if (pend && Date.now() - pend.at < 180000) {
+          // The page went while it was getting the next episode ready (the player's result was already picked up): it carries on with it
+          RELOADED = true;
+          hlog("chain_resume", { ep: pend.n.video_id || pend.n.id });
+          if (!EARLY_SPLASH) splashUp(null, "", "");
+          nextFrom(pend.n, null, pend.titleId, false);
+        }
+        else if (EARLY_SPLASH) splashOff();
       } catch (_) { if (EARLY_SPLASH) splashOff(); }
       EARLY_SPLASH = false;
       try {

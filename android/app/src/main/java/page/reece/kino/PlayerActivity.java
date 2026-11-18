@@ -1519,7 +1519,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     private void done(String error) {
         // Back (or Close) on the loading screen while it waits for the next episode: that one isnt wanted any more
-        if (waiting == this) { endChain(); return; }
+        if (waiting == this) { endChain("back"); return; }
         if (leaving) return;
         if (error == null && ended && !live && info.optJSONObject("next") != null && (wantNext || info.optBoolean("autoplay", true)) && startChain()) return;
         leaving = true;
@@ -1569,7 +1569,8 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         relaunchLoading(label.isEmpty() ? "Next episode" : label);
         waiting = this;
         // The page should answer in a few seconds (an addon episode has its sources looked up first). If it never does this closes like before
-        h.postDelayed(this::endChain, 45000);
+        h.postDelayed(() -> endChain("timeout"), 120000);
+        android.util.Log.i("Kino", "next episode: waiting for the page");
         m.playerChained(r);
         return true;
     }
@@ -1585,11 +1586,15 @@ public class PlayerActivity extends Activity implements Engine.Listener {
     }
 
     /** No next episode after all (Back while waiting, nothing came, or the page couldnt start it): closes and the page refreshes */
-    void endChain() {
+    // why: back (they pressed Back on it), timeout (the page took too long, it still opens the episode as a new player once its ready) or failed
+    // (the page said it couldnt start it). The page goes by it, Back cancels the next episode and the others dont
+    void endChain(String why) {
         if (waiting != this) return;
         waiting = null;
+        android.util.Log.i("Kino", "next episode: stopped waiting, " + why);
+        if ("back".equals(why)) MainActivity.chainBackAt = System.currentTimeMillis();
         h.removeCallbacksAndMessages(null);
-        try { setResult(RESULT_OK, new Intent().putExtra("result", new JSONObject().put("fid", fid).put("ended", true).put("chainEnd", true).put("live", false).toString())); }
+        try { setResult(RESULT_OK, new Intent().putExtra("result", new JSONObject().put("fid", fid).put("ended", true).put("chainEnd", true).put("why", why).put("live", false).toString())); }
         catch (Exception ignored) { }
         finish();
     }

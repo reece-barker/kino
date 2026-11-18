@@ -57,6 +57,8 @@ public class MainActivity extends Activity {
     private long playerClosed;
 
     // The one that is open, so the player can hand it the end of an episode without closing first (see PlayerActivity.startChain)
+    // When Back was last pressed on the player's wait for the next episode, see playNative
+    static volatile long chainBackAt;
     private static java.lang.ref.WeakReference<MainActivity> open = new java.lang.ref.WeakReference<>(null);
     static MainActivity current() {
         MainActivity m = open.get();
@@ -629,8 +631,9 @@ public class MainActivity extends Activity {
                     parkSoon();
                     return;
                 }
-                // It was waiting but gave up (Back on its loading screen), so nobody wants this one now
-                if (inPlace) return;
+                // It was waiting and Back was pressed on it, so nobody wants this one now. If it only gave up waiting (the next episode took too long)
+                // this still opens, as a new player, it used to be dropped and nothing happened
+                if (inPlace && System.currentTimeMillis() - chainBackAt < 120000) return;
                 // Pressing play twice quickly would open two players
                 if (System.currentTimeMillis() - playerOpened < 2500) return;
                 playerOpened = System.currentTimeMillis();
@@ -647,8 +650,12 @@ public class MainActivity extends Activity {
         // The page couldnt start the next episode the player is waiting for, so it closes (the page says why)
         @JavascriptInterface
         public void nextFailed() {
-            runOnUiThread(() -> { PlayerActivity w = PlayerActivity.waiting; if (w != null) w.endChain(); });
+            runOnUiThread(() -> { PlayerActivity w = PlayerActivity.waiting; if (w != null) w.endChain("failed"); });
         }
+
+        // Whether the player is up waiting for the next episode, the page asks after it was reloaded part way through getting it ready
+        @JavascriptInterface
+        public boolean nextWaiting() { return PlayerActivity.waiting != null; }
 
         // What crashed the app last time, once (the page tells the server), and whether the player crashed on this device: then videos use the web player
         @JavascriptInterface

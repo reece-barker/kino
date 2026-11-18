@@ -8271,7 +8271,7 @@ async def clientlog_get(admin=Depends(require_admin)):
 # so a stall can be matched to a cause. Only the profile id is kept, at most PLAYLOG_MAX rows and PLAYLOG_DAYS days
 PLAYLOG_MAX = int(num_env("PLAYLOG_MAX", 5000, 100, 100000))
 PLAYLOG_DAYS = num_env("PLAYLOG_DAYS", 14, 1, 365)
-PLAYLOG_KINDS = {"start", "stall", "seek_wait", "slow_piece", "hls_error", "hls_restart", "error",  # from the players
+PLAYLOG_KINDS = {"start", "stall", "seek_wait", "slow_piece", "hls_error", "hls_restart", "error", "handoff",  # from the players (handoff: moving on to the next episode)
                  "hls_start", "ffmpeg_died", "slow_storage"}  # from the server
 PLAYLOG_N = [0]
 

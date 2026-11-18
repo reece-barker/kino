@@ -59,6 +59,8 @@ DAILY = Path(os.environ.get("SYNC_DAILY_FILE", "/var/lib/torbox-sync/daily.json"
 ACCOUNT_LIMIT = float(os.environ.get("SYNC_ACCOUNT_LIMIT_GB", "1500")) * 1000**3
 RESERVE = float(os.environ.get("SYNC_RESERVE_GB", "300")) * 1000**3
 USAGE = Path(os.environ.get("USAGE_FILE", "/var/lib/kino/torbox-usage.json"))
+# How fast a file carries on downloading (MB a second) when somebody starts watching in the middle of it, 0 leaves it at full speed
+WATCHING_RATE = float(os.environ.get("SYNC_WATCHING_MBPS", "3")) * 1000**2
 MIN_FREE = 20 * 1024**3  # Keeps 20gb free so the storage box dosent fill up compleatly
 
 # Kind of download and the name of the id param that requestdl wants for it
@@ -435,17 +437,31 @@ def download(url, target, size, rel):
     status["current"] = cur
     write_status()
     last_t, last_b = time.time(), 0
+    slow = watching()
+    win_t, win_b = time.time(), 0
     with requests.get(url, stream=True, timeout=60) as r:
         r.raise_for_status()
         with open(part, "wb") as f:
             for chunk in r.iter_content(1024 * 1024):
                 f.write(chunk)
                 cur["bytes"] += len(chunk)
+                win_b += len(chunk)
                 now = time.time()
+                if slow and WATCHING_RATE:
+                    # Somebody started watching mid file. The write goes over the same sshfs link the film is read from, at full
+                    # speed it filled that link and the player kept stopping to load. So it trickles along till they stop
+                    ahead = win_b / WATCHING_RATE - (now - win_t)
+                    if ahead > 0:
+                        time.sleep(min(ahead, 5))
+                        now = time.time()
                 # Updates the dashboard every 2 seconds, more often would just spam the disk
                 if now - last_t >= 2:
                     cur["speed"] = (cur["bytes"] - last_b) / (now - last_t)
                     last_t, last_b = now, cur["bytes"]
+                    was, slow = slow, watching()
+                    if slow != was:
+                        win_t, win_b = now, 0
+                    status["message"] = "Downloading slowly, somebody is watching" if slow and WATCHING_RATE else None
                     write_status()
     part.rename(target)  # Only renamed at the end so half files never look finished
     status["current"] = None
@@ -465,6 +481,11 @@ def add_used(n):
         DAILY.write_text(json.dumps({"day": time.strftime("%Y-%m-%d", time.gmtime()), "bytes": used_today() + max(0, int(n))}))
     except OSError as e:
         print(f"couldnt write the daily count: {e}")
+
+
+def watching():
+    """Somebody streamed or played something in Kino in the last few minutes (Kino writes the time, library films included)"""
+    return kino_usage()[2] < 300
 
 
 def kino_usage():
@@ -951,6 +972,13 @@ def main():
             download(url, target, f.get("size", 0), rel)
             add_used(f.get("size", 0))
             if CLEAN and target.suffix.lower() in VIDEO_EXT:
+                # Removing tags reads and writes the whole file on the Storage Box again, so it waits for a break in the watching too
+                waited = 0
+                while watching() and waited < 7200:
+                    status["message"] = "Waiting to remove tags, somebody is watching"
+                    write_status()
+                    time.sleep(60)
+                    waited += 60
                 status["message"] = "Removing tags"
                 write_status()
                 if strip_tags(target):

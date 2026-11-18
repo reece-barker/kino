@@ -42,6 +42,7 @@ import sys
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote, unquote, urlencode, urljoin, urlparse
@@ -1203,6 +1204,8 @@ async def probe_worker():
             have = {r["path"]: r["size"] for r in db().q("SELECT path, size FROM probe")}
             for f in list(LIB["files"].values()):
                 if have.get(f["path"]) != f["size"]:
+                    while watching_now():
+                        await asyncio.sleep(30)  # Somebody is watching, the Storage Box is theres first
                     try:
                         await get_probe(f)
                     except Exception as e:
@@ -1295,6 +1298,10 @@ async def intro_worker():
     while True:
         try:
             for eps in intro_jobs()[:5]:
+                # Each season reads the first 10 minutes of every episode off the Storage Box, thats gigabytes over the same sshfs
+                # link a film is playing from and it made the player stop to load. So it waits till nobody is watching
+                while watching_now():
+                    await asyncio.sleep(60)
                 found = await asyncio.to_thread(introdetect.find_intros, [f["path"] for f in eps])
                 now = time.time()
                 for f in eps:
@@ -1474,6 +1481,7 @@ FF_INFO = {"burst": False, "tonemap": False}
 def ffmpeg_supports_burst():
     try:
         out = subprocess.run(["ffmpeg", "-hide_banner", "-h", "full"], capture_output=True, text=True, timeout=20).stdout
+        FF_INFO["catchup"] = "readrate_catchup" in out
         return "readrate_initial_burst" in out
     except Exception:
         return False
@@ -1499,24 +1507,59 @@ def kill_session(sid):
     shutil.rmtree(s["dir"], ignore_errors=True)
 
 
+WATCH = {"direct": 0}  # direct plays (and downloads) of library files going right now
+
+
+def library_playing():
+    """A library file being played right now, straight from the file or converted"""
+    now = time.time()
+    return WATCH["direct"] > 0 or any(not s.get("live") and now - s["last"] < 60 for s in SESS.values())
+
+
+def watching_now():
+    """True while somebody watches anything, the background jobs that read the Storage Box wait for this"""
+    return library_playing() or time.time() - BW["last"] < 90
+
+
+async def counted(it):
+    """Wraps a file's bytes so the app knows a direct play is going, for as long as the player keeps the connection"""
+    WATCH["direct"] += 1
+    try:
+        async for chunk in it:
+            yield chunk
+    finally:
+        WATCH["direct"] -= 1
+
+
+def log_dead(s):
+    """Puts a converted stream whose ffmpeg died with an error in the playback log, once"""
+    if s.get("live") or s["proc"].returncode in (None, 0) or s.get("logged"):
+        return
+    s["logged"] = True
+    try:
+        err = (s["dir"] / "ffmpeg.log").read_text(errors="ignore")[-300:].strip()
+    except OSError:
+        err = ""
+    owner = str(s.get("owner") or "")
+    playlog("ffmpeg_died", s.get("fid"), media_src(s.get("fid")), None, int(owner[1:]) if owner[1:].isdigit() else None, None,
+            {"code": s["proc"].returncode, "error": err, "made": len(list(s["dir"].glob("seg*.m4s")))})
+
+
 async def session_reaper():
     # Kills players nobody is watching anymore and deletes there temp files
     while True:
         await asyncio.sleep(15)
+        # The torbox sync only looked at streams from sources to tell if somebody was watching, so a film from the library
+        # had the sync writing to the Storage Box at full speed over the same sshfs link the film was being read from. Library
+        # playing now counts too (no bytes added, it dosent use torbox bandwidth, just the time)
+        if library_playing():
+            bw_add(0)
         for sid, s in list(SESS.items()):
             if time.time() - s["last"] > (900 if s.get("cast") else 90):
                 kill_session(sid)
                 continue
             if s.get("live") or s["proc"].returncode is not None:
-                if not s.get("live") and s["proc"].returncode not in (None, 0) and not s.get("logged"):
-                    s["logged"] = True
-                    try:
-                        err = (s["dir"] / "ffmpeg.log").read_text(errors="ignore")[-300:].strip()
-                    except OSError:
-                        err = ""
-                    owner = str(s.get("owner") or "")
-                    playlog("ffmpeg_died", s.get("fid"), media_src(s.get("fid")), None, int(owner[1:]) if owner[1:].isdigit() else None, None,
-                            {"code": s["proc"].returncode, "error": err, "made": len(list(s["dir"].glob("seg*.m4s")))})
+                log_dead(s)
                 continue
             # ffmpeg runs faster than playback and keeps every segment, so a long film would fill the disk. Once its about 15
             # minutes ahead of what the player fetched it gets paused, and carries on when the player has caught up
@@ -4925,31 +4968,89 @@ def range_response(path, request, download_name=None):
                 return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
             status = 206
 
-    def gen():
-        with open(path, "rb") as fh:
-            fh.seek(start)
-            left = end - start + 1
-            while left > 0:
-                chunk = fh.read(min(1 << 20, left))
-                if not chunk:
-                    break
-                left -= len(chunk)
-                yield chunk
-
     headers = {"Accept-Ranges": "bytes", "Content-Length": str(end - start + 1), "Cache-Control": "private, max-age=3600"}
     if status == 206:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
     if download_name:
         headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(download_name)
-    return StreamingResponse(gen(), status_code=status, headers=headers,
+    return StreamingResponse(read_ahead(path, start, end), status_code=status, headers=headers,
                              media_type=MIME.get(Path(path).suffix.lower(), "application/octet-stream"))
+
+
+# Reads for direct play get there own threads, so a slow or frozen Storage Box cant use up the ones the rest of the app needs
+MEDIA_POOL = ThreadPoolExecutor(max_workers=int(num_env("MEDIA_READ_THREADS", 24, 4, 128)), thread_name_prefix="media")
+READ_CHUNK = 1 << 20
+READ_AHEAD = int(num_env("READ_AHEAD_MB", 6, 1, 32))  # MB asked for at once ahead of what the player is getting
+
+
+def _pread_full(fd, n, off):
+    """pread that keeps going on a short read (sshfs can hand back less than asked), b'' only at the end of the file"""
+    out = os.pread(fd, n, off)
+    while out and len(out) < n:
+        more = os.pread(fd, n - len(out), off + len(out))
+        if not more:
+            break
+        out += more
+    return out
+
+
+async def read_ahead(path, start, end):
+    """The bytes from start to end, with a few MB always being read in the background. It used to read 1 MB, wait for it to
+    go out to the player, then ask the Storage Box for the next one, so every sshfs round trip came on top of the network
+    time and big films (4K remux) came in slower then they play. Now several reads are out at once (pread with there own
+    offsets so they cant get mixed up) and the next ones are already on the way while this one is sent. It starts with 2
+    so a player that only wants the header and hangs up (exoplayer does that a lot) dosent pull 6 MB for nothing"""
+    loop = asyncio.get_running_loop()
+    fd = await loop.run_in_executor(MEDIA_POOL, os.open, path, os.O_RDONLY)
+    pending = deque()
+    nxt, depth = start, 2
+    try:
+        while True:
+            while nxt <= end and len(pending) < depth:
+                n = min(READ_CHUNK, end - nxt + 1)
+                pending.append(MEDIA_POOL.submit(_pread_full, fd, n, nxt))
+                nxt += n
+            if not pending:
+                break
+            chunk = await asyncio.wrap_future(pending[0])
+            pending.popleft()  # only now, if the player hangs up while this waits the read is still known about below
+            if not chunk:
+                break  # the file got shorter while it was being read
+            depth = min(READ_AHEAD, depth + 1)
+            yield chunk
+    finally:
+        # The player hung up (or something failed): reads that havent started are dropped, the file is closed once the ones
+        # already running are done so a thread never reads from a closed (or reused) fd. These are the pools own futures, an
+        # asyncio one says cancelled even when its thread is still reading
+        left = [f for f in pending if not f.cancel()]
+        if not left:
+            os.close(fd)
+        else:
+            count, lock = [len(left)], threading.Lock()
+
+            def done(_):
+                # runs on the read's own thread
+                with lock:
+                    count[0] -= 1
+                    last = count[0] == 0
+                if last:
+                    os.close(fd)
+            for f in left:
+                f.add_done_callback(done)
 
 
 @app.get("/api/stream/{fid}/direct")
 async def stream_direct(fid: str, request: Request, p=Depends(current_profile)):
     f = file_or_404(fid)
     kids_block_file(p, f)
-    return range_response(f["path"], request)
+    return count_direct(range_response(f["path"], request))
+
+
+def count_direct(r):
+    # Not called watched, the /api/watched handler already has that name
+    if isinstance(r, StreamingResponse):
+        r.body_iterator = counted(r.body_iterator)
+    return r
 
 
 @app.get("/api/dl/{fid}")
@@ -4960,7 +5061,7 @@ async def download(fid: str, u: str, exp: int, sig: str, request: Request):
     if not ip_allowed(client_ip(request)):
         raise HTTPException(403, "This network isn't on the allow list")
     f = file_or_404(fid)
-    return range_response(f["path"], request, download_name=f["name"] if request.query_params.get("save") else None)
+    return count_direct(range_response(f["path"], request, download_name=f["name"] if request.query_params.get("save") else None))
 
 
 @app.post("/api/play/{fid}")
@@ -5062,6 +5163,11 @@ async def play_start(fid: str, request: Request, p=Depends(current_profile)):
     if FF_INFO["burst"]:
         # Reads a minute ahead quickly then at 2x speed so it dosent copy the whole movie to the local disk at once
         args += ["-readrate", "2", "-readrate_initial_burst", "60"]
+        if FF_INFO.get("catchup"):
+            # Since ffmpeg 7.1 a read that fell behind (the Storage Box went slow for a bit, or the session was paused for being
+            # far ahead) only carries on at 2x and never makes the lost time back, so one slow patch left the player with less
+            # ready for the rest of the film. This lets it catch up quickly, then its back to 2x
+            args += ["-readrate_catchup", "8"]
     if t > 0:
         args += ["-ss", f"{t:.3f}"]
     args += ["-i", f["path"], "-map", "0:v:0", "-map", f"0:a:{a}?", *vargs,
@@ -5141,11 +5247,24 @@ async def hls_serve(s, name, headers=None):
     if m:
         s["maxseg"] = max(s.get("maxseg", 0), int(m.group(1)))
     path = s["dir"] / name
+    dead = s["proc"].returncode not in (None, 0) and not s.get("live")
+    if dead and name.endswith(".m3u8"):
+        # ffmpeg died part way (the Storage Box dropped mid read). The playlist would just stop growing and the player waited
+        # at the end of it for ever, so the player is told and starts a new stream from where it is. Logged here as well as
+        # in the reaper, the player restarts within a second and that ends this session before the reaper would see it
+        log_dead(s)
+        raise HTTPException(410, "The stream stopped on the server")
     for _ in range(40):
         if path.exists():
             break
+        if s["proc"].returncode not in (None, 0) and not s.get("live"):
+            break  # ffmpeg died (the Storage Box dropped mid read), waiting cant help
         await asyncio.sleep(0.25)
     if not path.exists():
+        if s["proc"].returncode not in (None, 0) and not s.get("live"):
+            log_dead(s)
+            # 410 tells the player to start a new stream from where it is, before it just retried this for about a minute
+            raise HTTPException(410, "The stream stopped on the server")
         raise HTTPException(404, "Not ready yet")
     if name.endswith(".m3u8"):
         txt = path.read_text(errors="ignore")
@@ -7501,6 +7620,15 @@ BW = {"days": {}, "last": 0.0, "saved": 0.0}
 def bw_add(n):
     """Counts bytes streamed from a source (debrid included) per UTC day. The sync reads the file so it never uses the day's bandwidth that watching needs"""
     now = time.time()
+    if not BW.get("loaded"):
+        # The days from before a restart come back first, the first save after a restart used to wipe them and the sync then
+        # thought nobody had streamed anything this week
+        BW["loaded"] = True
+        old = read_json(USAGE_FILE)
+        if isinstance(old, dict) and isinstance(old.get("days"), dict):
+            for d, v in old["days"].items():
+                if isinstance(v, (int, float)):
+                    BW["days"][d] = BW["days"].get(d, 0) + v
     day = time.strftime("%Y-%m-%d", time.gmtime(now))
     BW["days"][day] = BW["days"].get(day, 0) + n
     BW["last"] = now

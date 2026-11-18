@@ -4821,7 +4821,7 @@
     if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
     pl.cookieless = false;
     pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false; pl.fakeAsked = false; pl.greenChecked = false; pl.frameAt = 0;
-    pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0; pl.ad = 0; pl.openAt = Date.now(); pl.startLogged = false;
+    pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0; pl.hlsRestarts = []; pl.ad = 0; pl.openAt = Date.now(); pl.startLogged = false;
     pl.title = opts.title || null;
     const prefs = info.prefs || {};
     subLook(prefs);
@@ -5007,11 +5007,18 @@
         if (ms > 4000) plog("slow_piece", ms / 1000, { mb: Math.round(b / 1e5) / 10, sn: d.frag.sn });
       });
       h.on(Hls.Events.ERROR, (_, d) => {
-        // At most one in 10 seconds unless it stopped playback, a flaky line can throw a lot of these
+        if (pl.hls !== h) return;
+        // At most one in 10 seconds unless it stopped playback, a flaky line can throw a lot of these. Its logged before the
+        // restart below so a 410 or 404 that starts the stream again shows up too
         if (d.fatal || (d.details !== Hls.ErrorDetails.BUFFER_STALLED_ERROR && Date.now() - (pl.hlsErrAt || 0) > 10000)) { pl.hlsErrAt = Date.now(); plog("hls_error", null, { details: d.details, fatal: !!d.fatal, code: d.response && d.response.code }); }
+        // The server says this stream is gone (410: its ffmpeg stopped, the Storage Box dropped. 404: the session was cleaned up
+        // after a long pause or the laptop sleeping). Retrying the same piece cant work, it used to retry for about a minute and
+        // then stop, so it starts again from here straight away
+        const code = d.response && d.response.code;
+        if ((code === 410 || code === 404) && (d.details === Hls.ErrorDetails.FRAG_LOAD_ERROR || d.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR) && hlsRestart()) return;
         if (!d.fatal) return;
         if (d.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
-        else {
+        else if (!hlsRestart()) {
           showMsg("Playback stopped", "The stream was interrupted. Try again, or download the file instead.", `<button class="btn primary small" id="retry">Try Again</button>`);
           $("#retry").onclick = () => startHls(pos());
         }
@@ -5057,6 +5064,21 @@
     const v = pl.v, t = v.currentTime;
     for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= t + 0.5 && v.buffered.end(i) > t) return Math.round((v.buffered.end(i) - t) * 10) / 10;
     return 0;
+  }
+
+  // Starts the converted stream again from where you are, a few times in a couple of minutes before giving up and saying so
+  function hlsRestart() {
+    if (!pl.info || pl.info.live || pl.mode !== "hls") return false;
+    const now = Date.now();
+    pl.hlsRestarts = (pl.hlsRestarts || []).filter((t) => now - t < 120000);
+    if (pl.hlsRestarts.length >= 3) return false;
+    pl.hlsRestarts.push(now);
+    const at = pos(), my = PLAY_N;
+    plog("hls_restart", null, { pos: Math.round(at), n: pl.hlsRestarts.length });
+    if (pl.hls) { pl.hls.destroy(); pl.hls = null; }
+    if (!LOAD.on) spinner(true);
+    setTimeout(() => { if (my === PLAY_N && pl.info) startHls(at); }, 800 * pl.hlsRestarts.length);
+    return true;
   }
 
   function seekTo(target) {

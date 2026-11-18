@@ -25,6 +25,7 @@
         android:banner="@drawable/banner"
         android:logo="@drawable/banner"
         android:theme="@style/Kino"
+        android:largeHeap="true"
         android:usesCleartextTraffic="false"
         android:allowBackup="false"
         android:supportsRtl="true">

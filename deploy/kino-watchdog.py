@@ -28,6 +28,42 @@ def is_mounted(mount=MOUNT, info="/proc/self/mountinfo"):
     return False
 
 
+# How far the kernel reads ahead on the sshfs mount, in KB. A fuse mount gets the kernel default of 128 KB, so a film being
+# read straight through only ever had 128 KB on the way at a time and every Storage Box round trip held it up. With a few MB
+# the next bit is already coming while ffmpeg or the player is busy with this one. Its set again after every remount cause a
+# new mount starts back at 128. 0 leaves it alone
+READAHEAD_KB = int(os.environ.get("BOX_READAHEAD_KB", "4096"))
+
+
+def mount_dev(mount=MOUNT, info="/proc/self/mountinfo"):
+    """The mounts major:minor (field 3 of mountinfo), thats the name of its entry in /sys/class/bdi"""
+    try:
+        with open(info) as f:
+            for line in f:
+                parts = line.split(" ", 5)
+                if len(parts) > 4 and re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), parts[4]) == mount:
+                    return parts[2]
+    except OSError:
+        pass
+    return None
+
+
+def set_readahead(kb=READAHEAD_KB, bdi_root="/sys/class/bdi"):
+    """Sets read_ahead_kb for the mount if its not already that. Never touches the mount its self so it cant hang on a frozen one"""
+    dev = mount_dev()
+    if not kb or not dev:
+        return None
+    for name in (dev, dev + "-fuseblk"):
+        p = Path(bdi_root) / name / "read_ahead_kb"
+        try:
+            if p.read_text().strip() != str(kb):
+                p.write_text(str(kb))
+            return kb
+        except OSError:
+            continue
+    return None
+
+
 def responsive():
     # A frozen sshfs mount makes stat hang forever, so it gets 15 seconds and is left behind if it hangs.
     # Its the only thing that touches the mount, and it runs in its own session so the whole group can be killed
@@ -83,6 +119,7 @@ def main():
         st["last_remount"] = now
         st["last_error"] = None if ok else (err or "Mount failed")
         print("remounted" if ok else f"remount failed: {err}", flush=True)
+    st["readahead_kb"] = set_readahead() if st.get("ok") else None
     tmp = STATUS.with_suffix(".tmp")
     tmp.write_text(json.dumps(st))
     tmp.chmod(0o644)

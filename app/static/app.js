@@ -4309,11 +4309,12 @@
 
   async function pageServer() {
     app.innerHTML = topbar("server") + `<main class="page"><h1 class="large-title">Server</h1><div id="srvBody"><div class="card skel" style="height:220px"></div></div>
-      <div id="stress"></div><div id="srvErrors"></div><div id="backups"></div><div id="appLog"></div><div id="storageReview"></div></main>`;
+      <div id="stress"></div><div id="srvErrors"></div><div id="playLog"></div><div id="backups"></div><div id="appLog"></div><div id="storageReview"></div></main>`;
     wireTopbar();
     startPoll(drawServer, 3000);
     drawStress();
     drawSrvErrors();
+    drawPlayLog();
     drawBackups();
     drawAppLog();
     drawStorageReview();
@@ -4368,6 +4369,24 @@
       <p class="secondary set-hint">Things that went wrong on the server since it last started. Cleared when Kino restarts.</p>
       ${r.items.length ? "" : `<div class="note">Nothing has gone wrong since Kino last started.</div>`}
       <div class="list">${r.items.slice(0, 15).map((x) => `<div class="li"><span class="grow"><b>${esc(x.path)}</b><br><span class="secondary">${esc(x.error)}</span></span><span class="r">${esc(when(x.at))}</span></div>`).join("")}</div></section>`;
+  }
+
+  // When and why videos stopped to load, from the players and the server, so a "it keeps buffering" can be looked up
+  const PLOG_NAMES = { start: "Slow start", stall: "Stopped to load", seek_wait: "Wait after skipping", slow_piece: "Slow piece", hls_error: "Player error", hls_restart: "Stream restarted", error: "Error", hls_start: "Converting started", ffmpeg_died: "Converting stopped", slow_storage: "Storage Box slow" };
+  async function drawPlayLog() {
+    const r = await api("/api/admin/playlog").catch(() => null);
+    const box = $("#playLog");
+    if (!r || !box) return;
+    const sum = {};
+    for (const x of r.day) if (x.kind === "stall") { const k = `${x.platform || "Server"} · ${x.src}`; sum[k] = sum[k] || { n: 0, s: 0 }; sum[k].n += x.n; sum[k].s += x.s || 0; }
+    const sumLine = Object.entries(sum).map(([k, v]) => `${esc(k)}: ${v.n} ${v.n === 1 ? "stop" : "stops"}, ${Math.round(v.s)} s`).join("<br>");
+    // Starts are logged every time, only slow ones (over 5 seconds) are worth showing
+    const items = r.items.filter((x) => !((x.kind === "start" || x.kind === "hls_start") && (x.secs || 0) < 5)).slice(0, 25);
+    const detail = (x) => { const d = x.data || {}; return [x.platform, x.profile, d.mode === "hls" ? "converted" : d.mode === "direct" ? "direct play" : "", d.ahead != null ? `${d.ahead} s ready` : "", d.pos != null ? `at ${clock(d.pos)}` : "", d.details, d.code ? `answer ${d.code}` : "", d.error, d.mb ? `${d.mb} MB` : ""].filter(Boolean).map(String).join(" · "); };
+    box.innerHTML = `<section class="card backups"><h2 class="set-title">Playback Problems</h2>
+      <p class="secondary set-hint">When videos stopped to load, started slowly or broke off, from the players and from the server. Kept for 2 weeks.</p>
+      <p class="set-hint">${sumLine ? `<b>Last 24 hours</b><br>${sumLine}` : "No stops to load in the last 24 hours."}${r.top.length ? `<br>Most stops: ${r.top.map((x) => `${esc(x.name || "?")} (${x.n}, ${Math.round(x.s || 0)} s)`).join(", ")}` : ""}</p>
+      <div class="list">${items.map((x) => `<div class="li"><span class="grow" style="white-space:normal;overflow-wrap:anywhere"><b>${esc(PLOG_NAMES[x.kind] || x.kind)}${x.secs != null ? ` ${x.secs < 10 ? x.secs.toFixed(1) : Math.round(x.secs)} s` : ""}</b> ${esc(x.name || "")}<br><span class="secondary">${esc(detail(x))}</span></span><span class="r">${esc(when(x.at))}</span></div>`).join("")}</div></section>`;
   }
 
   // What the tv apps reported, mainly the page crashing or being closed by android for memory
@@ -4802,7 +4821,7 @@
     if (!$("#plLogo").textContent.trim() && !$("#plLogo img")) loadLogo(info.art, info.show || info.name);
     pl.cookieless = false;
     pl.info = info; pl.cues = null; pl.subId = null; pl.upNextShown = false; pl.introSkipped = false; pl.fakeAsked = false; pl.greenChecked = false; pl.frameAt = 0;
-    pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0; pl.hlsRestarts = []; pl.ad = 0;
+    pl.playedAt = 0; pl.stalls = []; pl.bufStart = 0; pl.lastSeek = 0; pl.stallAskedAt = 0; pl.sameRetries = 0; pl.hlsRestarts = []; pl.ad = 0; pl.openAt = Date.now(); pl.startLogged = false;
     pl.title = opts.title || null;
     const prefs = info.prefs || {};
     subLook(prefs);
@@ -4984,9 +5003,14 @@
         const st = d.frag && d.frag.stats, b = st && (st.total || st.loaded);
         const ms = st && st.loading ? st.loading.end - st.loading.start : 0;
         if (b && ms > 0) loadNote(`${(b * 8 / ms / 1000).toFixed(1)} Mbps`);
+        // A piece that took over 4 seconds to come in, mostly a slow line or a busy server
+        if (ms > 4000) plog("slow_piece", ms / 1000, { mb: Math.round(b / 1e5) / 10, sn: d.frag.sn });
       });
       h.on(Hls.Events.ERROR, (_, d) => {
         if (pl.hls !== h) return;
+        // At most one in 10 seconds unless it stopped playback, a flaky line can throw a lot of these. Its logged before the
+        // restart below so a 410 or 404 that starts the stream again shows up too
+        if (d.fatal || (d.details !== Hls.ErrorDetails.BUFFER_STALLED_ERROR && Date.now() - (pl.hlsErrAt || 0) > 10000)) { pl.hlsErrAt = Date.now(); plog("hls_error", null, { details: d.details, fatal: !!d.fatal, code: d.response && d.response.code }); }
         // The server says this stream is gone (410: its ffmpeg stopped, the Storage Box dropped. 404: the session was cleaned up
         // after a long pause or the laptop sleeping). Retrying the same piece cant work, it used to retry for about a minute and
         // then stop, so it starts again from here straight away
@@ -5021,6 +5045,27 @@
     }
   }
 
+  // Playback log. Stalls, slow starts and slow pieces go to the server in small batches (every 30 seconds and when the player
+  // closes) so the admin can see when and why things buffer. Nothing per frame, at most 200 waiting, nothing but the video's id
+  const PLOG = [];
+  function plog(kind, secs, data) {
+    if (!pl.info || pl.info.live || pl.info.offline || PLOG.length >= 200) return;
+    PLOG.push({ kind, media: pl.info.id, secs: secs == null ? null : Math.round(secs * 100) / 100, data: data || null, t: Date.now() });
+  }
+  function plogFlush(leaving) {
+    if (!PLOG.length || OFFLINE) return;
+    const now = Date.now(), events = PLOG.splice(0, 50).map((e) => ({ ...e, ago: (now - e.t) / 1000 }));
+    try {
+      fetch("/api/playlog", { method: "POST", keepalive: !!leaving, credentials: "same-origin", headers: { "X-Kino": "1", "Content-Type": "application/json" }, body: JSON.stringify({ events }) }).catch(() => {});
+    } catch (_) {}
+  }
+  setInterval(() => plogFlush(false), 30000);
+  function aheadNow() {
+    const v = pl.v, t = v.currentTime;
+    for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= t + 0.5 && v.buffered.end(i) > t) return Math.round((v.buffered.end(i) - t) * 10) / 10;
+    return 0;
+  }
+
   // Starts the converted stream again from where you are, a few times in a couple of minutes before giving up and saying so
   function hlsRestart() {
     if (!pl.info || pl.info.live || pl.mode !== "hls") return false;
@@ -5029,6 +5074,7 @@
     if (pl.hlsRestarts.length >= 3) return false;
     pl.hlsRestarts.push(now);
     const at = pos(), my = PLAY_N;
+    plog("hls_restart", null, { pos: Math.round(at), n: pl.hlsRestarts.length });
     if (pl.hls) { pl.hls.destroy(); pl.hls = null; }
     if (!LOAD.on) spinner(true);
     setTimeout(() => { if (my === PLAY_N && pl.info) startHls(at); }, 800 * pl.hlsRestarts.length);
@@ -5102,6 +5148,7 @@
 
   function closePlayer(keepOpen, keepLoading) {
     const wasOpen = !pl.el.hidden;
+    plogFlush(true);
     if (pl.info) { saveProgress(); if (pl.evStarted) sendEvent("stop"); pl.evStarted = false; }
     clearInterval(pl.saveT);
     clearInterval(pl.upNextT);
@@ -5616,8 +5663,14 @@
   }
   v.addEventListener("timeupdate", drawTime);
   v.addEventListener("progress", drawTime);
-  v.addEventListener("waiting", () => { if (!LOAD.on) spinner(true); if (!pl.bufStart) pl.bufStart = Date.now(); });
+  v.addEventListener("waiting", () => { if (!LOAD.on) spinner(true); if (!pl.bufStart) { pl.bufStart = Date.now(); pl.bufAhead = aheadNow(); } });
   v.addEventListener("playing", () => {
+    // For the playback log: how long it took to start, and every stop to load with how much was ready when it happened
+    if (pl.info && !pl.startLogged && pl.openAt) { pl.startLogged = true; plog("start", (Date.now() - pl.openAt) / 1000, { mode: pl.mode }); }
+    else if (pl.bufStart && Date.now() - pl.bufStart >= 500) {
+      const seek = Date.now() - (pl.lastSeek || 0) < 10000;
+      plog(seek ? "seek_wait" : "stall", (Date.now() - pl.bufStart) / 1000, { mode: pl.mode, pos: Math.round(pos()), ahead: pl.bufAhead });
+    }
     // How long that stall was, the buffering watch below adds them up. Stalls right after a seek dont count
     if (pl.bufStart && pl.playedAt && Date.now() - (pl.lastSeek || 0) > 10000 && Date.now() - pl.bufStart >= 1200) pl.stalls.push([Date.now(), Date.now() - pl.bufStart]);
     pl.bufStart = 0;

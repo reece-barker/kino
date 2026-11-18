@@ -2689,82 +2689,162 @@ def next_unwatched(t, wm):
     return None
 
 
+def stream_se(st):
+    # Season and episode out of an addon episode id (tt123:2:5), None for a film or an id that doesnt have them
+    parts = str(st["video_id"]).split(":")
+    if st["kind"] == "series" and len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit():
+        return int(parts[-2]), int(parts[-1])
+    return None, None
+
+
+def series_eps(t, show, wm, sp, addons):
+    """Every episode of a show in order, the Library's files and the episodes only the addons have, the same list the title page works out what Play
+    starts from (nextUp in app.js). Each one is (season, episode, file id or None, addon video id or None, watched)"""
+    eps, got = [], set()
+    if t:
+        for fid in t["files"]:
+            f = LIB["files"][fid]
+            got.add((f["season"], f["episode"]))
+            eps.append((f["season"] or 0, f["episode"] or 0, fid, None, bool(wm.get(fid, {}).get("watched"))))
+    m = (meta_for(t) if t else cached_meta(f"ext:series:{show}")[0]) or {}
+    mid = m.get("id") or show
+    today = time.strftime("%Y-%m-%d")
+    # A library show only carries on into addon episodes when an addon can play them, like the title page
+    if mid and (not t or any(supports(a["m"], "stream", "series", mid + ":1:1") for a in addons)):
+        for v in m.get("videos") or []:
+            if not v.get("season") or not v.get("episode") or (v["season"], v["episode"]) in got:
+                continue
+            # Same as the title page, a library show only carries on into addon episodes that have aired
+            if t and str(v.get("released") or "9999")[:10] > today:
+                continue
+            vid = ep_video_id(mid, v)
+            eps.append((v["season"], v["episode"], None, vid, bool(sp.get(vid, {}).get("watched"))))
+    eps.sort(key=lambda e: (e[0], e[1], 0 if e[2] else 1))
+    return eps
+
+
 def continue_list(summ, wm, pid=None):
+    """Whats part way through, newest first, one card per show. A show only ever gets the episode your on: the one played last (by when, not the
+    highest number, so going back to an older episode shows that one) or when that one is finished the next one after it. Library episodes and
+    ones played from the addons count as the same show, it used to give a card for each half watched episode when they came from both"""
     out, seen = [], set()
     rows = sorted(wm.values(), key=lambda r: r["updated"], reverse=True)
     by_id = {s["id"]: s for s in summ}
+    lib_meta = lib_by_meta_id(summ)
     # Things someone removed from Continue Watching stay gone until they watch them again
     hidden = {r["key"]: r["at"] for r in db().q("SELECT key, at FROM cont_hidden WHERE profile_id = ?", (pid,))} if pid else {}
+    addons = None
+    sp_cache = {}
     for r in rows:
+        frac = r["pos"] / r["dur"] if r["dur"] else 0
+        done = bool(r["watched"]) or frac >= 0.93
         if r["file_id"].startswith("s"):
             st = db().q("SELECT * FROM streams WHERE id = ?", (r["file_id"],))
-            show = show_of(st[0]["video_id"]) if st else None
-            if show and hidden.get(show, 0) >= r["updated"]:
-                seen.add(show)
+            if not st:
                 continue
-            if st and st[0]["kind"] == "series" and show not in seen and (r["watched"] or (r["dur"] and r["pos"] / r["dur"] >= 0.93)):
-                # Finished an episode of an addon show: the next one goes in Continue Watching (from the details already cached, no lookup here)
-                st = dict(st[0])
-                mm = (cached_meta(f"ext:series:{show}")[0] or {})
-                eps = sorted([v for v in mm.get("videos") or [] if v.get("season")], key=lambda v: (v["season"], v["episode"] or 0))
-                ids = [ep_video_id(show, v) for v in eps]
-                if st["video_id"] in ids and ids.index(st["video_id"]) + 1 < len(eps):
-                    nv = eps[ids.index(st["video_id"]) + 1]
+            st = dict(st[0])
+            show = show_of(st["video_id"])
+            if st["kind"] != "series":
+                # A film from the addons, same as before
+                if hidden.get(show, 0) >= r["updated"]:
                     seen.add(show)
-                    out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]),
-                                "file_id": st["id"], "stream": True, "pos": 0, "dur": 0, "season": nv["season"],
-                                "episode": nv["episode"], "next_episode": True})
-                continue
-            if st and not r["watched"] and r["dur"] and 0.02 < r["pos"] / r["dur"] < 0.93 and show not in seen:
-                st = dict(st[0])
+                    continue
+                if show in seen or r["watched"] or not 0.02 < frac < 0.93:
+                    continue
                 seen.add(show)
-                parts = st["video_id"].split(":")
-                se = (int(parts[-2]), int(parts[-1])) if st["kind"] == "series" and len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit() else (None, None)
                 out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]),
-                            "file_id": st["id"], "stream": True, "pos": r["pos"], "dur": r["dur"], "season": se[0],
-                            "episode": se[1], "next_episode": False})
-            continue
-        f = LIB["files"].get(r["file_id"])
-        if not f or f["title_id"] in seen:
-            continue
-        if hidden.get(f["title_id"], 0) >= r["updated"]:
-            seen.add(f["title_id"])
-            continue
-        t = LIB["titles"].get(f["title_id"])
-        s = by_id.get(f["title_id"])
-        if not t or not s:
-            continue
-        seen.add(t["id"])
-        target, pos, dur = f, r["pos"], r["dur"]
-        if r["watched"] or (dur and pos / dur > 0.93):
-            # Finished this one, for a show the next episode goes in Continue Watching instead
+                            "file_id": st["id"], "stream": True, "pos": r["pos"], "dur": r["dur"], "season": None, "episode": None, "next_episode": False})
+                if len(out) >= 14:
+                    break
+                continue
+            s = lib_meta.get(show) if (lib_meta.get(show) or {}).get("kind") == "series" else None
+            t = LIB["titles"].get(s["id"]) if s else None
+            here = stream_se(st)
+            cur = lambda e: e[3] == st["video_id"] or (not e[3] and (e[0], e[1]) == here)
+        else:
+            f = LIB["files"].get(r["file_id"])
+            t = f and LIB["titles"].get(f["title_id"])
+            s = t and by_id.get(t["id"])
+            if not t or not s:
+                continue
             if s["kind"] != "series":
+                # Films stay as they were, one card per title for the copy played last
+                if t["id"] in seen:
+                    continue
+                seen.add(t["id"])
+                if hidden.get(t["id"], 0) >= r["updated"] or r["watched"] or frac > 0.93 or frac < 0.02:
+                    continue
+                out.append({**s, "file_id": f["id"], "pos": r["pos"], "dur": r["dur"], "season": f["season"], "episode": f["episode"], "next_episode": False})
+                if len(out) >= 14:
+                    break
                 continue
-            # The next episode after the one just finished (not the first unwatched one overall, which went back to episode 1 or gave nothing when an
-            # earlier episode had been skipped)
-            after = t["files"][t["files"].index(f["id"]) + 1:]
-            nf = next((x for x in after if not wm.get(x, {}).get("watched")), None)
-            if not nf:
-                continue
-            target, pos, dur = LIB["files"][nf], 0, 0
-        elif not dur or pos / dur < 0.02:
+            show = s.get("imdb")
+            here = (f["season"], f["episode"])
+            cur = lambda e: e[2] == f["id"]
+        # Every name the show goes by, the library title and the imdb id the addon episodes are under
+        keys = {k for k in (show, s and s["id"]) if k}
+        if keys & seen:
+            continue  # The show already has its card, from something played more recently
+        if max((hidden.get(k, 0) for k in keys), default=0) >= r["updated"]:
+            seen |= keys
+            continue
+        if frac < 0.02 and not done:
             # Only just opened. For a show thats already under way (another episode played or finished) this is the episode your on, it used to
             # knock the whole show out of Continue Watching just by starting the next episode and stopping again straight away
-            if s["kind"] != "series" or not any(x != f["id"] and x in wm and (wm[x]["watched"] or (wm[x]["dur"] and wm[x]["pos"] / wm[x]["dur"] >= 0.02)) for x in t["files"]):
+            # Library episodes and addon ones both count for that
+            going = lambda w: w["watched"] or (w["dur"] and w["pos"] / w["dur"] >= 0.02)
+            if not (t and any(x != r["file_id"] and x in wm and going(wm[x]) for x in t["files"])) and \
+                    not (show and any(not cur((0, 0, None, v)) and going(w) for v, w in stream_prog(pid, show, sp_cache).items())):
                 continue
-            pos = 0
-        out.append({**s, "file_id": target["id"], "pos": pos, "dur": dur, "season": target["season"],
-                    "episode": target["episode"], "next_episode": target["id"] != f["id"] or not pos})
+        if done:
+            # Finished this one so the next episode goes in Continue Watching instead, the next one after it in the list the title page uses
+            # (Library and addon episodes together, so it carries on into a season thats only on the addons), not the first unwatched one overall
+            if addons is None:
+                addons = addon_rows()
+            eps = series_eps(t, show, wm, stream_prog(pid, show, sp_cache) if show else {}, addons)
+            i = next((n for n, e in enumerate(eps) if cur(e)), None)
+            if i is None:
+                if not t:
+                    continue  # Details for the show arent cached so theres no telling whats next, older stuff for it can still show
+                seen |= keys
+                continue
+            seen |= keys
+            # A library show goes to the first unwatched one after it like nextUp does, a show only on the addons to the one straight after it
+            # like its page does (pageDiscover)
+            nx = next((e for e in eps[i + 1:] if not e[4]), None) if t else (eps[i + 1] if i + 1 < len(eps) else None)
+            if not nx:
+                continue  # All caught up
+            season, episode, pos, dur = nx[0], nx[1], 0, 0
+            nxt = True
+        else:
+            seen |= keys
+            season, episode = here
+            pos, dur = (r["pos"] if frac >= 0.02 else 0), r["dur"]
+            nxt = not pos
+        if s:
+            # A show in the Library always gets its Library card, so it opens the title page and Play there starts this same episode
+            out.append({**s, "file_id": r["file_id"], "pos": pos, "dur": dur, "season": season, "episode": episode, "next_episode": nxt})
+        else:
+            out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]),
+                        "file_id": st["id"], "stream": True, "pos": pos, "dur": dur, "season": season, "episode": episode, "next_episode": nxt})
         if len(out) >= 14:
             break
     return out
 
 
+def stream_prog(pid, show, cache):
+    if show not in cache:
+        cache[show] = stream_progress(pid, show) if pid else {}
+    return cache[show]
+
+
 def recent_list(summ, wm, skip, limit=20):
     """Everything this profile played lately, newest first, one tile per title (a show once, whichever episode it was). Finished things count too, unlike
-    Continue Watching, so a show can be opened from here to pick the next episode. Titles that are already in Continue Watching (skip) aren't repeated"""
+    Continue Watching, so a show can be opened from here to pick the next episode. Titles that are already in Continue Watching (skip) aren't repeated,
+    a show counts as the same one whether it was played from the Library or the addons"""
     out, seen = [], set(skip)
     by_id = {s["id"]: s for s in summ}
+    lib_meta = lib_by_meta_id(summ)
     for r in sorted(wm.values(), key=lambda r: r["updated"], reverse=True):
         if not (r["watched"] or (r["pos"] or 0) >= 60):
             continue  # opened and closed again
@@ -2774,20 +2854,27 @@ def recent_list(summ, wm, skip, limit=20):
                 continue
             st = dict(st[0])
             show = show_of(st["video_id"])
-            if show in seen:
+            lib = lib_meta.get(show) if st["kind"] == "series" and (lib_meta.get(show) or {}).get("kind") == "series" else None
+            keys = {show, lib["id"]} if lib else {show}
+            if keys & seen:
                 continue
-            seen.add(show)
-            parts = st["video_id"].split(":")
-            se = (int(parts[-2]), int(parts[-1])) if st["kind"] == "series" and len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit() else (None, None)
-            out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]), "stream": True,
-                        "last": r["updated"], "season": se[0], "episode": se[1]})
+            seen |= keys
+            se = stream_se(st)
+            if lib:
+                out.append({**lib, "last": r["updated"], "season": se[0], "episode": se[1]})
+            else:
+                out.append({**ext_preview({"id": show, "name": st["name"], "poster": st["poster"], "releaseInfo": st["year"]}, st["kind"]), "stream": True,
+                            "last": r["updated"], "season": se[0], "episode": se[1]})
         else:
             f = LIB["files"].get(r["file_id"])
             t = f and LIB["titles"].get(f["title_id"])
             sm = f and by_id.get(f["title_id"])
-            if not t or not sm or t["id"] in seen:
+            if not t or not sm:
                 continue
-            seen.add(t["id"])
+            keys = {t["id"], sm["imdb"]} if sm["kind"] == "series" and sm.get("imdb") else {t["id"]}
+            if keys & seen:
+                continue
+            seen |= keys
             out.append({**sm, "last": r["updated"], "season": f["season"], "episode": f["episode"]})
         if len(out) >= limit:
             break
@@ -3021,7 +3108,8 @@ async def home(request: Request, p=Depends(current_profile)):
     if fresh:
         shelves.append({"id": "fresh", "title": "New Episodes in My List", "style": "fresh", "items": fresh})
     # One row: what is part way through first (with its progress bar), then everything else played lately (finished films, shows to pick the next episode of)
-    recent = recent_list(summ, wm, {c["id"] for c in cont if c.get("id")})
+    # Shows go by their library id and their imdb id, so one in Continue Watching isnt repeated further along under the other
+    recent = recent_list(summ, wm, {k for c in cont for k in (c.get("id"), c.get("imdb") if c.get("kind") == "series" else None) if k})
     if cont or recent:
         shelves.append({"id": "continue", "title": f"Continue Watching for {p['name']}", "style": "continue", "items": cont + [{**r, "recent": True} for r in recent]})
     if has_signal:

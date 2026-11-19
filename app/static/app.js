@@ -2470,6 +2470,7 @@
     // Pressed on a page: the loading screen goes up straight away while the sources are looked up (it was a "Getting it ready" toast over the page)
     const fresh = !opts.chain && !opts.inPlace;
     const tok = fresh ? splashUp(opts.art, opts.name, v && v.season != null ? `Finding ${epLabel(v.season, v.episode)}` : "Finding a source") : opts.tok;
+    if (fresh) startWatch(() => playEpisode(vid, v, kind, { ...opts }), true, null);
     const fail = (msg, ms) => { if (fresh && tok === PLAY_N) splashOff(); toast(msg, ms); return false; };
     // The full list, that can take a while with a slow addon (the app's player keeps waiting, and if it gives up the episode opens as a new player)
     try { r = await api(`/api/streams/${encodeURIComponent(kind)}/${encodeURIComponent(vid)}`); }
@@ -4632,7 +4633,7 @@
   }
   function loadShow(art, name) {
     const el = $("#pLoad");
-    LOAD.on = true; LOAD.t0 = performance.now(); LOAD.lines = [];
+    LOAD.on = true; LOAD.t0 = LOAD.lastStep = performance.now(); LOAD.lines = [];
     LOAD.stats = loadStatsOn();
     $("#plBg").innerHTML = art && art.background ? `<img src="${img(art.background, 0, 960)}" alt="" data-fallback="hide">` : "";
     loadLogo(art, name);
@@ -4662,10 +4663,76 @@
     if (!LOAD.on) return;
     const last = LOAD.lines[LOAD.lines.length - 1];
     if (last) last.done = performance.now();
+    LOAD.lastStep = performance.now();
     LOAD.lines.push({ text, t: performance.now(), done: 0 });
     drawLoad();
   }
   function loadNote(text) { if (LOAD.on && LOAD.lines.length) { LOAD.lines[LOAD.lines.length - 1].note = text; drawLoad(); } }
+
+  // Start watchdog. The loading screen must never sit there with nothing driving it (a Fire TV sat on "S3, E5" for good, then after Back on
+  // "Getting the file ready" for good). Every start (Play, a card, the next episode, the next source) arms it. While something is still moving
+  // (a new line on the loading screen) its fine, 30 seconds with nothing new and it tries again once (the next source if there is one), 30 more and
+  // the loading screen goes and an error with Try Again comes up instead. Once the video is handed to the app's player that one watches it
+  const START = { again: null, fresh: null, fid: null, from: 0, tries: 0, step: 0, t: null, at: 0, retrying: false };
+  const STUCK_MS = 30000;
+  // fresh: a new start (resets the one retry), again: how to start it over, fid/from: the source its on so the retry can move to the next one
+  function startWatch(again, fresh, fid, from) {
+    if (fresh && !START.retrying) { START.tries = 0; START.at = performance.now(); START.fresh = again; }
+    if (again) START.again = again;
+    if (fid !== undefined) { START.fid = fid; START.from = from || 0; }
+    START.step = performance.now();
+    if (!START.t) START.t = setInterval(watchTick, 2000);
+  }
+  function stopWatch() { clearInterval(START.t); START.t = null; START.again = null; }
+  function watchTick() {
+    if (!LOAD.on || !START.again) { stopWatch(); return; }
+    const now = performance.now();
+    if (now - Math.max(START.step, LOAD.lastStep || 0) > STUCK_MS) startStuck("nothing happened for 30 seconds");
+  }
+  function startStuck(why) {
+    const step = LOAD.lines.length ? LOAD.lines[LOAD.lines.length - 1].text : "";
+    hlog("start_stuck", { why, fid: START.fid, tries: START.tries, step, secs: Math.round((performance.now() - START.at) / 1000) });
+    if (START.tries >= 1) { startGiveUp(why, step); return; }
+    START.tries = 1;
+    START.step = performance.now();
+    // Whatever was still on its way stands down (it checks the press number), then one more go
+    PLAY_N++;
+    if (SOURCES && SOURCES.timer) { clearTimeout(SOURCES.timer); SOURCES.timer = null; }
+    NATIVE_BUSY = 0;
+    if (START.fid && moreSources(START.fid)) {
+      hlog("start_retry", { how: "next source", fid: START.fid });
+      if (nextSource(START.fid, START.from, "That source took too long to start")) return;
+    }
+    hlog("start_retry", { how: "again", fid: START.fid });
+    loadStep("Taking a while, trying again");
+    const again = START.again;
+    START.retrying = true;
+    try { again(); } catch (_) { START.retrying = false; startGiveUp(why, step); }
+    START.retrying = false;
+  }
+  function startGiveUp(why, step) {
+    const again = START.fresh || START.again;
+    stopWatch();
+    hlog("start_gave_up", { why, step, fid: START.fid });
+    PLAY_N++;
+    if (SOURCES && SOURCES.timer) { clearTimeout(SOURCES.timer); SOURCES.timer = null; }
+    CHAIN = null; NATIVE_BUSY = 0;
+    try { sessionStorage.removeItem("kino-next"); sessionStorage.removeItem("kino-native"); } catch (_) {}
+    // The app's player still sat on its loading screen waiting for this: it closes too, the page says why
+    try { if (ANDROID && typeof window.KinoAndroid.nextWaiting === "function" && window.KinoAndroid.nextWaiting()) window.KinoAndroid.nextFailed(); } catch (_) {}
+    if (pl.el.hidden) { pl.el.hidden = false; document.body.style.overflow = "hidden"; }
+    showMsg("This didn't start", "The source took too long to answer. Try again, or pick another source from the title page.",
+      `<button class="btn primary small" id="stAgain">Try Again</button><button class="btn secondary small" id="stClose">Close</button>`);
+    $("#stAgain").onclick = () => {
+      if (!again) { closePlayer(); return; }
+      $("#pMsg").hidden = true;
+      splashUp(null, "", "Trying again");
+      START.retrying = false;
+      again();
+    };
+    $("#stClose").onclick = () => closePlayer();
+    $("#stAgain").focus();
+  }
   function drawLoad() {
     if (!LOAD.on) return;
     // The profile can arrive after the loading screen went up (a page reloaded behind the app's player), Loading Details off then hides the lines
@@ -4698,6 +4765,8 @@
   // Takes it down again when nothing ended up playing in the web player
   function splashOff() {
     if (pl.info) return;
+    // The start watchdog's error is up (with Try Again), that stays till its answered
+    if (!pl.el.hidden && !$("#pMsg").hidden) return;
     loadHide();
     if (!pl.el.hidden) { pl.el.hidden = true; document.body.style.overflow = ""; }
   }
@@ -4754,6 +4823,7 @@
     // over the page. It stays up behind the app's player till that closes, so the page isnt what shows between one episode and the next
     const tt = opts.title;
     const tok = splashUp(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "", "Getting the file ready");
+    startWatch(() => nativePlay(fid, { ...opts, inPlace: false }), !START.t, fid, opts.from);
     let info;
     try { info = await api(`/api/file/${fid}`); } catch (e) {
       NATIVE_BUSY = 0;
@@ -4789,12 +4859,25 @@
     // to carry on to the next one (it had none, said there was nothing else to try and left you on the title page)
     try { sessionStorage.setItem("kino-src", SOURCES && SOURCES.list.some((x) => x.id === fid) ? JSON.stringify({ list: SOURCES.list, tried: [...SOURCES.tried], skips: SOURCES.skips || 0, at: Date.now() }) : ""); } catch (_) {}
     // The app's player stopped waiting for this one (it timed out): it opens as a new player instead, an in place one would be ignored
-    const inPlace = !!opts.inPlace && !(CHAIN && CHAIN.dropped);
+    let inPlace = !!opts.inPlace && !(CHAIN && CHAIN.dropped);
+    // The app's player was waiting for this in place but isnt any more: Back was pressed on it (the app drops an in place start for two minutes
+    // after that, so this used to leave "Getting the file ready" up for good) or it gave up waiting. Back means nobody wants it, so it stops here
+    let waitingNow = null;
+    try { if (typeof window.KinoAndroid.nextWaiting === "function") waitingNow = !!window.KinoAndroid.nextWaiting(); } catch (_) {}
+    if (inPlace && waitingNow === false) {
+      hlog("native_not_waiting", { fid, dropped: !!(CHAIN && CHAIN.dropped) });
+      NATIVE_BUSY = 0; NATIVE = null; stopWatch(); CHAIN = null;
+      try { sessionStorage.removeItem("kino-next"); sessionStorage.removeItem("kino-native"); } catch (_) {}
+      splashOff();
+      return null;
+    }
     if (SOURCES) SOURCES.inPlace = false;
     hlog("native_open", { fid, inPlace });
     try { sessionStorage.removeItem("kino-next"); } catch (_) {}
     try { sessionStorage.setItem("kino-native", JSON.stringify({ fid, next: n || null, autoplay: prefs.autoplay !== false, titleId: info.title_id || (t && t.id) || null, at: Date.now(), art, name: (t && t.name) || info.show || info.name })); } catch (_) {}
     setTimeout(() => (NATIVE_BUSY = 0), 3000);
+    // Handed over: the app's player has its own watch on a slow start from here (20 seconds, then the next source or its error box)
+    stopWatch();
     window.KinoAndroid.playNative(JSON.stringify({
       isStream: !!info.stream, torbox: !!(info.stream && !info.src), moreSources: moreSources(fid),
       art, video: info.video || {}, credits: info.credits || 0, autoplay: prefs.autoplay !== false, loadStats: prefs.load_stats !== false,
@@ -4871,8 +4954,24 @@
   // memory TV) carries on with it instead of losing it. It always ends in the player opening or a message saying why not, never just the title page
   let CHAIN = null;
   async function nextFrom(n, title, titleId, inPlace) {
-    CHAIN = { at: Date.now(), busy: true, dropped: false };
+    // A retry of this keeps knowing the app's player gave up waiting (then it opens as a new player)
+    const dropped = !!(START.retrying && CHAIN && CHAIN.dropped);
+    CHAIN = { at: Date.now(), busy: true, dropped };
     const me = CHAIN, tok = PLAY_N;
+    // Watched like any start, a try again from the error starts it as a new player (the waiting one has closed by then)
+    // The app's player should be sat waiting for this one. If it isnt, Back was pressed on it while this page was reloading (so the page
+    // never heard), and nobody wants the next episode any more: it used to start anyway and the app dropped it, leaving "Getting the file ready" up
+    try {
+      if (inPlace && !dropped && typeof window.KinoAndroid.nextWaiting === "function" && !window.KinoAndroid.nextWaiting()) {
+        hlog("native_not_waiting", { ep: n.video_id || n.id, at: "chain" });
+        CHAIN = null;
+        try { sessionStorage.removeItem("kino-next"); sessionStorage.removeItem("kino-native"); } catch (_) {}
+        splashOff();
+        return;
+      }
+    } catch (_) {}
+    startWatch(() => nextFrom(n, title, titleId, inPlace), true, null);
+    START.fresh = () => nextFrom(n, title, titleId, false);
     try { sessionStorage.setItem("kino-next", JSON.stringify({ n, titleId: titleId || (title && title.id) || null, at: Date.now() })); } catch (_) {}
     let ok;
     try {
@@ -4929,6 +5028,23 @@
           if (!EARLY_SPLASH) splashUp(null, "", "");
           nextFrom(pend.n, null, pend.titleId, false);
         }
+        else if (typeof window.KinoAndroid.nextWaiting === "function" && window.KinoAndroid.nextWaiting()) {
+          // The app's player is sat on its loading screen waiting for the next episode but the ask never got here (the page was reloading when
+          // it came, so it was lost). It used to wait there for two minutes with nothing happening. What it needs was kept from the last start
+          let k = null;
+          try { k = JSON.parse(sessionStorage.getItem("kino-native") || "null"); } catch (_) {}
+          RELOADED = true;
+          if (k && k.next && k.autoplay !== false) {
+            hlog("chain_recover", { from: k.fid, ep: k.next.video_id || k.next.id });
+            if (!EARLY_SPLASH) splashUp(k.art, k.name || "", "");
+            try { sessionStorage.removeItem("kino-native"); } catch (_) {}
+            nextFrom(k.next, null, k.titleId, true);
+          } else {
+            hlog("chain_fail", { why: "lost and nothing kept" });
+            try { window.KinoAndroid.nextFailed(); } catch (_) {}
+            if (EARLY_SPLASH) splashOff();
+          }
+        }
         else if (EARLY_SPLASH) splashOff();
       } catch (_) { if (EARLY_SPLASH) splashOff(); }
       EARLY_SPLASH = false;
@@ -4962,6 +5078,7 @@
     pl.opts = opts;
     // Each press gets a number, anything still loading from an earlier press stops when it sees a newer one
     const my = ++PLAY_N;
+    const watchFresh = !START.t;
     stopPreviews(); closeTrailer();
     const chain = !!opts.chain && LOAD.on;
     closePlayer(true, chain);
@@ -4973,6 +5090,7 @@
     if (!chain) loadShow(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "");
     else loadArt(tt ? { background: tt.background, logo: tt.logo } : opts.art, tt ? tt.name : opts.name || "");
     loadStep(opts.note || "Getting the file ready");
+    startWatch(() => playFile(fid, { ...opts }), watchFresh, fid, opts.from);
     $("#pMsg").hidden = true;
     $("#upNext").hidden = true;
     $("#skipIntro").hidden = true;
@@ -5013,6 +5131,7 @@
       // A debrid source has to get the file ready first, which can take a while (the server gives up on it after 15 seconds)
       const slowT = setTimeout(() => { if (pl.info === info && my === PLAY_N && LOAD.on) loadStep("Still waiting, the source may be getting it ready"); }, 6000);
       pl.v.addEventListener("loadedmetadata", () => clearTimeout(slowT), { once: true });
+      pl.v.addEventListener("playing", () => clearTimeout(slowT), { once: true });
       const from = opts.from != null ? opts.from : info.resume || 0;
       pl.v.addEventListener("loadedmetadata", () => { if (pl.info !== info || my !== PLAY_N) return; if (from && from < pl.v.duration - 10) pl.v.currentTime = from; }, { once: true });
       let retried = false;
@@ -5340,6 +5459,9 @@
       // Closed on purpose: a source that was waiting its turn in the skip chain must not open the player again (it did, dragging you back in)
       PLAY_N++;
       if (SOURCES && SOURCES.timer) { clearTimeout(SOURCES.timer); SOURCES.timer = null; }
+      // Back on a loading screen: nothing that was on its way starts later, and a page that reloads doesnt pick the next episode up again
+      stopWatch(); CHAIN = null; NATIVE_BUSY = 0;
+      try { sessionStorage.removeItem("kino-next"); if (!NATIVE) sessionStorage.removeItem("kino-native"); } catch (_) {}
     }
     if (!keepLoading) loadHide();  // moving along the sources list keeps the loading screen up instead of fading it out and back in
     $("#pStill").hidden = true; clearTimeout(STILL.t);
@@ -5833,6 +5955,13 @@
     checkFake();
   }
   v.addEventListener("timeupdate", drawTime);
+  // When the picture last really moved on. Being stuck right now only counts while it hasnt, so a "waiting" that never got its "playing"
+  // back (it happens after some seeks) cant add up to the keeps buffering card while the video is plainly playing
+  v.addEventListener("timeupdate", () => {
+    const t = v.currentTime;
+    if (!v.paused && t > (pl.advT || 0) + 0.2) pl.advAt = Date.now();
+    pl.advT = t;
+  });
   v.addEventListener("progress", drawTime);
   v.addEventListener("waiting", () => { if (!LOAD.on) spinner(true); if (!pl.bufStart) { pl.bufStart = Date.now(); pl.bufAhead = aheadNow(); } });
   v.addEventListener("playing", () => {
@@ -5855,7 +5984,7 @@
     if (!pl.playedAt && pos() > 5 && !pl.v.paused) pl.playedAt = now;
     if (!pl.playedAt || now - pl.stallAskedAt < 180000 || now - (pl.lastSeek || 0) < 10000 || !moreSources(info.id)) return;
     pl.stalls = pl.stalls.filter((x) => now - x[0] < 90000);
-    const cur = pl.bufStart && !pl.v.paused ? now - pl.bufStart : 0;
+    const cur = pl.bufStart && !pl.v.paused && now - (pl.advAt || 0) > 1500 ? now - pl.bufStart : 0;
     if (cur < 10000 && pl.stalls.reduce((a, x) => a + x[1], 0) + cur < 15000 && pl.stalls.length + (cur >= 1200 ? 1 : 0) < 3) return;
     pl.stallAskedAt = now;
     const at = pos();

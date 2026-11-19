@@ -751,8 +751,13 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     // ---- what the engine tells us
 
+    // The engine can still send something after it was let go (moving on to the next episode, Back, closing), with eng already null that
+    // crashed the whole app (onTracks asked a null engine for its audio tracks, seen on the Google TV emulator after Back on the next episode)
+    private boolean gone() { return eng == null || leaving || isFinishing(); }
+
     @Override
     public void onBuffering(boolean b) {
+        if (gone()) return;
         // A stall once it is playing shows the ring after half a second (a short one is not worth a flash)
         h.removeCallbacks(showSpin);
         if (b && !loading) h.postDelayed(showSpin, 500);
@@ -774,6 +779,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onPlaying(boolean p) {
+        if (gone()) return;
         bPlay.setImageResource(p ? R.drawable.ic_pause : R.drawable.ic_play);
         bPlay.setContentDescription(p ? "Pause" : "Play");
         if (p) {
@@ -783,10 +789,11 @@ public class PlayerActivity extends Activity implements Engine.Listener {
         else { save(); showControls(null); }
     }
 
-    @Override public void onFirstFrame() { gotFrame = true; h.removeCallbacks(noPicture); loaded(); }
+    @Override public void onFirstFrame() { if (gone()) return; gotFrame = true; h.removeCallbacks(noPicture); loaded(); }
 
     @Override
     public void onEnded() {
+        if (gone()) return;
         if (hls && pos() < dur() - 30) return;
         ended = true;
         done();
@@ -809,6 +816,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onError(String msg, boolean codec) {
+        if (gone()) return;
         if (live) {
             // Most errors on a live channel are blips (the player fell behind the window after a stall or a pause, one peice
             // didnt load) so it quietly tunes in again a few times first, only when it keeps happening does the channel get
@@ -861,6 +869,7 @@ public class PlayerActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onTracks() {
+        if (gone()) return;
         // A channel whose sound this TV cant play (ac3 or eac3 on a lot of sticks) plays the picture with no sound. The server repackages it with
         // aac sound, once. (A film is converted in a different way, that doesnt work for a channel and used to end in the error box)
         if (live) {
